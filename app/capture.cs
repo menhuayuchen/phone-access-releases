@@ -454,7 +454,12 @@ static string intervalFile;          // server-written fps cap, so the link can 
 
         Bitmap dst = new Bitmap(outW, outH, PixelFormat.Format32bppPArgb);
         Graphics gdst = Graphics.FromImage(dst);
-        gdst.InterpolationMode = InterpolationMode.HighQualityBilinear;
+        // 改动（2026-10-30）：HighQualityBilinear -> Bilinear。2560x1600 实机实测：
+        // HQB 做降档缩放单步约 34ms（1920 档 encode 合计 49ms，帧率被锁死 15.5fps），
+        // 且 GDI+ 缩放期间压着 GDI 通道，还把 copy 阶段从 28ms 拖到 54ms（GDI 锁等待）。
+        // Bilinear 只要几 ms，出图过 q62 JPEG 压缩后观感差别可忽略；
+        // 2560 满档不缩放、不受此影响（改前改后都是 24.7fps）。
+        gdst.InterpolationMode = InterpolationMode.Bilinear;
         gdst.PixelOffsetMode = PixelOffsetMode.HighSpeed;
         gdst.CompositingQuality = CompositingQuality.HighSpeed;
 

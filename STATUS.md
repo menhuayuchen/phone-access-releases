@@ -47,8 +47,10 @@ version=1.0.4  freemium.ultraFreeSecPerDay=3600
 配置 enableDsh=True（这台是卖家自用；客户版是 False）
 ```
 
-**帧率基线**：2560 宽实机约 **24 fps**（`in=24.5 out=24.0`），抓屏受 CPU 限制。
-降分辨率可提帧率，实测 1920 时 `capture.exe` 参数会变。
+**帧率基线**（2026-10-30 修正，详见第十三节）：2560 档（不缩放）实机 **24.7fps**（`in=24.5 out=24.0`），
+抓屏受 CPU 限制（2560x1600 的 DWM 读回约 28ms 就是本机上限）。
+**降档不提速**：旧 capture.exe 用 GDI+ HighQualityBilinear 做降档缩放（约 34ms），1920/1440 档反而只有
+15.5/18fps；2026-10-30 改 Bilinear 后 1920≈20-22fps、1440≈22-24fps。
 
 ---
 
@@ -388,3 +390,65 @@ App 打开 `'/'` 时既无 cookie 也无 `?k` → 401。浏览器里正常是因
 health ok：viewers=1（验证浏览器）、in=15 out=15、source=pipe、uq=na（已授权）、input connected；
 服务已带新文件重启（supervisor 于 23:12 拉起新 node 进程，start-screen.ps1 检测端口已监听未重复启动）；
 部署前用 `git hash-object` 核对过：安装目录两文件 == 仓库基线，部署后 == 仓库新文件。
+
+## 十三、2026-10-30 第四轮：降档帧率"砍半"根因修复（capture.cs 降档缩放改 Bilinear）
+
+### 背景（用户 2026-10-29 深夜报告，iPad 真机）
+
+1. "你改完之后所有画质的帧率怎么都砍半了"（怀疑第十二轮的 PWA/光标改动导致）。
+2. "刚打开时画面正常，改了一下画质后画面被放大了一点，下面有一点画面看不到"（附 23:49 iPad 截图）。
+
+### 结论一：帧率——不是本轮改动导致的，是 capture.cs 降档路径本来就慢（已修）
+
+**证据链（全部来自本机 `screen-capture.log` / `/health`，可复现）：**
+
+- 2560 档（输出=源尺寸，不缩放）：从 11:00 到深夜一直 **24.7fps**（copy≈27-30ms，encode≈13-17ms），
+  包括 00:13 服务重启后（`fps=24.7 copy=27 encode=15`）——**从未砍半**。
+- 1920 档（2560→1920 缩放）：**今早 11:40 起**就是 15.5fps（copy≈54ms，encode≈49-52ms）——
+  在 10-30 任何改动之前就存在。1440 档同为 18fps（copy 49/encode 37）。
+- 用户感觉"砍半"的真实原因：之前一直用超清 2560（24fps），这次切到高清/标准，撞上这两个档本来就慢。
+- PWA start_url / 光标改动不碰抓屏与流路径，排除。
+
+**根因（`capture.cs` `RunPipeline`，双线程流水线：copy 线程 BitBlt 抓屏 → encoder 线程缩放+JPEG）：**
+
+- 降档缩放出 `InterpolationMode.HighQualityBilinear`——GDI+ 最慢的插值，2560x1600→1920x1200 单步约 34ms。
+- 且 GDI+ 缩放/编码期间占用 GDI 通道，把并行 copy 线程的 BitBlt 从 28ms 拖到 54ms（GDI 锁等待混进 copy 计时）。
+- 两级相加 → 1920 档帧周期锁死 ~59-61ms → 15.5fps。2560 档 1:1 不缩放，所以一直是 24.7。
+
+**修法（一行，`capture.cs` ~L457）：** `HighQualityBilinear` → `Bilinear`（加注释记录实测数据）。
+重编译：`csc /codepage:65001 /optimize /unsafe /r:System.Drawing.dll /r:System.Windows.Forms.dll`
+（仓库无现成编译脚本；源码与审查包快照 SHA256 一致，确认改的就是部署的那份）。
+部署：旧 exe 快照 `capture.exe.bilinear.bak`（21504B）→ 新 exe 20480B 就位。
+
+**实测（本机，新包 vs 旧包，同一台 2560x1600@240Hz）：**
+
+| 档位 | 旧包 | 新包 | 说明 |
+|---|---|---|---|
+| 超清 2560 | 24.7fps | 24.2-24.7fps | 不缩放，不受影响（回归通过） |
+| 高清 1920 | 15.5fps（copy 54 / encode 49） | **20-22.4fps**（copy 40 / encode 28-30） | +30% |
+| 标准 1440 | 18fps（copy 49 / encode 37） | **21.8-23.7fps**（copy 37 / encode 21） | +28% |
+
+- 画质：1440 帧视觉检查（Bilinear+q62）——无偏色、无严重伪影；小字略软（0.56x 缩放+q62 的固有代价，可接受）。
+- 上限说明：本机 copy 下限 ≈28ms（2560x1600 DWM 读回）→ 帧率天花板 ~24-25fps。
+  降档档剩余 2-4fps 差距 = copy 线程与 GDI+ 编码的 GDI 争用（copy 37-40 vs 满档 28）。
+  要再提得换更快的 JPEG 编码器（新增原生依赖，需过安全审查）——本轮未做，留作后续选项。
+
+### 结论二：改画质后底部裁切——服务端帧完整，疑似重启抖动期的坏帧被手机定格（待 iPad 复测）
+
+- 23:58 抓取的当时 1920x1200 帧：**任务栏完整**（视觉确认）；当前 2560 帧也完整——服务端没裁。
+- 桌面浏览器复现"切画质→服务重启→双缓冲换流"全流程：`object-fit:contain` 布局正常，不变形不裁切。
+- 最大嫌疑：用户 23:48 切画质时抓屏进程 **10 秒内重启 3 次**（日志三条 pipeline，2560↔1920 抖动），
+  期间可能输出一帧裁切的不完整画面，手机页面定格在该帧 → 视觉上是"放大一点+底部没了"。
+- 处置：服务已干净重启（现 2560 档 24.5fps），请用户 iPad 复测；若再现要新截图。
+
+### 观察项（不影响结论）
+
+- 22:01~23:11 之间显示状态变过：23:11 抓屏启动时 `Get-CaptureGeometry` 读到 **1920x1200**
+  （source: dpi-aware-screen），00:13 起稳定读 2560x1600（现 240Hz）。用户"没动过/不记得"——
+  疑为系统/驱动自动调整。若再现注意：显示掉到 1920x1200 时抓屏源也会跟着变小。
+
+### 本轮后实机状态（2026-10-30 00:51）
+
+health ok：`in=24.5 out=23.5`、frame SOF=2560x1600、source=pipe、uq=na（已授权）、input connected；
+capture.exe=新 Bilinear 包（20480B，00:50 启动），旧包快照 `capture.exe.bilinear.bak` 在安装目录；
+`product.config.json` maxCaptureWidth=2560（超清档，用户 App 当前档位）。
