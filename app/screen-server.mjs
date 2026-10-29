@@ -183,7 +183,15 @@ function attachAudioWs(server, key) {
     try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
     // 改动（第二轮 P4-4）：这里是**最后**一个 upgrade 处理器（rtc.mjs 先注册、只认 /rtc），
     // 所以不认识的路径必须销毁 socket。原来直接 return，连接会挂着占资源，直到对端超时。
-    if (url.pathname !== '/ws-audio') { try { socket.destroy(); } catch { } return; }
+    // 修复（2026-10-29，真实回归）：P4-4 把 /rtc 也一起销毁了——Node 的 upgrade 事件会派发给
+    // 所有监听器：rtc.mjs 先升级成功（viewer connected 都打出来了），这里紧接着 destroy 同一个
+    // socket，信令连接被掐死（code=1006），浏览器 offer 发出去永远等不到 answer，
+    // 表现就是「流畅模式一直连不上、几秒后自动退回清晰」。
+    // /rtc 的鉴权失败由 rtc.mjs 自己处理（写 401 + destroy），这里绝不能碰它。
+    if (url.pathname !== '/ws-audio') {
+      if (url.pathname !== '/rtc') { try { socket.destroy(); } catch { } }
+      return;
+    }
     if (url.searchParams.get('k') !== key) {
       socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n');
       socket.destroy();
