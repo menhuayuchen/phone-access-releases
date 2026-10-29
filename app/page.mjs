@@ -1940,10 +1940,12 @@ bindImg(img);
 
     // 画面质量（改抓屏宽度：直接影响帧率、延迟、手机流量）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
-    const QUAL = [[2560, '超清', '字最清楚'], [1920, '高清', '平衡'], [1440, '标准', '最省流量']];
+    // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
+    // 手机屏会把三档都压到屏幕宽。所以按钮上直接标流量估算，说明文案讲清"差距在放大细节和流量"。
+    const QUAL = [[2560, '超清', '字最清楚 · 放大看小字依然锐利', '约26GB/时'], [1920, '高清', '清晰流畅平衡', '约15GB/时'], [1440, '标准', '最省流量 · 弱网最流畅', '约8GB/时']];
     const curW = Number(lic.captureWidth || 0);
     let qInner = '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-    for (const [w, label, tip] of QUAL) {
+    for (const [w, label, tip, flow] of QUAL) {
       const on = (curW === w) || (curW === 0 && w === 2560);
       const badge = (w > 1920 && !lic.usable) ? ' · 🔒1小时/天' : '';
       qInner += '<button class="paQ" data-w="' + w + '" title="' + escHtml(tip) + '" style="flex:1;min-width:78px;'
@@ -1951,7 +1953,8 @@ bindImg(img);
         + 'color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
         + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 6px;'
         + 'font-size:13px;cursor:pointer;line-height:1.35">' + escHtml(label)
-        + '<br><span style="font-size:11px;color:#868c96">' + w + badge + '</span></button>';
+        + '<br><span style="font-size:11px;color:#868c96">' + w + '</span>'
+        + '<br><span style="font-size:10.5px;color:#6f7580">' + flow + badge + '</span></button>';
     }
     qInner += '</div>';
     if (!lic.usable && uq && uq.ultra) {
@@ -1962,8 +1965,9 @@ bindImg(img);
         + '</div>';
     }
     qInner += '<div style="color:#868c96;font-size:11.5px;margin-top:9px;line-height:1.6">'
-      + '档位越低，画面越省流量、越流畅；文字会糊一点。高清/标准免费不限时；<br>'
-      + '超清未授权每天免费 1 小时，许可证不限时长。<br>'
+      + '手机屏会把三档都压到屏幕宽，正常看差别不大——<br>'
+      + '真正的差距在双指放大后的小字细节（超清依然锐利）和流量消耗。<br>'
+      + '高清/标准免费不限时；超清未授权每天免费 1 小时，许可证不限时长。<br>'
       + '改完请双击桌面「手机远程」里的「重启」，约 8 秒后刷新生效。</div>'
       + '<div id="setQMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>';
     // 画面质量：已验证有效（实测 1920 → capture.exe 参数变 1920）。
