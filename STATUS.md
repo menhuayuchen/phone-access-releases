@@ -283,3 +283,43 @@ powershell -File "$env:LOCALAPPDATA\PhoneAccess\start-screen.ps1"
 - 杀 screen-server 的进程匹配若用 `CommandLine -match 'screen-server\.mjs'`，会命中**自己这条 pwsh**（命令行里含脚本文本）→ 自杀。要限定 `Name -in node.exe,cmd.exe` 且排除 `$PID` 与父进程
 - PowerShell `WebClient.DownloadString` 默认 GBK 解码，UTF-8 JSON/HTML 会 mojibake 导致 `ConvertFrom-Json` 炸、`Contains('中文')` 误报 False。先 `$wc.Encoding = [Text.Encoding]::UTF8`
 - 改配置里的 `freemium` 值必须重启服务才生效（productConfig 只在启动时读）；但**配额的耗尽/恢复本身不需要重启**
+
+---
+
+## 十一、2026-10-29 第二轮：WebRTC 回归修复 + 画质档位结论 + 光标形状（v1.0.5）
+
+### P4-4 回归：流畅模式（WebRTC）永远连不上 —— 已修复（commit 9f995a6）
+
+**症状**（用户报告 + 本机复现）：点「流畅」→ WebRTC 连接中… → 几秒后自动退回清晰。
+服务端日志特征：`viewer connected → video/audio track added → viewer closed code=1006`，
+**从来没有 `state connecting/connected`**；浏览器侧 `signalingState=have-local-offer`、`remoteSdpLen=0`、`iceState=new`。
+
+**根因**：Node 的 `upgrade` 事件派发给**所有**监听器。rtc.mjs（先注册）把 `/rtc` 成功升级后，
+screen-server.mjs 的音频处理器（后注册，第二轮 P4-4 改动）看到 `pathname !== '/ws-audio'` 就
+`socket.destroy()` —— 把刚升级好的信令 socket 掐死（1006）。浏览器 offer 发进死连接，answer 永远回不来。
+P4-4 本意是销毁"两边都不认识"的悬挂连接，但误伤了 /rtc。**修 P4-4 之前流畅模式是好的——这是第二轮审查修复引入的回归。**
+
+**修法**：音频处理器只销毁既不是 `/ws-audio` 也不是 `/rtc` 的 socket；`/rtc` 全权由 rtc.mjs 处理（含鉴权失败 401+destroy）。
+
+**验收**（浏览器 + 日志双向）：`pc.connectionState=connected`、视频 1280×800 出流、HUD「1 连接 · 链路 3ms」、
+服务端日志 `rtc: state connected`；切回清晰 code=1005 干净关闭。
+
+### 画质三档"看不出差距" —— 机制正常，属感知问题（commit 45a8395）
+
+实测证据链：config `maxCaptureWidth=1440` → 守护重启 argv `1440x900` → `capture.mode width=1440`（capture.exe 的 ctlWidth 覆盖启动参数）→ `/frame.jpg` 与页面透传帧实测 1440；切回 2560 后全链路 2560×1600。**三档真实生效**。
+"看不出差距"的原因：手机屏/浏览器窗口会把 1440~2560 都缩到窗口宽，正常观看距离几乎无差；
+差距在**双指放大的小字细节**与**流量**（约 26/15/8 GB每小时，像素比推算，基于 2560 档实测 26GB/h）。
+已改：档位按钮直接标流量估算，设置页与使用说明.md 讲清"差在放大和流量"。
+
+### 光标形状 + 自定义导入（许可功能，commit 727c3f6）
+
+- 六种形状：圆点（默认，**唯一可调颜色**）/ 圆环 / 十字 / 箭头 / 方框（固定白色+描影）/ 自定义（导入图片）
+- 导入限制：PNG/JPG/WebP/GIF（**拒 SVG 防注入**）、≤300KB、≤512×512；FileReader→dataURL 存 `pa.cursorImg`
+- 非圆点形状：色板整行 disabled + 提示「仅默认圆点可调颜色」（用户明确要求的规则）
+- 形状存 `pa.cursor.shape`，旧数据无 shape 字段 = 圆点（向后兼容）；未授权 `applyAll(false)` 强制回落默认
+- **踩坑修复**：`.cursorDot` 基类自带黄底/圆角/黑光晕，内联样式清成 `''` 会漏染（实测圆环内是黄的）→ styleShapeEl 改为对每个属性显式设中性值再按形状覆盖
+- 浏览器实测：六形状 computed style 全对、canvas 造图→DataTransfer 注入 file input→导入应用→移除回退，全绿；测试残留已清（pa.cursor 回默认、pa.cursorImg=null）
+
+### 本轮后实机状态（19:32）
+
+清晰 2560×1600 @24.5fps 延迟 2ms；流畅 connected（1280×800 视频）；selfcheck 19 项 🟢（2 条 cosmetic：第三方杀软在、24h 自动恢复 14 次——后者多为本日部署/测试杀进程所致）；config version=1.0.5。
