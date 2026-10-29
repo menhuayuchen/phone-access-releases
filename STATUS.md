@@ -433,13 +433,39 @@ health ok：viewers=1（验证浏览器）、in=15 out=15、source=pipe、uq=na�
   降档档剩余 2-4fps 差距 = copy 线程与 GDI+ 编码的 GDI 争用（copy 37-40 vs 满档 28）。
   要再提得换更快的 JPEG 编码器（新增原生依赖，需过安全审查）——本轮未做，留作后续选项。
 
-### 结论二：改画质后底部裁切——服务端帧完整，疑似重启抖动期的坏帧被手机定格（待 iPad 复测）
+### 结论二：改画质后底部裁切——**已修（commit 5bb3572），待 iPad 复测**
 
-- 23:58 抓取的当时 1920x1200 帧：**任务栏完整**（视觉确认）；当前 2560 帧也完整——服务端没裁。
-- 桌面浏览器复现"切画质→服务重启→双缓冲换流"全流程：`object-fit:contain` 布局正常，不变形不裁切。
-- 最大嫌疑：用户 23:48 切画质时抓屏进程 **10 秒内重启 3 次**（日志三条 pipeline，2560↔1920 抖动），
-  期间可能输出一帧裁切的不完整画面，手机页面定格在该帧 → 视觉上是"放大一点+底部没了"。
-- 处置：服务已干净重启（现 2560 档 24.5fps），请用户 iPad 复测；若再现要新截图。
+**复现条件（用户补充，关键线索）：浏览器里同样操作完全正常，只有装到主屏幕的独立 App
+（iOS standalone）在换画质后裁切**；且 App 刚打开时正常，一换画质（服务重启后）就裁。
+裁切形态：顶部正常、左右无黑边、只有底部被切（Windows 任务栏没了）——布局盒比可见屏幕
+**高出一截**、从底部溢出屏幕的形态。
+
+**排查：**
+- 服务端帧完整（23:58 的 1920 帧任务栏都在；当前 2560 帧 SOF=2560x1600）——服务端没裁。
+- 桌面浏览器复现"切画质→服务重启→双缓冲换流"全流程：`object-fit:contain` 布局正常。
+- 页面 CSS：`body{height:100dvh}` + `viewport-fit=cover` + `apple-mobile-web-app-status-bar-style=black-translucent`
+  ——独立 App 全屏延伸到状态栏/ home 条下方，布局高度全靠 `100dvh`。
+
+**根因判断：iOS 独立模式的视口高度会在会话中漂移**（100dvh 重新解析成比可见屏幕更大的值），
+全新加载总是对的（用户原话"刚进去画面是好的"），所以"刚开正常、换画质后裁"。
+（23:48 那次抓屏 10 秒抖 3 重启的坏帧是次要嫌疑，主嫌疑是这个。）
+
+**修法（page.mjs，两层，commit 5bb3572）：**
+1. **视口钉住**：`syncViewportHeight()` 把 body 高度钉在 `visualViewport.height + offsetTop`
+   （真实可见区域，页面坐标换算本来就用这个 API），resize/转屏/visualViewport-resize 重同步。
+   浏览器/桌面两者与 innerHeight 相等，无行为变化。
+2. **画质生效后整页重载**：画质保存成功打 `qualityPending` 时间戳（TTL 10 分钟）；
+   `pollStats` 检测到 /health 断流→恢复（=服务重启完成）后 800ms `location.reload()`。
+   UI 本来就承诺"约 8 秒后刷新生效"，1 秒重载在承诺内；全新加载保证布局正确。
+   顺带修了 `failPolls` 成功不清零的累计问题（原来恢复后多失败两次就会误重连）。
+
+**桌面浏览器端到端实测（全过）：** 点 1920 → 重启服务 → 页面自动重载 ✓ 新档 1920 生效（img naturalWidth=1920）✓
+body 高度重钉（501.333px = visualViewport）✓ 再切 2560 同流程 ✓ 截图布局无裁切、任务栏完整 ✓
+2560 档 24.5fps ✓。（部署前 `node --check` 过；页面 HTML 已确认含新代码。）
+
+**待用户 iPad 复测（复测步骤）：** ①把 App 从最近任务里划掉**彻底关掉**再重开（加载新页面代码）
+②确认画面完整 ③换一次画质 ④服务重启后 App 会**自动刷新一下**（~1 秒，这是新行为，属正常）
+⑤看底部还裁不裁；还裁发新截图。
 
 ### 观察项（不影响结论）
 
@@ -447,8 +473,9 @@ health ok：viewers=1（验证浏览器）、in=15 out=15、source=pipe、uq=na�
   （source: dpi-aware-screen），00:13 起稳定读 2560x1600（现 240Hz）。用户"没动过/不记得"——
   疑为系统/驱动自动调整。若再现注意：显示掉到 1920x1200 时抓屏源也会跟着变小。
 
-### 本轮后实机状态（2026-10-30 00:51）
+### 本轮后实机状态（2026-10-30 01:17）
 
-health ok：`in=24.5 out=23.5`、frame SOF=2560x1600、source=pipe、uq=na（已授权）、input connected；
-capture.exe=新 Bilinear 包（20480B，00:50 启动），旧包快照 `capture.exe.bilinear.bak` 在安装目录；
-`product.config.json` maxCaptureWidth=2560（超清档，用户 App 当前档位）。
+health ok：`in=24.5 out=24.5`、frame SOF=2560x1600、source=pipe、uq=na（已授权）、input connected；
+capture.exe=新 Bilinear 包（20480B），旧包快照 `capture.exe.bilinear.bak` 在安装目录；
+page.mjs=视口修复版（commit 5bb3572）；`product.config.json` maxCaptureWidth=2560（超清档，用户 App 当前档位）；
+git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁切）。
