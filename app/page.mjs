@@ -1270,6 +1270,10 @@ overlay.addEventListener('contextmenu', (e) => {
 //   in  = 抓屏侧：管道里真正收到的帧数（capture.exe 的实际产出速度）
 //   out = 送达侧：唯一帧被推给观看者的速度（多设备同时看不会翻倍）
 //   丢帧 = 最近 10 秒被跳过的帧数（不是累计值，链路一好就自动清零）
+// 半免费（2026-10-29 起）：/health 里多了 uq= 字段 —— 未授权机器的超清每日配额。
+//   uq=<秒数> 今日超清还剩多少秒；uq=0:x 已用完（服务端正按高清 1920 出图）；uq=na 不适用。
+let uqToastShown = false;
+function fmtUq(s) { s = Math.max(0, Math.round(Number(s) || 0)); return s >= 60 ? (Math.floor(s / 60) + ' 分钟') : (s + ' 秒'); }
 async function pollStats() {
   try {
     const t0 = performance.now();
@@ -1288,6 +1292,21 @@ async function pollStats() {
     const lagM = / lag=(\d+)/.exec(t);
     const peers = /"peers":(\d+)/.exec(t);
     const vw = /viewers=(\d+)/.exec(t);
+    // 半免费：超清配额状态。用完的那一瞬间弹一次提示（画面已被服务端降为高清出图），
+    // 恢复（跨天/装上许可证）后重置标志，允许下一次再提示。
+    const uqm = / uq=([0-9]+)(:x)?/.exec(t);
+    if (uqm) {
+      const uqEx = !!uqm[2];
+      window.__uq = { remaining: Number(uqm[1]), exhausted: uqEx };
+      if (uqEx && !uqToastShown) {
+        uqToastShown = true;
+        setNote('今日超清 1 小时已用完，画面已自动切为高清。明天 0 点恢复 · 许可证不限时长', 10000);
+      } else if (!uqEx && uqToastShown && Number(uqm[1]) > 60) {
+        uqToastShown = false;
+      }
+    } else {
+      window.__uq = null;
+    }
     // 注入被前台高权限窗口挡住（UIPI）：injector 会一直累加 blk，前台切走就停
     const bN = /blk=(\d+)/.exec(t), fg = /fg=("(?:[^"\\]|\\.)*")/.exec(t);
     if (bN) {
@@ -1343,7 +1362,8 @@ async function pollStats() {
         + ' · 上限 ' + capFps
         + (streamW < 2560 ? ' · ' + streamW + ' 宽' : '')
         + (rttMs > 0 ? ' · 延迟 ' + rttMs + 'ms' : '')
-        + (dN > 0 ? ' · 丢帧 ' + dN + '/10s' : '');
+        + (dN > 0 ? ' · 丢帧 ' + dN + '/10s' : '')
+        + (window.__uq ? (window.__uq.exhausted ? ' · 超清已用完·高清出图' : ' · 超清余 ' + fmtUq(window.__uq.remaining)) : '');
     }
   } catch (e) {
     hud.textContent = '';
@@ -1395,6 +1415,151 @@ bindImg(img);
     }
     navigator.serviceWorker.register('/sw.js', { scope: '/' }).catch(() => { /* 装不上 App 不影响使用 */ });
   } catch (e) { }
+})();
+
+// ---- 个性化（许可证解锁的付费功能，半免费 2026-10-29 起）------------------------
+// 颜色主题 / 光标大小与颜色 / 自定义主题导入。偏好保存在手机本地 localStorage，
+// 是否生效以服务端 /licence 的 usable 为准：未授权时页面加载一律回落默认主题+默认光标
+// （已保存的偏好不清除，装上许可证后自动恢复）。外观类功能在页面侧强制；
+// 服务端的强制点是超清配额与出图宽度，两边互不影响。
+(function personalization() {
+  const LS_THEME = 'pa.theme', LS_CURSOR = 'pa.cursor', LS_CUSTOM = 'pa.customTheme';
+  const THEMES = [
+    { key: 'dark', name: '深邃黑', free: true, meta: '#15161a' },
+    { key: 'light', name: '暖白', free: false, meta: '#f2f3f5' },
+    { key: 'blue', name: '海洋蓝', free: false, meta: '#101a2b' },
+    { key: 'purple', name: '暗夜紫', free: false, meta: '#171024' },
+    { key: 'custom', name: '自定义', free: false, meta: '#15161a' }
+  ];
+  const DOT_COLORS = ['#ffd166', '#6ee7a0', '#74c0fc', '#ff8787', '#ffffff', '#ff9de2'];
+  const DOT_DEFAULT = { size: 10, color: '#ffd166' };
+
+  // 主题 = 覆盖样式表，只影响主界面（顶栏/按钮/提示条/输入条）；画面区永远黑底，不动。
+  const THEME_CSS = ''
+    + 'body.pa-t-light{background:#eceef1;color:#33373d}'
+    + 'body.pa-t-light header{background:#ffffff;border-bottom-color:#d9dce1}'
+    + 'body.pa-t-light button{background:#e7e9ee;color:#33373d;border-color:#c9ced5}'
+    + 'body.pa-t-light button.on{background:#2f9e4f;border-color:#268543;color:#ffffff}'
+    + 'body.pa-t-light select{background:#e7e9ee;color:#33373d;border-color:#c9ced5}'
+    + 'body.pa-t-light #hint{background:#e3e6ea;color:#5c6169}'
+    + 'body.pa-t-light #stat,body.pa-t-light #hud{color:#5c6169}'
+    + 'body.pa-t-light #kbbar,body.pa-t-light #cmdbar{background:#f5f6f8;border-top-color:#d9dce1}'
+    + 'body.pa-t-light #kbtext,body.pa-t-light #cmdtext{background:#ffffff;color:#22252b;border-color:#c9ced5}'
+    + 'body.pa-t-light #cmdout{background:#f1f2f5;color:#33373d;border-color:#d9dce1}'
+    + 'body.pa-t-light #note{color:#5c6169}'
+    + 'body.pa-t-light .ripple{border-color:#2f9e4f}'
+    + 'body.pa-t-blue{background:#0a1220;color:#c6d4e8}'
+    + 'body.pa-t-blue header{background:#101a2b;border-bottom-color:#1d2c44}'
+    + 'body.pa-t-blue button{background:#16233a;color:#c6d4e8;border-color:#26395a}'
+    + 'body.pa-t-blue button.on{background:#1f5f8f;border-color:#2a78b0;color:#eaf6ff}'
+    + 'body.pa-t-blue select{background:#16233a;color:#c6d4e8;border-color:#26395a}'
+    + 'body.pa-t-blue #hint{background:#0d1626;color:#7286a3}'
+    + 'body.pa-t-blue #stat,body.pa-t-blue #hud{color:#7286a3}'
+    + 'body.pa-t-blue #kbbar,body.pa-t-blue #cmdbar{background:#0f182a;border-top-color:#1d2c44}'
+    + 'body.pa-t-blue #kbtext,body.pa-t-blue #cmdtext{background:#16233a;color:#dce8f8;border-color:#26395a}'
+    + 'body.pa-t-blue #cmdout{background:#0c1424;color:#b9c9e0;border-color:#1d2c44}'
+    + 'body.pa-t-blue #note{color:#7286a3}'
+    + 'body.pa-t-blue .ripple{border-color:#74c0fc}'
+    + 'body.pa-t-purple{background:#100a1c;color:#d6cbe8}'
+    + 'body.pa-t-purple header{background:#171024;border-bottom-color:#2a1f3d}'
+    + 'body.pa-t-purple button{background:#211634;color:#d6cbe8;border-color:#372952}'
+    + 'body.pa-t-purple button.on{background:#6b3fa0;border-color:#8a56c7;color:#f4ecff}'
+    + 'body.pa-t-purple select{background:#211634;color:#d6cbe8;border-color:#372952}'
+    + 'body.pa-t-purple #hint{background:#130c20;color:#8d7fa8}'
+    + 'body.pa-t-purple #stat,body.pa-t-purple #hud{color:#8d7fa8}'
+    + 'body.pa-t-purple #kbbar,body.pa-t-purple #cmdbar{background:#150e22;border-top-color:#2a1f3d}'
+    + 'body.pa-t-purple #kbtext,body.pa-t-purple #cmdtext{background:#211634;color:#e6dcf5;border-color:#372952}'
+    + 'body.pa-t-purple #cmdout{background:#100a1c;color:#c9bce0;border-color:#2a1f3d}'
+    + 'body.pa-t-purple #note{color:#8d7fa8}'
+    + 'body.pa-t-purple .ripple{border-color:#c39df0}';
+
+  let styleEl = null, customStyleEl = null;
+  function ensureStyle() {
+    if (!styleEl) {
+      styleEl = document.createElement('style');
+      styleEl.id = 'paThemeCss';
+      styleEl.textContent = THEME_CSS;
+      document.head.appendChild(styleEl);
+    }
+    if (!customStyleEl) {
+      customStyleEl = document.createElement('style');
+      customStyleEl.id = 'paCustomCss';
+      document.head.appendChild(customStyleEl);
+    }
+  }
+  function isHex(c) { return typeof c === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c.trim()); }
+  function loadCustom() {
+    try { const j = JSON.parse(localStorage.getItem(LS_CUSTOM) || 'null'); return (j && typeof j === 'object' && !Array.isArray(j)) ? j : null; } catch (e) { return null; }
+  }
+  // 自定义主题：所有字段可选，缺省回落深色默认值；只接受 #hex 颜色
+  function buildCustomCss(j) {
+    if (!j) return '';
+    const g = (f, d) => (isHex(j[f]) ? String(j[f]).trim() : d);
+    const bodyBg = g('bodyBg', '#0b0b0d'), textColor = g('textColor', '#c9ccd1');
+    const headerBg = g('headerBg', '#15161a'), btnBg = g('btnBg', '#24262b');
+    const btnColor = g('btnColor', textColor), btnBorder = g('btnBorder', '#33363d');
+    const accent = g('accent', '#8CE68C'), inputBg = g('inputBg', '#22252b');
+    return ''
+      + 'body.pa-t-custom{background:' + bodyBg + ';color:' + textColor + '}'
+      + 'body.pa-t-custom header{background:' + headerBg + ';border-bottom-color:' + btnBorder + '}'
+      + 'body.pa-t-custom button{background:' + btnBg + ';color:' + btnColor + ';border-color:' + btnBorder + '}'
+      + 'body.pa-t-custom button.on{background:' + accent + ';border-color:' + accent + ';color:#0b0b0d}'
+      + 'body.pa-t-custom select{background:' + btnBg + ';color:' + btnColor + ';border-color:' + btnBorder + '}'
+      + 'body.pa-t-custom #hint{background:' + headerBg + ';color:' + btnColor + '}'
+      + 'body.pa-t-custom #stat,body.pa-t-custom #hud{color:' + btnColor + '}'
+      + 'body.pa-t-custom #kbbar,body.pa-t-custom #cmdbar{background:' + headerBg + ';border-top-color:' + btnBorder + '}'
+      + 'body.pa-t-custom #kbtext,body.pa-t-custom #cmdtext{background:' + inputBg + ';color:' + textColor + ';border-color:' + btnBorder + '}'
+      + 'body.pa-t-custom #cmdout{background:' + bodyBg + ';color:' + textColor + ';border-color:' + btnBorder + '}'
+      + 'body.pa-t-custom #note{color:' + btnColor + '}'
+      + 'body.pa-t-custom .ripple{border-color:' + accent + '}';
+  }
+  function themeByKey(k) { for (const t of THEMES) { if (t.key === k) return t; } return THEMES[0]; }
+  function applyTheme(key) {
+    ensureStyle();
+    const t = themeByKey(key);
+    document.body.classList.remove('pa-t-dark', 'pa-t-light', 'pa-t-blue', 'pa-t-purple', 'pa-t-custom');
+    if (t.key !== 'dark') document.body.classList.add('pa-t-' + t.key);
+    if (t.key === 'custom') customStyleEl.textContent = buildCustomCss(loadCustom());
+    try {
+      const m = document.querySelector('meta[name="theme-color"]');
+      if (m) m.setAttribute('content', t.meta);
+    } catch (e) { }
+  }
+  function applyCursor(cfg) {
+    const d = document.getElementById('dot');
+    if (!d) return;
+    const size = Math.max(6, Math.min(24, Math.round(Number(cfg && cfg.size) || DOT_DEFAULT.size)));
+    const color = isHex(cfg && cfg.color) ? String(cfg.color).trim() : DOT_DEFAULT.color;
+    const half = Math.round(size / 2);
+    d.style.width = size + 'px';
+    d.style.height = size + 'px';
+    d.style.margin = ('-' + half) + 'px 0 0 ' + ('-' + half) + 'px';
+    d.style.background = color;
+  }
+  function loadTheme() { try { return String(localStorage.getItem(LS_THEME) || 'dark'); } catch (e) { return 'dark'; } }
+  function loadCursor() {
+    try { const j = JSON.parse(localStorage.getItem(LS_CURSOR) || 'null'); return (j && typeof j === 'object') ? j : null; } catch (e) { return null; }
+  }
+  function saveTheme(k) { try { localStorage.setItem(LS_THEME, k); } catch (e) { } }
+  function saveCursor(c) { try { localStorage.setItem(LS_CURSOR, JSON.stringify(c)); } catch (e) { } }
+  function saveCustom(j) { try { localStorage.setItem(LS_CUSTOM, JSON.stringify(j)); } catch (e) { } }
+  // 页面加载与许可证状态变化时调用：未授权一律回落默认（偏好保留不清除）
+  function applyAll(licensed) {
+    if (licensed) {
+      applyTheme(loadTheme());
+      applyCursor(loadCursor() || DOT_DEFAULT);
+    } else {
+      applyTheme('dark');
+      applyCursor(DOT_DEFAULT);
+    }
+  }
+  window.__paP13n = {
+    THEMES: THEMES, DOT_COLORS: DOT_COLORS, DOT_DEFAULT: DOT_DEFAULT,
+    applyAll: applyAll, applyTheme: applyTheme, applyCursor: applyCursor,
+    loadTheme: loadTheme, loadCursor: loadCursor, loadCustom: loadCustom,
+    saveTheme: saveTheme, saveCursor: saveCursor, saveCustom: saveCustom,
+    isHex: isHex, themeByKey: themeByKey
+  };
 })();
 
 // ---- 许可证 / 支持入口 ------------------------------------------------------
@@ -1459,95 +1624,8 @@ bindImg(img);
       + '</div></div>';
   }
 
-  function blockPage(lic) {
-    document.documentElement.style.overflow = 'hidden';
-    const wrap = document.createElement('div');
-    wrap.id = 'licOverlay';
-    wrap.style.cssText = 'position:fixed;inset:0;z-index:99999;background:#0b0b0d;color:#e8eaee;'
-      + 'display:flex;align-items:flex-start;justify-content:center;padding:24px 18px 40px;overflow:auto;'
-      + '-webkit-overflow-scrolling:touch;font:15px/1.6 system-ui,-apple-system,"Microsoft YaHei",sans-serif';
-    wrap.innerHTML = '<div style="max-width:520px;width:100%">'
-      + '<div style="font-size:20px;font-weight:600;margin:6px 0 6px;color:#ffb454">这台电脑还没有许可证</div>'
-      + '<div style="color:#aeb3bb;font-size:14px">画面和操作已暂停。把下面的机器码发给卖家，换一份许可证就能恢复。</div>'
-      + (lic.message ? '<div style="color:#6b7078;font-size:12px;margin-top:8px">状态：' + esc(lic.message) + '</div>' : '')
-      + machineCodeHtml(lic)
-      // 最省事的入口放最前面：粘贴 → 验证 → 完成。不用碰任何文件、不用记任何路径。
-      + '<div style="margin-top:22px;padding-top:18px;border-top:1px solid #23252c">'
-      + '<div style="font-weight:600;margin-bottom:6px">已经有许可证了？粘到这里就行</div>'
-      + '<div style="color:#8b9098;font-size:13px;margin-bottom:8px">把卖家发给你的整段内容原样粘进来，点下面的按钮。不用找文件，也不用记路径。</div>'
-      + '<textarea id="licPaste" rows="4" autocapitalize="off" autocorrect="off" spellcheck="false" '
-      + 'placeholder="在这里粘贴许可证内容…" style="width:100%;box-sizing:border-box;background:#14151a;color:#e8eaee;'
-      + 'border:1px solid #24262e;border-radius:8px;padding:10px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:vertical"></textarea>'
-      + '<div style="margin-top:10px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-      + '<button id="licApply" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:10px 16px;'
-      + 'font-size:14px;cursor:pointer">验证并安装</button>'
-      + '<span id="licMsg" style="font-size:13px;color:#8b9098"></span></div></div>'
-      + '<div style="margin-top:18px">' + supportHtml(lic, false) + '</div>'
-      + '<div style="margin-top:18px;color:#5c6169;font-size:12px">也可以用文件的方式：把 licence.json 放进安装目录'
-      + '（%LOCALAPPDATA%\\PhoneAccess），几秒内自动生效，不用重启。</div>'
-      + '<div style="margin-top:10px"><button id="licRecheck" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;'
-      + 'border-radius:8px;padding:10px 14px;font-size:14px;cursor:pointer">我已放好，重新检查</button></div>'
-      + '</div>';
-    document.body.appendChild(wrap);
-
-    const cp = wrap.querySelector('#licCopy');
-    if (cp) cp.addEventListener('click', () => {
-      if (copyText(lic.machineCode)) { cp.textContent = '已复制'; setTimeout(() => { cp.textContent = '复制'; }, 1500); }
-    });
-    const rk = wrap.querySelector('#licRecheck');
-    if (rk) rk.addEventListener('click', () => { rk.textContent = '检查中…'; setTimeout(() => location.reload(), 800); });
-
-    // 粘贴安装：成功后状态文件由守护进程在几秒内重写，所以这里轮询等到真的可用再刷新，
-    // 否则用户会看到"装好了但页面还是未授权"，以为失败了。
-    const applyBtn = wrap.querySelector('#licApply');
-    const msgEl = wrap.querySelector('#licMsg');
-    const setMsg = (t, color) => { if (msgEl) { msgEl.textContent = t; msgEl.style.color = color; } };
-    if (applyBtn) applyBtn.addEventListener('click', async () => {
-      const ta = wrap.querySelector('#licPaste');
-      const text = ((ta && ta.value) || '').trim();
-      if (!text) { setMsg('请先在上面粘贴许可证内容', '#ffb454'); return; }
-      applyBtn.disabled = true;
-      applyBtn.style.opacity = '.6';
-      applyBtn.textContent = '验证中…';
-      setMsg('', '#8b9098');
-      let res;
-      try {
-        const r = await fetch('/licence', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ text: text })
-        });
-        res = await r.json();
-      } catch (e) {
-        res = { ok: false, message: '提交失败：' + e.message };
-      }
-      if (!res || !res.ok) {
-        setMsg((res && res.message) || '验证没通过', '#ff6b6b');
-        applyBtn.disabled = false;
-        applyBtn.style.opacity = '1';
-        applyBtn.textContent = '验证并安装';
-        return;
-      }
-      // 等状态真的变成可用（最多 20 秒），再刷新
-      applyBtn.textContent = '已接受，正在生效…';
-      setMsg('许可证已接受，正在生效…', '#4ade80');
-      const started = Date.now();
-      const tick = async () => {
-        try {
-          const j = await fetch('/licence?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
-          if (j && j.usable) { setMsg('好了！正在刷新页面…', '#4ade80'); setTimeout(() => location.reload(), 800); return; }
-        } catch (e) { }
-        if (Date.now() - started > 20000) {
-          setMsg('已保存，但还没生效。刷新一下页面试试。', '#ffb454');
-          applyBtn.disabled = false; applyBtn.style.opacity = '1'; applyBtn.textContent = '刷新页面试试';
-          applyBtn.onclick = () => location.reload();
-          return;
-        }
-        setTimeout(tick, 1500);
-      };
-      setTimeout(tick, 1200);
-    });
-  }
+  // 原「未授权整屏遮罩」blockPage 已删除（半免费 2026-10-29）：免费模式不再拦画面，
+  // 粘贴许可证的激活入口移进设置面板「许可证」分区（见 bindLicencePaste）。
 
 
   // ---- 右下角两个常驻按钮：齿轮（设置） + 心形（支持）----------------------------
@@ -1633,17 +1711,204 @@ bindImg(img);
       + escHtml(ok ? textOk : textBad) + '</span>';
   }
 
+  // ---- 设置面板「个性化」分区（许可证功能：主题/光标/自定义导入）------------------
+  function p13nInner(lic) {
+    const P = window.__paP13n;
+    if (!P) return '<div style="color:#868c96;font-size:12.5px">个性化模块未加载</div>';
+    const licensed = !!lic.usable;
+    const lock = licensed ? '' : ' <span style="font-size:11px">🔒</span>';
+    let h = '';
+    if (!licensed) {
+      h += '<div style="color:#868c96;font-size:12.5px;margin-bottom:10px;line-height:1.6">'
+        + '个性化是许可证功能，免费模式下显示默认外观。'
+        + '<a href="#" id="p13nBuy" style="color:#8fb6ff">看看怎么解锁</a></div>';
+    }
+    const curT = licensed ? P.loadTheme() : 'dark';
+    h += '<div style="color:#868c96;font-size:12px;margin:2px 0 6px">颜色主题' + lock + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap" id="p13nThemes">';
+    for (const t of P.THEMES) {
+      const on = curT === t.key;
+      const locked = !licensed && !t.free;
+      h += '<button class="p13nT" data-k="' + t.key + '" style="flex:1;min-width:62px;'
+        + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
+        + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:8px 4px;font-size:12.5px;cursor:pointer">'
+        + (locked ? '🔒' : '') + escHtml(t.name) + '</button>';
+    }
+    h += '</div>';
+    const curC = licensed ? (P.loadCursor() || P.DOT_DEFAULT) : P.DOT_DEFAULT;
+    const curSize = Math.max(6, Math.min(24, Math.round(Number(curC.size) || P.DOT_DEFAULT.size)));
+    const curColor = P.isHex(curC.color) ? String(curC.color) : P.DOT_DEFAULT.color;
+    h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标大小' + lock + '</div>'
+      + '<div style="display:flex;gap:10px;align-items:center">'
+      + '<input type="range" id="p13nSize" min="6" max="24" step="1" value="' + curSize + '" style="flex:1"' + (licensed ? '' : ' disabled') + '>'
+      + '<span id="p13nSizeV" style="color:#aeb3bb;font-size:12px;min-width:34px;text-align:right">' + curSize + 'px</span>'
+      + '<span id="p13nPreview" style="display:inline-block;flex:0 0 auto;border-radius:50%;width:' + curSize + 'px;height:' + curSize + 'px;background:' + escHtml(curColor) + ';box-shadow:0 0 6px rgba(0,0,0,.8)"></span>'
+      + '</div>'
+      + '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标颜色' + lock + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap" id="p13nColors">';
+    for (const c of P.DOT_COLORS) {
+      const on = curColor.toLowerCase() === c.toLowerCase();
+      h += '<button class="p13nC" data-c="' + c + '" style="width:30px;height:30px;border-radius:50%;background:' + c + ';'
+        + 'border:2px solid ' + (on ? '#8fb6ff' : 'rgba(255,255,255,.18)') + ';cursor:pointer;padding:0"' + (licensed ? '' : ' disabled') + '></button>';
+    }
+    h += '</div>';
+    const cust = licensed ? P.loadCustom() : null;
+    h += '<div style="color:#868c96;font-size:12px;margin:14px 0 6px">导入自定义主题' + lock + '</div>'
+      + '<textarea id="p13nImport" rows="3" spellcheck="false" '
+      + 'placeholder=\'JSON，字段都是颜色，例如 {"name":"我的主题","bodyBg":"#101018","headerBg":"#1a1a24","btnBg":"#26262e","btnColor":"#e8e8f0","accent":"#ff9d5c"}\''
+      + ' style="width:100%;box-sizing:border-box;background:#0f1014;color:#e8eaee;border:1px solid #262932;border-radius:9px;padding:9px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:vertical"' + (licensed ? '' : ' disabled') + '>'
+      + escHtml(cust ? JSON.stringify(cust) : '') + '</textarea>'
+      + '<div style="display:flex;gap:10px;align-items:center;margin-top:8px">'
+      + '<button id="p13nImportBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:8px 14px;font-size:13px;cursor:pointer"' + (licensed ? '' : ' disabled') + '>导入并应用</button>'
+      + '<span id="p13nMsg" style="font-size:12.5px;color:#868c96;flex:1"></span></div>';
+    return h;
+  }
+
+  function p13nBind(box, lic) {
+    const P = window.__paP13n;
+    if (!P) return;
+    const licensed = !!lic.usable;
+    const msg = box.querySelector('#p13nMsg');
+    const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
+    const buy = box.querySelector('#p13nBuy');
+    if (buy) buy.addEventListener('click', (e) => { e.preventDefault(); if (window.__paOpenSupport) window.__paOpenSupport(lic); });
+    const preview = box.querySelector('#p13nPreview');
+    const sizeV = box.querySelector('#p13nSizeV');
+    const markTheme = (k) => {
+      box.querySelectorAll('.p13nT').forEach((x) => {
+        const on = x.getAttribute('data-k') === k;
+        x.style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
+        x.style.color = on ? '#8fb6ff' : '#c9ccd1';
+        x.style.borderColor = on ? '#3f6fd0' : '#343842';
+      });
+    };
+    if (!licensed) {
+      // 未授权：点锁定项只提示购买，不改任何偏好
+      box.querySelectorAll('.p13nT').forEach((b) => b.addEventListener('click', () => {
+        const t = P.themeByKey(b.getAttribute('data-k'));
+        if (t && t.free) return;
+        setMsg('许可证功能：点上方「看看怎么解锁」或右下角 ❤', '#ffb454');
+      }));
+      return;
+    }
+    box.querySelectorAll('.p13nT').forEach((b) => b.addEventListener('click', () => {
+      const k = b.getAttribute('data-k');
+      if (k === 'custom' && !P.loadCustom()) { setMsg('先在下面导入一个自定义主题，再选「自定义」', '#ffb454'); return; }
+      P.saveTheme(k);
+      P.applyTheme(k);
+      markTheme(k);
+      setMsg('已应用主题：' + P.themeByKey(k).name, '#8CE68C');
+    }));
+    const sz = box.querySelector('#p13nSize');
+    if (sz) sz.addEventListener('input', () => {
+      const n = Math.max(6, Math.min(24, Number(sz.value) || 10));
+      if (sizeV) sizeV.textContent = n + 'px';
+      const c = P.loadCursor() || { size: P.DOT_DEFAULT.size, color: P.DOT_DEFAULT.color };
+      c.size = n;
+      P.saveCursor(c); P.applyCursor(c);
+      if (preview) { preview.style.width = n + 'px'; preview.style.height = n + 'px'; }
+    });
+    box.querySelectorAll('.p13nC').forEach((b) => b.addEventListener('click', () => {
+      const c = b.getAttribute('data-c');
+      const cur = P.loadCursor() || { size: P.DOT_DEFAULT.size, color: P.DOT_DEFAULT.color };
+      cur.color = c;
+      P.saveCursor(cur); P.applyCursor(cur);
+      box.querySelectorAll('.p13nC').forEach((x) => { x.style.borderColor = (x.getAttribute('data-c') === c) ? '#8fb6ff' : 'rgba(255,255,255,.18)'; });
+      if (preview) preview.style.background = c;
+    }));
+    const ib = box.querySelector('#p13nImportBtn');
+    if (ib) ib.addEventListener('click', () => {
+      const ta = box.querySelector('#p13nImport');
+      let j = null;
+      try { j = JSON.parse(String((ta && ta.value) || '').trim()); } catch (e) { j = null; }
+      if (!j || typeof j !== 'object' || Array.isArray(j)) { setMsg('不是合法的 JSON', '#ff6b6b'); return; }
+      const hexFields = ['bodyBg', 'textColor', 'headerBg', 'btnBg', 'btnColor', 'btnBorder', 'accent', 'inputBg'];
+      for (const f of hexFields) {
+        if (j[f] != null && j[f] !== '' && !P.isHex(j[f])) { setMsg('字段 ' + f + ' 不是颜色值（示例 #ff9d5c）', '#ff6b6b'); return; }
+      }
+      if (j.name != null) j.name = String(j.name).slice(0, 24);
+      P.saveCustom(j);
+      P.saveTheme('custom');
+      P.applyTheme('custom');
+      markTheme('custom');
+      setMsg('已导入并应用' + (j.name ? '：' + j.name : ''), '#8CE68C');
+    });
+  }
+
+  // 免费模式：在设置面板「许可证」区粘贴激活（原整屏遮罩已随半免费取消）
+  function bindLicencePaste(box) {
+    const la = box.querySelector('#setLicApply');
+    if (!la) return;
+    la.addEventListener('click', async () => {
+      const ta = box.querySelector('#setLicPaste');
+      const m = box.querySelector('#setLicMsg');
+      const setM = (t, c) => { if (m) { m.textContent = t; m.style.color = c; } };
+      const text = (((ta && ta.value) || '') + '').trim();
+      if (!text) { setM('请先粘贴许可证内容', '#ffb454'); return; }
+      la.disabled = true; la.style.opacity = '.6'; la.textContent = '验证中…';
+      let res;
+      try {
+        const r = await fetch('/licence', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ text: text }) });
+        res = await r.json();
+      } catch (e) { res = { ok: false, message: '提交失败：' + e.message }; }
+      if (!res || !res.ok) {
+        setM((res && res.message) || '验证没通过', '#ff6b6b');
+        la.disabled = false; la.style.opacity = '1'; la.textContent = '验证并安装';
+        return;
+      }
+      la.textContent = '已接受，正在生效…';
+      setM('许可证已接受，正在生效…', '#4ade80');
+      const started = Date.now();
+      const tick = async () => {
+        try {
+          const j = await fetch('/licence?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
+          if (j && j.usable) { setM('好了！正在刷新页面…', '#4ade80'); setTimeout(() => location.reload(), 800); return; }
+        } catch (e) { }
+        if (Date.now() - started > 20000) {
+          setM('已保存，但还没生效。刷新页面看看。', '#ffb454');
+          la.disabled = false; la.style.opacity = '1'; la.textContent = '刷新页面试试';
+          la.onclick = () => location.reload();
+          return;
+        }
+        setTimeout(tick, 1500);
+      };
+      setTimeout(tick, 1200);
+    });
+  }
+
   function openSettings(lic) {
     const exp = (lic.expires && lic.expires !== 'never') ? lic.expires : '永久';
     const ver = String(lic.version || '—');
     let body = '';
 
-    // 许可证
+    // 许可证（半免费：未授权 = 免费模式，不再整屏拦截；激活入口就在设置里）
+    const uq = lic.ultraQuota || null;
     let licInner = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
-      + setPill(!!lic.usable, '已授权', '未授权')
+      + setPill(!!lic.usable, '已授权', '免费模式')
       + (lic.name ? '<span style="color:#aeb3bb;font-size:13px">' + escHtml(lic.name) + '</span>' : '')
       + '</div>';
-    if (lic.usable) licInner += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp)) + '</div>';
+    if (lic.usable) {
+      licInner += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp)) + '</div>'
+        + '<div style="color:#868c96;font-size:12.5px;margin-top:6px">超清画质不限时长 · 个性化已解锁</div>';
+    } else {
+      licInner += '<div style="color:#868c96;font-size:12.5px;margin-top:8px;line-height:1.7">'
+        + '免费：画面 + 触控 + 声音 + 流畅模式 + 高清/标准画质（不限时）<br>'
+        + '许可证解锁：超清不限时长（免费每天 1 小时）+ 个性化（主题/光标/导入）</div>';
+      if (uq && uq.ultra) {
+        licInner += '<div style="color:' + (uq.exhausted ? '#ffb454' : '#868c96') + ';font-size:12.5px;margin-top:6px">'
+          + (uq.exhausted ? '今日超清时长已用完 · 正按高清出图 · 明天 0 点恢复'
+            : '今日超清还剩约 ' + fmtUq(uq.remainingSec) + '（每天免费 ' + fmtUq(uq.limitSec) + '）') + '</div>';
+      }
+      licInner += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
+        + '<div style="font-weight:600;margin-bottom:6px;font-size:13.5px">已有许可证？粘贴到这里激活</div>'
+        + '<textarea id="setLicPaste" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false" '
+        + 'placeholder="在这里粘贴许可证内容…" style="width:100%;box-sizing:border-box;background:#0f1014;color:#e8eaee;'
+        + 'border:1px solid #262932;border-radius:9px;padding:9px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:vertical"></textarea>'
+        + '<div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+        + '<button id="setLicApply" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:9px 15px;'
+        + 'font-size:13.5px;cursor:pointer">验证并安装</button>'
+        + '<span id="setLicMsg" style="font-size:12.5px;color:#868c96"></span></div></div>';
+    }
     body += setSection('许可证', licInner);
 
     // 机器码（可复制）
@@ -1674,29 +1939,41 @@ bindImg(img);
     body += setSection('连接与画面', connInner);
 
     // 画面质量（改抓屏宽度：直接影响帧率、延迟、手机流量）
-    // 档位对应 maxCaptureWidth，改完服务会自动重启约 8 秒
-    const QUAL = [[2560, '高清', '字最清楚'], [1920, '标准', '平衡'], [1440, '流畅', '最省流量']];
+    // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
+    const QUAL = [[2560, '超清', '字最清楚'], [1920, '高清', '平衡'], [1440, '标准', '最省流量']];
     const curW = Number(lic.captureWidth || 0);
     let qInner = '<div style="display:flex;gap:8px;flex-wrap:wrap">';
     for (const [w, label, tip] of QUAL) {
       const on = (curW === w) || (curW === 0 && w === 2560);
+      const badge = (w > 1920 && !lic.usable) ? ' · 🔒1小时/天' : '';
       qInner += '<button class="paQ" data-w="' + w + '" title="' + escHtml(tip) + '" style="flex:1;min-width:78px;'
         + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';'
         + 'color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
         + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 6px;'
         + 'font-size:13px;cursor:pointer;line-height:1.35">' + escHtml(label)
-        + '<br><span style="font-size:11px;color:#868c96">' + w + '</span></button>';
+        + '<br><span style="font-size:11px;color:#868c96">' + w + badge + '</span></button>';
     }
-    qInner += '</div>'
-      + '<div style="color:#868c96;font-size:11.5px;margin-top:9px;line-height:1.6">'
-      + '档位越低，画面越省流量、越流畅；文字会糊一点。<br>'
-      + '改完服务会自动重启，约 8 秒后刷新页面即可。</div>'
+    qInner += '</div>';
+    if (!lic.usable && uq && uq.ultra) {
+      qInner += '<div style="color:' + (uq.exhausted ? '#ffb454' : '#868c96') + ';font-size:12px;margin-top:8px;line-height:1.6">'
+        + (uq.exhausted
+          ? '今日超清时长已用完 · 当前按高清出图 · 明天 0 点恢复'
+          : '今日超清还剩约 ' + fmtUq(uq.remainingSec) + '（每天免费 ' + fmtUq(uq.limitSec) + '）')
+        + '</div>';
+    }
+    qInner += '<div style="color:#868c96;font-size:11.5px;margin-top:9px;line-height:1.6">'
+      + '档位越低，画面越省流量、越流畅；文字会糊一点。高清/标准免费不限时；<br>'
+      + '超清未授权每天免费 1 小时，许可证不限时长。<br>'
+      + '改完请双击桌面「手机远程」里的「重启」，约 8 秒后刷新生效。</div>'
       + '<div id="setQMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>';
     // 画面质量：已验证有效（实测 1920 → capture.exe 参数变 1920）。
     // 但抓屏几何是 start-screen.ps1 启动时传的参数，start-screen 在端口已监听时不会重启
     // server（154 行），所以只重启 screen-server 会继承旧参数。
     // 因此 UI 明确写「保存后双击桌面重启」，不假装自动生效。
     body += setSection('画面质量', qInner);
+
+    // 个性化（许可证功能；未授权显示锁定说明与购买入口）
+    body += setSection('个性化', p13nInner(lic));
 
 
     // 版本与更新
@@ -1722,6 +1999,10 @@ bindImg(img);
       + '</div>';
 
     const box = openSheet('设置', body, 'setClose');
+
+    // 个性化 + 许可证粘贴激活的事件绑定（半免费）
+    p13nBind(box, lic);
+    bindLicencePaste(box);
 
     // 复制机器码
     const cc = box.querySelector('#setCopyCode');
@@ -1763,9 +2044,10 @@ bindImg(img);
       const needFull = !!(r && r.needFullRestart);
       if (qMsg) {
         qMsg.style.color = '#8CE58C';
-        qMsg.textContent = needFull
+        // 服务端 message 现在附带超清配额提醒（未授权设超清时），原样透出
+        qMsg.textContent = (r && r.message) || (needFull
           ? '已保存。请双击桌面「手机远程」里的「重启」生效。'
-          : '已保存。';
+          : '已保存。');
       }
       qBtns.forEach((x) => { x.dataset.busy = ''; x.style.opacity = '1'; });
     }));
@@ -1820,8 +2102,14 @@ bindImg(img);
   function openSupport(lic) {
     const title = (lic.support && lic.support.title) ? lic.support.title : '支持 / 购买';
     const body = '<div style="color:#8b9098;font-size:13px;margin-bottom:4px">许可证状态：'
-      + (lic.usable ? '已授权' : '未授权')
+      + (lic.usable ? '已授权' : '免费模式')
       + (lic.name ? ('（' + escHtml(lic.name) + '）') : '') + '</div>'
+      + (lic.usable ? '' :
+        '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
+        + '<div style="color:#e8eaee;font-weight:600;margin-bottom:4px">安装许可证后解锁</div>'
+        + '· 超清画质（2560）不限时长 —— 免费模式每天 1 小时<br>'
+        + '· 个性化：颜色主题 / 光标大小颜色 / 自定义主题导入<br>'
+        + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>')
       + machineCodeHtml(lic)
       + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>';
     const box = openSheet(title, body, 'spClose');
@@ -1852,12 +2140,34 @@ bindImg(img);
     if (heart) heart.addEventListener('click', () => openSupport(lic));
   }
 
+  // 个性化锁定项点击"看看怎么解锁"时打开支持面板
+  window.__paOpenSupport = (lic2) => openSupport(lic2 || window.__paLic || {});
+
   readLicence().then((lic) => {
     if (!lic) return;
-    // 未授权时整屏遮罩（里面已经带机器码和购买方式），不再叠按钮
-    if (!lic.usable) { blockPage(lic); return; }
+    // 半免费（2026-10-29 起）：未授权不再整屏遮罩——基本功能全部可用。
+    // 免费模式的限制：超清每天 1 小时（服务端出图强制）+ 个性化锁定（页面侧）。
+    window.__paLic = lic;
+    try { window.__paP13n.applyAll(!!lic.usable); } catch (e) { }
     bottomButtons(lic);
-  }).catch(() => { /* 拿不到许可证信息时不打扰用户：服务端已按状态拦画面 */ });
+    if (!lic.usable) {
+      let noted = false;
+      try { noted = !!sessionStorage.getItem('paFreeNoted'); sessionStorage.setItem('paFreeNoted', '1'); } catch (e) { }
+      if (!noted) setTimeout(() => setNote('当前为免费模式：超清每天 1 小时 · 个性化锁定。点右侧「❤」看解锁方式', 9000), 1500);
+    }
+    // 低频轮询许可证状态：客户"放许可证文件/在另一台设备粘贴"后，本页不用刷新也能解锁
+    setInterval(() => {
+      readLicence().then((j) => {
+        if (!j) return;
+        const was = !!(window.__paLic && window.__paLic.usable);
+        window.__paLic = j;
+        if (!!j.usable !== was) {
+          try { window.__paP13n.applyAll(!!j.usable); } catch (e) { }
+          if (j.usable) setNote('许可证已生效：超清不限时长 · 个性化已解锁', 6000);
+        }
+      }).catch(() => { });
+    }, 30000);
+  }).catch(() => { /* 拿不到许可证信息时不打扰用户：画面照常能看，个性化保持默认 */ });
 })();
 </script>
 </body></html>`;
