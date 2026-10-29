@@ -1,0 +1,17 @@
+﻿{
+  "TCP": {
+    "80": {
+      "HTTP": true
+    }
+  },
+  "Web": {
+    "dsh-laptop.tailb9b4f0.ts.net:80": {
+      "Handlers": {
+        "/": {
+          "Proxy": "http://127.0.0.1:8650"
+        }
+      }
+    }
+  }
+}
+

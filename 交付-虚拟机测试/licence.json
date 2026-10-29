@@ -1,0 +1,11 @@
+{
+    "payload":  {
+                    "name":  "虚拟机测试",
+                    "machine":  "6C00-4BD9-D15A-AE08",
+                    "issued":  "2026-10-29",
+                    "expires":  "",
+                    "edition":  "test",
+                    "ver":  "1"
+                },
+    "sig":  "OtlM5zZ8MhklYGOEPc/FV8k8WsRIZL5E6GTxqHj0ZoAz4iIRaUkcbRB06Tt6w5FJBDXs3egx5EBv0CeFOhiug7mlLF1Ba10UAtoXuIHdIO1GGPGcKdogQkJAxr02Cav5XZdJSUkMDUCPM9jn7/7BruLvPh8ghNgFjNi05Skj3KahbYf6uF79QKZCE0GVTbX0mwTWihFlV2tGixTKUK1POw9+ageAnQKn12MA2v+r/jZqG0q4PYD3nB43RlLrfWOsyQgAvt7RVMkhvVZyQVAHB4YAYrqLQ3KzubTdKqhBZOnfGAquavxjjoBrYKXPtCltMgIKkt9UquI8ebAcZmzbhg=="
+}

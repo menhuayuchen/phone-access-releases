@@ -1,0 +1,21 @@
+﻿这个文件夹里的 licence.json 是给「虚拟机」那台电脑的许可证。
+
+怎么放进去（三步）：
+
+  1) 把 licence.json 拖进虚拟机窗口（VMware 支持直接拖文件）
+     —— 拖不进去的话：在你自己电脑上用记事本打开 licence.json，
+        全选复制；到虚拟机里打开记事本，粘贴，另存为 licence.json
+
+  2) 在虚拟机里把它放到这个目录（文件名必须正好是 licence.json）：
+        C:\Users\user\AppData\Local\PhoneAccess\
+
+  3) 等 10 秒，然后在虚拟机里跑这条命令验证：
+        Invoke-RestMethod "http://127.0.0.1:8660/licence"
+     看到 usable : True 就是成功了
+
+许可证内容：
+  客户    虚拟机测试
+  机器码  6C00-4BD9-D15A-AE08
+  有效期  永久
+
+这个文件只对机器码 6C00-4BD9-D15A-AE08 有效，放到别的电脑上会显示"许可证是发给另一台电脑的"。

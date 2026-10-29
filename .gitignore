@@ -1,0 +1,17 @@
+# 构建产物（可由 pack.ps1 重新生成，体积大，不进 git）
+dist/
+dist-new/
+sfx/out/
+
+# 私钥与签发工具：永不进版本库（防未来误推送泄露）
+seller-keys/
+
+# 编辑器/系统杂项
+*.bak
+Thumbs.db
+Desktop.ini
+
+# 运行时产物（安装目录不在这里，但源码目录偶尔会掉落）
+app/licence.json
+app/licence.state.json
+app/ultra-usage.json

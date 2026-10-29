@@ -1,0 +1,36 @@
+﻿环境勘测报告 v2  2026-10-28 20:10
+主机：LAPTOP-0FIMMV7J   Microsoft Windows 11 专业版 build=26200
+
+--- 环境信息 ---
+操作系统: Microsoft Windows 11 专业版 (build 26200, 64 位)
+主机名: LAPTOP-0FIMMV7J
+版本判定: 满足（Win10 2004+ / Win11，64 位）
+域加入: 未加入域（好）
+UAC: 已开启但提权不弹窗，安装无干扰
+登录会话: >ccj                   console             1  Active      none   2026/10/28 7:37
+桌面会话: 有活动登录会话（好）
+C 盘: 剩余 193.2 GB
+核心端口: 8650 / 8660 空闲或由本产品占用（好）
+其他端口: 8650(自家 node), 8660(自家 node), 8642(DeepSeek Harness.exe) —— 可选模块或自家服务，不影响核心功能
+杀毒软件: Lenovo Anti-Virus powered by Huorong Security / Windows Defender
+执行策略: Bypass（可直接运行脚本）
+.NET Framework: 4.8+（好）
+安装目录: C:\Users\ccj\AppData\Local\DshInput
+安装目录完整性: 正常（非低完整性）
+物理分辨率: 2560x1600
+显示器: 1 块 / 主屏逻辑 2560x1600 / 缩放 150%
+显示缩放: 150% —— cursor-probe 已验证可校正（≤2px），非风险项
+睡眠设置: 从不睡眠（好）
+Tailscale: 已装并运行 / dsh-laptop.tailb9b4f0.ts.net. / key 2027-04-19 到期
+出网: 能连 login.tailscale.com:443
+node (PATH): 不在 PATH —— 自包含安装包必须自带 node
+CPU / 内存: AMD Ryzen 9 8945HX with Radeon Graphics / 15.8 GB
+
+--- 注意事项 ---
+MDM/域策略: PolicyManager 下有 2 条设备策略 —— 可能受公司管控，装机时策略可能被回滚
+当前权限: 账号在管理员组但未提权 —— 安装时需要 UAC 授权，要提前告知客户
+自动登录: 未开启 —— 客户重启后若无人登录，远程就连不上。建议开启或书面告知
+第三方杀毒: Lenovo Anti-Virus powered by Huorong Security —— 注入器可能被拦。实测火绒并存可跑通，建议加白降低复发（非必须）
+
+--- 硬门槛 ---
+无

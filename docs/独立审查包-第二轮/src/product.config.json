@@ -1,0 +1,43 @@
+{
+  "_说明": "产品唯一配置源。程序每次启动读这个文件；文件不存在或某个字段缺失时，使用内置默认值继续运行（不会崩）。端口冲突会在启动时明确报错，不会静默失败。改完不需要改任何源码。",
+  "_ports说明": "door=tailnet 名字门(DSH) screen=画面服务 dsh=DSH 网页 record=录屏模块(本目录外，预留)",
+  "ports": {
+    "door": 8650,
+    "screen": 8660,
+    "record": 8780,
+    "dsh": 8642
+  },
+  "_tailnetServePort说明": "tailscale serve 对外发布的端口；客户 tailnet 里 80 已被占用时改这里",
+  "tailnetServePort": 80,
+  "_enableDsh说明": "false=方案甲（只交付屏幕+触控，不启动 DSH 网页与它的门）。true=方案乙（额外启动 DSH 对话控制台）",
+  "enableDsh": false,
+  "installDir": "%LOCALAPPDATA%\\PhoneAccess",
+  "_runtime说明": "留空=自动发现（先找本目录 runtime\\，再找 PATH，再找常见安装位置）。填了就用填的绝对路径。",
+  "runtime": {
+    "nodePath": "",
+    "pythonPath": "",
+    "tailscalePath": "",
+    "dshPath": ""
+  },
+  "_screen说明": "全部为 0 时按主显示器物理分辨率自动推导（例如 2560×1600 → 抓屏宽 2560、流畅模式宽 1280）。maxCaptureWidth=抓屏宽度上限，0=不限制。",
+  "screen": {
+    "captureWidth": 0,
+    "captureHeight": 0,
+    "rtcWidth": 0,
+    "maxCaptureWidth": 2560
+  },
+  "_support说明": "未授权时页面右下角的『支持/购买』入口。enabled=false 就整个隐藏。收款码图片放安装目录的 branding\\ 目录：支付宝.png / 微信.png；联系信息写成 branding\\联系.txt 的内容。改完不用重新打包、不用改代码。",
+  "support": {
+    "enabled": true,
+    "title": "支持 / 购买许可证",
+    "note": "纯支持也行，谢谢！",
+    "showMachineCode": true
+  },
+  "_version说明": "产品版本号，显示在手机「设置」里，也是「检查更新」用来比大小的依据。发新版时改这里。",
+  "version": "1.0.0",
+  "_update说明": "「检查更新」的数据源。留空 = 不做联网检查，只显示当前版本并提示联系卖家。填一个能返回 JSON 的地址，格式：{ \"version\": \"1.0.1\", \"notes\": \"这版改了什么\", \"url\": \"下载页\" }。注意：由客户主动点「检查更新」才会去取，产品不会后台自动联网。",
+  "update": {
+    "url": "",
+    "timeoutMs": 8000
+  }
+}
