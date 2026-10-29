@@ -1423,7 +1423,7 @@ bindImg(img);
 // （已保存的偏好不清除，装上许可证后自动恢复）。外观类功能在页面侧强制；
 // 服务端的强制点是超清配额与出图宽度，两边互不影响。
 (function personalization() {
-  const LS_THEME = 'pa.theme', LS_CURSOR = 'pa.cursor', LS_CUSTOM = 'pa.customTheme';
+  const LS_THEME = 'pa.theme', LS_CURSOR = 'pa.cursor', LS_CUSTOM = 'pa.customTheme', LS_CURSOR_IMG = 'pa.cursorImg';
   const THEMES = [
     { key: 'dark', name: '深邃黑', free: true, meta: '#15161a' },
     { key: 'light', name: '暖白', free: false, meta: '#f2f3f5' },
@@ -1433,6 +1433,17 @@ bindImg(img);
   ];
   const DOT_COLORS = ['#ffd166', '#6ee7a0', '#74c0fc', '#ff8787', '#ffffff', '#ff9de2'];
   const DOT_DEFAULT = { size: 10, color: '#ffd166' };
+  // 光标形状（2026-10-29 新增）：只有默认圆点可调颜色（colorable），其余形状固定配色/图片。
+  // 自定义形状 = 用户导入的图片（PNG/JPG/WebP/GIF dataURL，存 pa.cursorImg）。
+  const CURSOR_SHAPES = {
+    dot: { name: '圆点', icon: '●', colorable: true },
+    ring: { name: '圆环', icon: '◯', colorable: false },
+    cross: { name: '十字', icon: '✚', colorable: false },
+    arrow: { name: '箭头', icon: '➤', colorable: false },
+    square: { name: '方框', icon: '▢', colorable: false },
+    custom: { name: '自定义', icon: '🖼', colorable: false }
+  };
+  const CURSOR_SHAPE_KEYS = ['dot', 'ring', 'cross', 'arrow', 'square', 'custom'];
 
   // 主题 = 覆盖样式表，只影响主界面（顶栏/按钮/提示条/输入条）；画面区永远黑底，不动。
   const THEME_CSS = ''
@@ -1525,16 +1536,70 @@ bindImg(img);
       if (m) m.setAttribute('content', t.meta);
     } catch (e) { }
   }
+  // 把一个元素渲染成指定光标形状（#dot 与设置面板里的预览共用同一套逻辑）
+  function styleShapeEl(el, shape, color, imgData) {
+    if (!el) return;
+    const s = CURSOR_SHAPES[shape] ? shape : 'dot';
+    // .cursorDot 基类自带黄底/圆角/黑光晕：内联清成 '' 会漏出类样式（实测圆环内是黄的），
+    // 所以每个属性都显式设中性值，再按形状覆盖。
+    el.style.background = 'transparent';
+    el.style.border = 'none';
+    el.style.borderRadius = '0';
+    el.style.clipPath = 'none';
+    el.style.boxShadow = 'none';
+    el.style.filter = 'none';
+    el.style.backgroundSize = '';
+    el.style.backgroundPosition = '';
+    el.style.backgroundRepeat = '';
+    el.style.boxSizing = 'border-box';
+    if (s === 'dot') {
+      el.style.background = color;
+      el.style.borderRadius = '50%';
+      el.style.boxShadow = '0 0 6px #000';
+    } else if (s === 'ring') {
+      el.style.border = '2px solid #ffffff';
+      el.style.borderRadius = '50%';
+      el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
+    } else if (s === 'square') {
+      el.style.border = '2px solid #ffffff';
+      el.style.borderRadius = '2px';
+      el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
+    } else if (s === 'cross') {
+      el.style.backgroundImage = 'linear-gradient(#fff,#fff), linear-gradient(#fff,#fff)';
+      el.style.backgroundSize = '2px 100%, 100% 2px';
+      el.style.backgroundPosition = 'center, center';
+      el.style.backgroundRepeat = 'no-repeat, no-repeat';
+      el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
+    } else if (s === 'arrow') {
+      el.style.background = '#ffffff';
+      el.style.clipPath = 'polygon(10% 2%, 10% 75%, 28% 60%, 42% 90%, 56% 83%, 41% 55%, 65% 53%)';
+      el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
+    } else if (s === 'custom') {
+      if (imgData) {
+        el.style.backgroundImage = 'url("' + imgData + '")';
+        el.style.backgroundSize = 'contain';
+        el.style.backgroundPosition = 'center';
+        el.style.backgroundRepeat = 'no-repeat';
+        el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
+      } else {
+        // 选了自定义但还没导入图片：回落默认圆点，别让客户看到隐形光标
+        el.style.background = color;
+        el.style.borderRadius = '50%';
+        el.style.boxShadow = '0 0 6px #000';
+      }
+    }
+  }
   function applyCursor(cfg) {
     const d = document.getElementById('dot');
     if (!d) return;
     const size = Math.max(6, Math.min(24, Math.round(Number(cfg && cfg.size) || DOT_DEFAULT.size)));
     const color = isHex(cfg && cfg.color) ? String(cfg.color).trim() : DOT_DEFAULT.color;
+    const shape = CURSOR_SHAPES[cfg && cfg.shape] ? cfg.shape : 'dot';
     const half = Math.round(size / 2);
     d.style.width = size + 'px';
     d.style.height = size + 'px';
     d.style.margin = ('-' + half) + 'px 0 0 ' + ('-' + half) + 'px';
-    d.style.background = color;
+    styleShapeEl(d, shape, color, shape === 'custom' ? loadCursorImg() : null);
   }
   function loadTheme() { try { return String(localStorage.getItem(LS_THEME) || 'dark'); } catch (e) { return 'dark'; } }
   function loadCursor() {
@@ -1543,6 +1608,12 @@ bindImg(img);
   function saveTheme(k) { try { localStorage.setItem(LS_THEME, k); } catch (e) { } }
   function saveCursor(c) { try { localStorage.setItem(LS_CURSOR, JSON.stringify(c)); } catch (e) { } }
   function saveCustom(j) { try { localStorage.setItem(LS_CUSTOM, JSON.stringify(j)); } catch (e) { } }
+  // 自定义光标图片（dataURL）。只认 data: 前缀，别的一律当没存过。
+  function loadCursorImg() {
+    try { const s = localStorage.getItem(LS_CURSOR_IMG); return (typeof s === 'string' && s.slice(0, 5) === 'data:') ? s : null; } catch (e) { return null; }
+  }
+  function saveCursorImg(dataUrl) { try { localStorage.setItem(LS_CURSOR_IMG, String(dataUrl)); return true; } catch (e) { return false; } }
+  function clearCursorImg() { try { localStorage.removeItem(LS_CURSOR_IMG); } catch (e) { } }
   // 页面加载与许可证状态变化时调用：未授权一律回落默认（偏好保留不清除）
   function applyAll(licensed) {
     if (licensed) {
@@ -1555,8 +1626,11 @@ bindImg(img);
   }
   window.__paP13n = {
     THEMES: THEMES, DOT_COLORS: DOT_COLORS, DOT_DEFAULT: DOT_DEFAULT,
+    CURSOR_SHAPES: CURSOR_SHAPES, CURSOR_SHAPE_KEYS: CURSOR_SHAPE_KEYS,
     applyAll: applyAll, applyTheme: applyTheme, applyCursor: applyCursor,
+    styleShapeEl: styleShapeEl,
     loadTheme: loadTheme, loadCursor: loadCursor, loadCustom: loadCustom,
+    loadCursorImg: loadCursorImg, saveCursorImg: saveCursorImg, clearCursorImg: clearCursorImg,
     saveTheme: saveTheme, saveCursor: saveCursor, saveCustom: saveCustom,
     isHex: isHex, themeByKey: themeByKey
   };
@@ -1738,18 +1812,42 @@ bindImg(img);
     const curC = licensed ? (P.loadCursor() || P.DOT_DEFAULT) : P.DOT_DEFAULT;
     const curSize = Math.max(6, Math.min(24, Math.round(Number(curC.size) || P.DOT_DEFAULT.size)));
     const curColor = P.isHex(curC.color) ? String(curC.color) : P.DOT_DEFAULT.color;
+    const curShape = P.CURSOR_SHAPES[curC.shape] ? curC.shape : 'dot';
+    const hasImg = !!P.loadCursorImg();
+    // 光标形状（2026-10-29 新增）：六种形状；只有默认圆点可调颜色；自定义 = 导入图片
+    h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标形状' + lock + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap" id="p13nShapes">';
+    for (const k of P.CURSOR_SHAPE_KEYS) {
+      const sp = P.CURSOR_SHAPES[k];
+      const on = curShape === k;
+      h += '<button class="p13nS" data-s="' + k + '" style="flex:1;min-width:56px;'
+        + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
+        + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:7px 4px;font-size:12px;cursor:pointer;line-height:1.4">'
+        + '<span style="font-size:15px">' + sp.icon + '</span><br>' + escHtml(sp.name) + '</button>';
+    }
+    h += '</div>'
+      + '<div id="p13nImgRow" style="gap:8px;align-items:center;margin-top:8px;flex-wrap:wrap;display:' + (curShape === 'custom' ? 'flex' : 'none') + '">'
+      + '<button id="p13nImgPick" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer"' + (licensed ? '' : ' disabled') + '>选择图片…</button>'
+      + '<span id="p13nImgState" style="font-size:11.5px;color:#868c96;flex:1;min-width:140px">'
+      + (hasImg ? '已导入自定义图片' : '未导入。支持 PNG/JPG/WebP/GIF，小于 300KB、不超过 512×512，透明底效果最好') + '</span>'
+      + (hasImg ? '<button id="p13nImgDel" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer">移除</button>' : '')
+      + '<input type="file" id="p13nImgFile" accept="image/png,image/jpeg,image/webp,image/gif" style="display:none">'
+      + '</div>';
     h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标大小' + lock + '</div>'
       + '<div style="display:flex;gap:10px;align-items:center">'
       + '<input type="range" id="p13nSize" min="6" max="24" step="1" value="' + curSize + '" style="flex:1"' + (licensed ? '' : ' disabled') + '>'
       + '<span id="p13nSizeV" style="color:#aeb3bb;font-size:12px;min-width:34px;text-align:right">' + curSize + 'px</span>'
-      + '<span id="p13nPreview" style="display:inline-block;flex:0 0 auto;border-radius:50%;width:' + curSize + 'px;height:' + curSize + 'px;background:' + escHtml(curColor) + ';box-shadow:0 0 6px rgba(0,0,0,.8)"></span>'
+      + '<span id="p13nPreview" style="display:inline-block;flex:0 0 auto;box-sizing:border-box;width:' + curSize + 'px;height:' + curSize + 'px;background:' + escHtml(curColor) + ';border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,.8)"></span>'
       + '</div>'
-      + '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标颜色' + lock + '</div>'
+      + '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标颜色' + lock
+      + ' <span id="p13nColorHint" style="color:#ffb454;font-size:11px' + (curShape === 'dot' ? ';display:none' : '') + '">（仅默认圆点可调颜色）</span></div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap" id="p13nColors">';
     for (const c of P.DOT_COLORS) {
       const on = curColor.toLowerCase() === c.toLowerCase();
+      const cOff = !licensed || curShape !== 'dot';
       h += '<button class="p13nC" data-c="' + c + '" style="width:30px;height:30px;border-radius:50%;background:' + c + ';'
-        + 'border:2px solid ' + (on ? '#8fb6ff' : 'rgba(255,255,255,.18)') + ';cursor:pointer;padding:0"' + (licensed ? '' : ' disabled') + '></button>';
+        + 'border:2px solid ' + (on ? '#8fb6ff' : 'rgba(255,255,255,.18)') + ';cursor:pointer;padding:0;'
+        + 'opacity:' + (cOff ? '.4' : '1') + '"' + (cOff ? ' disabled' : '') + '></button>';
     }
     h += '</div>';
     const cust = licensed ? P.loadCustom() : null;
@@ -1789,6 +1887,10 @@ bindImg(img);
         if (t && t.free) return;
         setMsg('许可证功能：点上方「看看怎么解锁」或右下角 ❤', '#ffb454');
       }));
+      box.querySelectorAll('.p13nS').forEach((b) => b.addEventListener('click', () => {
+        if (b.getAttribute('data-s') === 'dot') return;
+        setMsg('许可证功能：点上方「看看怎么解锁」或右下角 ❤', '#ffb454');
+      }));
       return;
     }
     box.querySelectorAll('.p13nT').forEach((b) => b.addEventListener('click', () => {
@@ -1799,6 +1901,108 @@ bindImg(img);
       markTheme(k);
       setMsg('已应用主题：' + P.themeByKey(k).name, '#8CE68C');
     }));
+    // ---- 光标形状（2026-10-29 新增）----
+    const imgRow = box.querySelector('#p13nImgRow');
+    const imgPick = box.querySelector('#p13nImgPick');
+    const imgFile = box.querySelector('#p13nImgFile');
+    const imgState = box.querySelector('#p13nImgState');
+    const colorHint = box.querySelector('#p13nColorHint');
+    const markShape = (k) => {
+      box.querySelectorAll('.p13nS').forEach((x) => {
+        const on = x.getAttribute('data-s') === k;
+        x.style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
+        x.style.color = on ? '#8fb6ff' : '#c9ccd1';
+        x.style.borderColor = on ? '#3f6fd0' : '#343842';
+      });
+    };
+    // 只有默认圆点可调颜色：其他形状把色板整行禁用并给出提示
+    const syncColorRow = (shape) => {
+      const isDot = shape === 'dot';
+      box.querySelectorAll('.p13nC').forEach((x) => { x.disabled = !isDot; x.style.opacity = isDot ? '1' : '.4'; });
+      if (colorHint) colorHint.style.display = isDot ? 'none' : '';
+    };
+    const curCursorCfg = () => P.loadCursor() || { size: P.DOT_DEFAULT.size, color: P.DOT_DEFAULT.color };
+    const curShapeOf = (c) => P.CURSOR_SHAPES[c.shape] ? c.shape : 'dot';
+    const syncPreview = () => {
+      const c = curCursorCfg();
+      const shape = curShapeOf(c);
+      const color = P.isHex(c.color) ? String(c.color) : P.DOT_DEFAULT.color;
+      P.styleShapeEl(preview, shape, color, shape === 'custom' ? P.loadCursorImg() : null);
+    };
+    const ensureImgDel = () => {
+      if (!imgRow || box.querySelector('#p13nImgDel')) return;
+      const del = document.createElement('button');
+      del.id = 'p13nImgDel';
+      del.textContent = '移除';
+      del.style.cssText = 'background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer';
+      del.addEventListener('click', removeImg);
+      imgRow.appendChild(del);
+    };
+    const setShape = (k) => {
+      if (k === 'custom' && !P.loadCursorImg()) {
+        if (imgRow) imgRow.style.display = 'flex';
+        setMsg('先点「选择图片」导入一张光标图，才能用自定义形状', '#ffb454');
+        return;
+      }
+      const c = curCursorCfg();
+      c.shape = k;
+      P.saveCursor(c); P.applyCursor(c);
+      markShape(k);
+      syncColorRow(k);
+      syncPreview();
+      if (imgRow) imgRow.style.display = (k === 'custom') ? 'flex' : 'none';
+      setMsg('光标形状：' + P.CURSOR_SHAPES[k].name, '#8CE68C');
+    };
+    function removeImg() {
+      P.clearCursorImg();
+      const c = curCursorCfg();
+      c.shape = 'dot';
+      P.saveCursor(c); P.applyCursor(c);
+      markShape('dot'); syncColorRow('dot'); syncPreview();
+      if (imgState) imgState.textContent = '未导入。支持 PNG/JPG/WebP/GIF，小于 300KB、不超过 512×512，透明底效果最好';
+      const del = box.querySelector('#p13nImgDel');
+      if (del && del.parentNode) del.parentNode.removeChild(del);
+      setMsg('已移除自定义图片，回到默认圆点', '#8CE68C');
+    }
+    box.querySelectorAll('.p13nS').forEach((b) => b.addEventListener('click', () => setShape(b.getAttribute('data-s'))));
+    if (imgPick && imgFile) imgPick.addEventListener('click', () => imgFile.click());
+    const del0 = box.querySelector('#p13nImgDel');
+    if (del0) del0.addEventListener('click', removeImg);
+    if (imgFile) imgFile.addEventListener('change', () => {
+      const f = imgFile.files && imgFile.files[0];
+      imgFile.value = '';   // 允许重选同一张图
+      if (!f) return;
+      if (!/^image\/(png|jpeg|webp|gif)$/i.test(String(f.type || ''))) { setMsg('只支持 PNG / JPG / WebP / GIF 图片', '#ff6b6b'); return; }
+      if (f.size > 300 * 1024) { setMsg('图片太大：要小于 300KB（当前 ' + Math.round(f.size / 1024) + 'KB）', '#ff6b6b'); return; }
+      const fr = new FileReader();
+      fr.onload = () => {
+        const url = String(fr.result || '');
+        if (url.slice(0, 5) !== 'data:') { setMsg('读取图片失败', '#ff6b6b'); return; }
+        const probe = new Image();
+        probe.onload = () => {
+          if (probe.naturalWidth > 512 || probe.naturalHeight > 512) {
+            setMsg('图片请不超过 512×512（当前 ' + probe.naturalWidth + '×' + probe.naturalHeight + '）', '#ff6b6b');
+            return;
+          }
+          if (!P.saveCursorImg(url)) { setMsg('存储失败：图片太大或存储空间不足', '#ff6b6b'); return; }
+          const c = curCursorCfg();
+          c.shape = 'custom';
+          P.saveCursor(c); P.applyCursor(c);
+          markShape('custom'); syncColorRow('custom'); syncPreview();
+          if (imgState) imgState.textContent = '已导入自定义图片（' + probe.naturalWidth + '×' + probe.naturalHeight + '）';
+          if (imgRow) imgRow.style.display = 'flex';
+          ensureImgDel();
+          setMsg('已导入并应用自定义光标', '#8CE68C');
+        };
+        probe.onerror = () => setMsg('图片解码失败，换一张试试', '#ff6b6b');
+        probe.src = url;
+      };
+      fr.onerror = () => setMsg('读取图片失败', '#ff6b6b');
+      fr.readAsDataURL(f);
+    });
+    syncColorRow(curShapeOf(curCursorCfg()));
+    syncPreview();
+
     const sz = box.querySelector('#p13nSize');
     if (sz) sz.addEventListener('input', () => {
       const n = Math.max(6, Math.min(24, Number(sz.value) || 10));
@@ -1814,7 +2018,7 @@ bindImg(img);
       cur.color = c;
       P.saveCursor(cur); P.applyCursor(cur);
       box.querySelectorAll('.p13nC').forEach((x) => { x.style.borderColor = (x.getAttribute('data-c') === c) ? '#8fb6ff' : 'rgba(255,255,255,.18)'; });
-      if (preview) preview.style.background = c;
+      syncPreview();
     }));
     const ib = box.querySelector('#p13nImportBtn');
     if (ib) ib.addEventListener('click', () => {
@@ -2112,7 +2316,7 @@ bindImg(img);
         '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
         + '<div style="color:#e8eaee;font-weight:600;margin-bottom:4px">安装许可证后解锁</div>'
         + '· 超清画质（2560）不限时长 —— 免费模式每天 1 小时<br>'
-        + '· 个性化：颜色主题 / 光标大小颜色 / 自定义主题导入<br>'
+        + '· 个性化：颜色主题 / 光标形状（含导入自定义图片）/ 光标大小颜色 / 自定义主题导入<br>'
         + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>')
       + machineCodeHtml(lic)
       + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>';
