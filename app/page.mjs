@@ -1433,14 +1433,16 @@ bindImg(img);
   ];
   const DOT_COLORS = ['#ffd166', '#6ee7a0', '#74c0fc', '#ff8787', '#ffffff', '#ff9de2'];
   const DOT_DEFAULT = { size: 10, color: '#ffd166' };
-  // 光标形状（2026-10-29 新增）：只有默认圆点可调颜色（colorable），其余形状固定配色/图片。
-  // 自定义形状 = 用户导入的图片（PNG/JPG/WebP/GIF dataURL，存 pa.cursorImg）。
+  // 光标形状（2026-10-29 新增；2026-10-30 规则澄清，用户拍板）：
+  //   五种内置形状（圆点/圆环/十字/箭头/方框）全部可调颜色 + 大小；
+  //   只有用户自定义导入的图片（custom）只能调大小，不可调颜色（图片自带颜色，染色无意义）。
+  // colorable 是设置面板禁用色板的唯一依据（syncColorRow）。
   const CURSOR_SHAPES = {
     dot: { name: '圆点', icon: '●', colorable: true },
-    ring: { name: '圆环', icon: '◯', colorable: false },
-    cross: { name: '十字', icon: '✚', colorable: false },
-    arrow: { name: '箭头', icon: '➤', colorable: false },
-    square: { name: '方框', icon: '▢', colorable: false },
+    ring: { name: '圆环', icon: '◯', colorable: true },
+    cross: { name: '十字', icon: '✚', colorable: true },
+    arrow: { name: '箭头', icon: '➤', colorable: true },
+    square: { name: '方框', icon: '▢', colorable: true },
     custom: { name: '自定义', icon: '🖼', colorable: false }
   };
   const CURSOR_SHAPE_KEYS = ['dot', 'ring', 'cross', 'arrow', 'square', 'custom'];
@@ -1552,26 +1554,28 @@ bindImg(img);
     el.style.backgroundPosition = '';
     el.style.backgroundRepeat = '';
     el.style.boxSizing = 'border-box';
+    // 2026-10-30 规则澄清：五种内置形状全部吃 color（用户选的色板颜色，已校验 #hex）；
+    // 原来除圆点外固定白色，与"官方形状可调颜色"的口径不符。custom（图片）不吃颜色。
     if (s === 'dot') {
       el.style.background = color;
       el.style.borderRadius = '50%';
       el.style.boxShadow = '0 0 6px #000';
     } else if (s === 'ring') {
-      el.style.border = '2px solid #ffffff';
+      el.style.border = '2px solid ' + color;
       el.style.borderRadius = '50%';
       el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
     } else if (s === 'square') {
-      el.style.border = '2px solid #ffffff';
+      el.style.border = '2px solid ' + color;
       el.style.borderRadius = '2px';
       el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
     } else if (s === 'cross') {
-      el.style.backgroundImage = 'linear-gradient(#fff,#fff), linear-gradient(#fff,#fff)';
+      el.style.backgroundImage = 'linear-gradient(' + color + ',' + color + '), linear-gradient(' + color + ',' + color + ')';
       el.style.backgroundSize = '2px 100%, 100% 2px';
       el.style.backgroundPosition = 'center, center';
       el.style.backgroundRepeat = 'no-repeat, no-repeat';
       el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
     } else if (s === 'arrow') {
-      el.style.background = '#ffffff';
+      el.style.background = color;
       el.style.clipPath = 'polygon(10% 2%, 10% 75%, 28% 60%, 42% 90%, 56% 83%, 41% 55%, 65% 53%)';
       el.style.filter = 'drop-shadow(0 0 2px rgba(0,0,0,.9))';
     } else if (s === 'custom') {
@@ -1814,7 +1818,8 @@ bindImg(img);
     const curColor = P.isHex(curC.color) ? String(curC.color) : P.DOT_DEFAULT.color;
     const curShape = P.CURSOR_SHAPES[curC.shape] ? curC.shape : 'dot';
     const hasImg = !!P.loadCursorImg();
-    // 光标形状（2026-10-29 新增）：六种形状；只有默认圆点可调颜色；自定义 = 导入图片
+    // 光标形状：六种；五种内置形状均可调颜色（2026-10-30 规则澄清），
+    // 只有自定义（导入图片）只能调大小、不可调颜色；自定义 = 导入图片
     h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标形状' + lock + '</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap" id="p13nShapes">';
     for (const k of P.CURSOR_SHAPE_KEYS) {
@@ -1840,11 +1845,11 @@ bindImg(img);
       + '<span id="p13nPreview" style="display:inline-block;flex:0 0 auto;box-sizing:border-box;width:' + curSize + 'px;height:' + curSize + 'px;background:' + escHtml(curColor) + ';border-radius:50%;box-shadow:0 0 6px rgba(0,0,0,.8)"></span>'
       + '</div>'
       + '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标颜色' + lock
-      + ' <span id="p13nColorHint" style="color:#ffb454;font-size:11px' + (curShape === 'dot' ? ';display:none' : '') + '">（仅默认圆点可调颜色）</span></div>'
+      + ' <span id="p13nColorHint" style="color:#ffb454;font-size:11px' + (curShape === 'custom' ? '' : ';display:none') + '">（自定义图片光标只能调大小，不能改颜色）</span></div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap" id="p13nColors">';
     for (const c of P.DOT_COLORS) {
       const on = curColor.toLowerCase() === c.toLowerCase();
-      const cOff = !licensed || curShape !== 'dot';
+      const cOff = !licensed || curShape === 'custom';
       h += '<button class="p13nC" data-c="' + c + '" style="width:30px;height:30px;border-radius:50%;background:' + c + ';'
         + 'border:2px solid ' + (on ? '#8fb6ff' : 'rgba(255,255,255,.18)') + ';cursor:pointer;padding:0;'
         + 'opacity:' + (cOff ? '.4' : '1') + '"' + (cOff ? ' disabled' : '') + '></button>';
@@ -1915,11 +1920,12 @@ bindImg(img);
         x.style.borderColor = on ? '#3f6fd0' : '#343842';
       });
     };
-    // 只有默认圆点可调颜色：其他形状把色板整行禁用并给出提示
+    // 2026-10-30 规则澄清：五种内置形状都可调颜色；只有自定义（导入图片）
+    // 把色板整行禁用并给出提示。判定走 CURSOR_SHAPES[shape].colorable，单一出处。
     const syncColorRow = (shape) => {
-      const isDot = shape === 'dot';
-      box.querySelectorAll('.p13nC').forEach((x) => { x.disabled = !isDot; x.style.opacity = isDot ? '1' : '.4'; });
-      if (colorHint) colorHint.style.display = isDot ? 'none' : '';
+      const canColor = !!(P.CURSOR_SHAPES[shape] && P.CURSOR_SHAPES[shape].colorable);
+      box.querySelectorAll('.p13nC').forEach((x) => { x.disabled = !canColor; x.style.opacity = canColor ? '1' : '.4'; });
+      if (colorHint) colorHint.style.display = canColor ? 'none' : '';
     };
     const curCursorCfg = () => P.loadCursor() || { size: P.DOT_DEFAULT.size, color: P.DOT_DEFAULT.color };
     const curShapeOf = (c) => P.CURSOR_SHAPES[c.shape] ? c.shape : 'dot';
