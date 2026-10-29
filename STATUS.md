@@ -14,6 +14,8 @@ Windows 上的自建产品：**客户用自己手机，看自己电脑的屏幕�
 
 **商业形态**：卖家（本人）交付安装包 + 签发许可证。客户用自己的 Tailscale 账号。
 **卖家进不去客户电脑**——技术上到不了，这是核心卖点。
+**2026-10-29 起半免费**：不装许可证也能用（画面/触控/声音/流畅/高清/标准全免费），
+许可证只解锁**超清不限时长**（免费每天 1 小时）+ **个性化**（主题/光标/自定义导入）。详见第十节。
 
 ---
 
@@ -22,19 +24,24 @@ Windows 上的自建产品：**客户用自己手机，看自己电脑的屏幕�
 | 功能 | 状态 | 怎么验 |
 |---|---|---|
 | 手机看画面 + 触控 | ✅ | 手机打开入口地址，画面在动、点一下光标真的动 |
-| 许可证（贴短码 / 放文件） | ✅ | 手机遮罩页粘贴 → 2 秒生效 |
+| 许可证（贴短码 / 放文件） | ✅ | 设置（⚙）→「许可证」分区粘贴 → 生效后自动刷新（整屏遮罩已随半免费取消） |
 | 一键卸载 | ✅ | 桌面「卸载」→ 输入 YES → 六步撤干净 |
 | 一键重启 | ✅ | 桌面「重启」→ 三步全绿 |
-| 画面质量档位 | ✅ | 改 `maxCaptureWidth` → **杀掉 screen-server 再启动** → 查 `capture.exe` 参数 |
+| 画面质量档位（超清2560/高清1920/标准1440） | ✅ | 设置面板改 → 桌面「重启」→ 查 `capture.exe` 实际参数 |
+| 半免费：未授权放行 | ✅ | 移开 licence.json → 页面照常打开、2560 出图、无遮罩（2026-10-29 实测） |
+| 超清每日配额（服务端强制） | ✅ | `/health` 的 `uq=` 倒计时 → 耗尽后 frame.jpg 实测 1920、/stream 首帧 SOF 解析 1920 → 恢复许可证立即回 2560，无需重启 |
+| 个性化（主题/光标/导入，许可功能） | ✅ | 未授权：控件 disabled、点击只出购买提示；已授权：切主题/18px 光标/自定义 JSON 导入/非法 JSON 拒绝，浏览器全过 |
+| 收款码随包（branding\） | ✅ | ❤ 面板两图 `/branding/*.jpg` → 200 image/jpeg（FF D8 头）+ 联系.txt 邮箱电话 |
 | 检查更新 | ✅ | 设置面板点「检查更新」；未配置更新源时提示"联系卖家" |
 | PWA 装到手机桌面 | ✅ | 手机浏览器「添加到主屏幕」，图标是显示器+手机 |
 | 客户机不出现 DSH | ✅ | 客户版 `enableDsh=false`，8642/8650 两扇门不启动 |
 
-**当前实机状态**（2026-10-29 16:37）：
+**当前实机状态**（2026-10-29 18:20，半免费改造部署后）：
 
 ```
-capture.exe 宽度=2560 间隔=40ms      ← 高清抓屏
-health: in=2.0 out=0.0 cap=33       ← 无人观看时抓屏会停，正常
+capture.exe 宽度=2560 间隔=40ms      ← 超清抓屏
+health: uq=na（本机已授权）           ← 未授权时=剩余秒数，耗尽=0:x
+version=1.0.4  freemium.ultraFreeSecPerDay=3600
 监听 8660 × 3 地址（回环+tailnet+局域网）
 监听 8642 × 3 地址（8642 回环=DSH本体；tailnet/局域网=门）
 配置 enableDsh=True（这台是卖家自用；客户版是 False）
@@ -45,21 +52,20 @@ health: in=2.0 out=0.0 cap=33       ← 无人观看时抓屏会停，正常
 
 ---
 
-## 三、现在坏的（两个高危，未修）
+## 三、现在坏的（P0-2 未修；P0-1 已修）
 
 **完整清单在**：`docs\独立审查包-第二轮\05-修复清单.md`（每条都有可执行验收标准）
 
-### P0-1 · `/manifest.json` 泄露访问密钥（高危）
+### P0-1 · `/manifest.json` 泄露访问密钥 → **已修（2026-10-29 复核代码确认）**
 
 ```
-screen-server.mjs 的 /manifest.json 路由
-  · 在 LICENCE_OPEN_PATHS 里，不在 STRICT_AUTH_PATHS 里
-  · start_url: '/?k=' + KEY          ← 响应体里带着完整密钥
-  · cache-control: max-age=86400
+screen-server.mjs 现状（改动处都带注释）：
+  · /manifest.json 已进 STRICT_AUTH_PATHS（裸 GET → 401）
+  · start_url 改为 '/'，响应体不再带密钥；PWA 用页面渲染时现签的 1 小时短时 token 取清单
+  · LICENCE_OPEN_PATHS 已随半免费改造整体移除（402 闸门取消）
 ```
 
-任何 tailnet 对端 GET 一次就拿到密钥 → `/input`、`/exec`、`/frame.jpg` 全解锁。
-**这是上一轮 H1 的同类洞，修鉴权时漏了这个路由。**
+同清单的 P1-1（`/set-quality` `/update-check` 不在严格集合）也已修，两者都进了 STRICT_AUTH_PATHS。
 
 ### P0-2 · `DshInput` 目录提权（高危）
 
@@ -71,9 +77,9 @@ screen-server.mjs 的 /manifest.json 路由
 
 用户级恶意代码替换 exe → 无 UAC 拿到管理员权限。
 
-### 中低危（同一份清单里）
+### 中低危（同一份清单里；前两条已修）
 
-`/set-quality` `/update-check` 没进严格集合 · 许可证 `null` 字段两端判定不一致 ·
+~~`/set-quality` `/update-check` 没进严格集合~~（已修） · 许可证 `null` 字段两端判定不一致 ·
 `mine` 为空时跳过机器码比对 · `\n` 拼接歧义 · 快捷方式 `-FallbackScript` 缺失 ·
 文案说 4 个图标实际 6 个 · `%TEMP%` 安装日志可能留密钥 URL · `uninstall.ps1` 按进程名杀会误杀
 
@@ -81,12 +87,11 @@ screen-server.mjs 的 /manifest.json 路由
 
 ## 四、下一步做什么
 
-**照 `docs\独立审查包-第二轮\05-修复清单.md` 从 P0 开始。**
+**照 `docs\独立审查包-第二轮\05-修复清单.md` 做，P0-1 已完成，从 P0-2 开始。**
 
 顺序不能乱：
 
-1. **P0-1 单独做**，三处一起改（加 STRICT + start_url 去 key + 去长缓存），
-   四条验收全过再往下
+1. ~~P0-1~~ **已修**（复核确认：manifest 进 STRICT_AUTH_PATHS + start_url='/' + 短时签名 token）
 2. **P0-2 单独做**（挪到 `%ProgramFiles%` 或收紧 ACL）
 3. 再 P1 → P2 → P3 → P4
 
@@ -192,14 +197,16 @@ powershell -File "$env:LOCALAPPDATA\PhoneAccess\start-screen.ps1"
 
 ---
 
-## 七、已知的版本不一致（待修）
+## 七、版本不一致（已解决，2026-10-29）
 
 | 项 | 值 |
 |---|---|
-| `product.config.json` 的 `version` | **1.0.0** |
-| 交付包文件名 | **v1.0.3** |
+| `product.config.json` 的 `version` | **1.0.4**（随半免费改造统一提升） |
+| 交付包文件名 | 旧包 v1.0.3；**下一包应命名 v1.0.4** |
 
-手机「设置」里显示的是 1.0.0。下次改动时统一（建议改成 1.0.4 起，避免和已发出去的混淆）。
+升级安装的行为（install.ps1 实测过的逻辑）：新装机复制整套默认配置（拿到 1.0.4 + freemium 块）；
+老机保留客户配置、**只增不改**地补新顶层键——所以升级机会补上 `freemium`，但 `version` 保持旧值
+（纯显示问题；配额不依赖它，配置缺 freemium 块时服务端默认 3600）。
 
 ---
 
@@ -225,3 +232,54 @@ powershell -File "$env:LOCALAPPDATA\PhoneAccess\start-screen.ps1"
 
 **流量是重要卖点也是风险点**：清晰模式约 26 GB/小时，客户用手机流量看一小时会烧掉整个套餐。
 文档里已明确写出，客户应点「流畅」（约 1.3 GB/小时）。
+
+---
+
+## 十、半免费模型（2026-10-29 上线，v1.0.4）
+
+**商业口径**（卖家定的，改之前先问）：基本功能全免费；许可证只解锁两样——
+1. **超清画质（2560）不限时长**：未授权每天免费 1 小时（3600 秒）
+2. **个性化**：颜色主题（暖白/海洋蓝/暗夜紫/自定义 JSON 导入）、光标大小（6–24px）与颜色
+
+画质档位命名（手机设置面板）：**超清=2560 · 高清=1920 · 标准=1440**。
+高清/标准/流畅（WebRTC 1280）免费不限时。未授权**可以选超清**（不拦设置），
+强制发生在**出图时刻**：配额用完后服务端把实际发出的帧压到 1920 宽。
+**价格没有定死**：页面/文档只引导联系卖家（`app\branding\联系.txt`：邮箱 ccc475235@gmail.com /
+电话 19873217121），❤ 面板展示微信/支付宝收款码（`branding\微信.jpg`、`支付宝.jpg`，同名替换即可换图）。
+
+### 技术实现（防回归要点）
+
+**配额引擎在 screen-server.mjs（服务端强制，改页面绕不过）**：
+- `ULTRA_LIMIT=1920`；1 秒心跳，仅当「未授权 && 3 秒内实际发过 >1920 宽的帧」时 `seconds+=1`
+- 用量写 `ultra-usage.json`：`{date:'YYYY-MM-DD',seconds:N}` 本地日历日，10 秒节流落盘 + exit 落盘；跨天自动清零
+- 耗尽后 `deliverCapW()` 返回 1920：`/frame.jpg` 请求时钳制、`/stream` 在 push 循环里**逐帧**复查（恢复配额同样逐帧生效，**全程无需重启**）
+- 覆盖项：`product.config.json → freemium.ultraFreeSecPerDay`（测试用 45 这种小值；缺块默认 3600）
+- 透出：`/health` 尾部 ` uq=剩余秒|0:x|na`；`/licence`、`/set-quality` 响应带 `ultraQuota` 对象
+
+**旧 402 整站闸门已拆除**：`LICENCE_OPEN_PATHS` 与页面 `blockPage` 整屏遮罩已删。
+未授权=免费模式：页面照常打开出图。激活入口=设置面板「许可证」分区
+（粘贴 → `POST /licence` → 轮询到 usable → 自动刷新）；页面每 30 秒轮询 `/licence`，
+放文件/异地粘贴后不刷新也会解锁并提示。
+
+**个性化是页面侧 gated**（诚实标注：装饰性功能，强制在页面里，服务端不校验——
+主题/光标本质是 localStorage+CSS，没有可"绕过"的服务端资产）。
+实现：`page.mjs` 的 `personalization()` IIFE（`window.__paP13n`）+ 设置面板 `p13nInner/p13nBind`；
+偏好存手机 localStorage：`pa.theme` / `pa.cursor` / `pa.customTheme`；
+未授权时 `applyAll(false)` 强制回落默认外观（已存偏好保留，授权后恢复）。
+
+**branding 出货链路**：`app\branding\{微信.jpg,支付宝.jpg,联系.txt}` → `pack.ps1` 白名单已收录 →
+`install.ps1` robocopy 排除表不含 branding（自动带上）→ 服务端 `/branding/*` 带密钥放行、
+`/licence` 响应带 branding 字段（`licence-state.ps1` 扫描生成）。
+
+### 实测记录（2026-10-29，卖家实机 + 本机浏览器，全过）
+
+- **已授权**：`uq=na`；frame/stream 宽 2560；个性化全可用（切主题生效、光标 18px 绿色、自定义 JSON 导入应用、非法 JSON 被拒、授权开关回落正确）
+- **未授权**：GET / = 200（无遮罩）；HUD 实时显示「超清余 59 分钟」；超清按钮带「🔒1小时/天」角标；个性化控件 disabled、点锁定主题只出购买提示；粘贴激活区在；❤ 面板显示「免费模式」+ 解锁清单
+- **配额耗尽**（配置 45s 实测）：第 46 次轮询 `uq=0:x`；**frame.jpg 实测宽 1920**；**/stream 首帧 JPEG SOF 解析宽 1920**；usage 落盘正确；观看期间计时准确（浏览器实测留下 seconds:51）
+- **恢复许可证**：`uq=na`、宽度立即回 2560（无重启）
+- **收款码**：`/branding/微信.jpg`、`支付宝.jpg` → 200 image/jpeg、FF D8 头；❤ 面板两图 + 邮箱 + 电话显示正常
+
+**测试时的坑（下次别再踩）**：
+- 杀 screen-server 的进程匹配若用 `CommandLine -match 'screen-server\.mjs'`，会命中**自己这条 pwsh**（命令行里含脚本文本）→ 自杀。要限定 `Name -in node.exe,cmd.exe` 且排除 `$PID` 与父进程
+- PowerShell `WebClient.DownloadString` 默认 GBK 解码，UTF-8 JSON/HTML 会 mojibake 导致 `ConvertFrom-Json` 炸、`Contains('中文')` 误报 False。先 `$wc.Encoding = [Text.Encoding]::UTF8`
+- 改配置里的 `freemium` 值必须重启服务才生效（productConfig 只在启动时读）；但**配额的耗尽/恢复本身不需要重启**
