@@ -1276,9 +1276,19 @@ let uqToastShown = false;
 function fmtUq(s) { s = Math.max(0, Math.round(Number(s) || 0)); return s >= 60 ? (Math.floor(s / 60) + ' 分钟') : (s + ' 秒'); }
 async function pollStats() {
   try {
+    const wasDown = failPolls > 0;
+    failPolls = 0;   // 成功即清零（原先只在触发重连时清零，失败会跨服务中断累计，恢复后多失败两次就会误重连）
     const t0 = performance.now();
     const r = await fetch('/health?s=' + SID, { cache: 'no-store' });
     const t = await r.text();
+    // 改动（2026-10-30 第四轮）：画质刚改过且服务刚重启恢复（本轮之前轮询失败过）→ 整页刷新一次。
+    // iOS 独立模式（装到主屏幕的 App）视口高度会在会话中漂移，换画质后画面底部被裁（用户实测；
+    // 浏览器同操作正常）。全新加载总是对的（用户原话"刚进去画面是好的"）。UI 已承诺
+    // "约 8 秒后刷新生效"，这里的 1 秒重载在该承诺之内；浏览器里同样触发（1 秒闪一下，可接受）。
+    if (wasDown && qualityPending && Date.now() - qualityPending < 600000) {
+      qualityPending = 0;
+      setTimeout(() => location.reload(), 800);
+    }
     // 往返延迟（含服务端处理，局域网 2~5ms，Tailscale 中继 200~500ms）
     rttHist.push(performance.now() - t0);
     if (rttHist.length > 5) rttHist.shift();
@@ -1385,6 +1395,24 @@ document.addEventListener('visibilitychange', () => {
 let imgOkAt = Date.now();
 let deadPolls = 0;
 let failPolls = 0;
+// 改动（2026-10-30 第四轮，用户 iPad 装出来的 App 实测）：独立 App 里换画质后画面底部被裁掉，
+// 浏览器里同样操作正常。原因是 iOS 独立模式（apple-mobile-web-app 全屏）的视口高度会在会话中
+// 漂移——100dvh 可能算成比可见屏幕更大的值，布局盒从底部溢出屏幕（顶部正常、左右无黑边，
+// 与用户截图一致）。这里把 body 高度钉在 visualViewport 实测值（真实可见区域）上，
+// resize/转屏/visualViewport 变化时重新同步；浏览器与桌面两者相等，无影响。
+// qualityPending：画质保存成功时记下时间戳；服务重启恢复后由 pollStats 钩子整页刷新一次（见下）。
+let qualityPending = 0;
+function syncViewportHeight() {
+  const vv = window.visualViewport;
+  if (vv) {
+    const h = vv.height + (vv.offsetTop || 0);
+    if (h > 0) document.body.style.height = h + 'px';
+  }
+}
+syncViewportHeight();
+addEventListener('resize', syncViewportHeight);
+addEventListener('orientationchange', syncViewportHeight);
+if (window.visualViewport) window.visualViewport.addEventListener('resize', syncViewportHeight);
 function bindImg(el) {
   el.addEventListener('load', () => { imgOkAt = Date.now(); setStat(state.lowBw ? '省流量（2 帧/秒 · ' + lowBwWidth() + ' 宽）' : '直播中'); });
   el.addEventListener('error', () => { if (!stopped) setTimeout(() => restartImg(), 1200); });
@@ -2255,6 +2283,7 @@ bindImg(img);
       }
       // 改动：不再假装"自动重启生效"。抓屏几何必须走完整重启（桌面「重启」）才会变，
       // 这里只显示明确的下一步，避免用户以为设置没生效是 bug。
+      qualityPending = Date.now();   // 等服务重启恢复 → pollStats 钩子整页刷新一次（iOS 独立模式，见 pollStats 内注释）
       const needFull = !!(r && r.needFullRestart);
       if (qMsg) {
         qMsg.style.color = '#8CE58C';
