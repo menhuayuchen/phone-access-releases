@@ -925,11 +925,77 @@ function parseLicenceText(text) {
   return null;
 }
 
-// 未授权时仍然可以访问的路径：页面、清单、健康检查、图标、许可证信息
-// （/licence 的 POST 也在这个集合里：客户正是要在未授权状态下把许可证交上来）
-const LICENCE_OPEN_PATHS = new Set([
-  '/', '/licence', '/manifest.json', '/health', '/icon-192.png', '/icon-512.png'
-]);
+// ---- 半免费（freemium，2026-10-29 起）：超清每日配额 --------------------------
+// 商业形态：基本功能全免费（看画面、触控、声音、流畅模式、高清/标准画质都不需要许可证）。
+// 许可证只解锁两样：
+//   1) 超清画质（抓屏宽 > ULTRA_LIMIT 的档位，即 2560 档）不限时长 —— 未授权每天免费 1 小时
+//   2) 个性化（主题 / 光标大小颜色 / 自定义导入）—— 页面按 /licence 的 usable 锁定
+//
+// 强制点选在**发帧处**而不是设置处：配额用完后把发出去 frames 缩到 1920 宽（= 高清档）。
+// 这样不用重启抓屏、不用改配置、客户不用做任何操作，画面立刻降一档；第二天 0 点自动恢复。
+// 计时口径 = "真的在看超清"：只有 MJPEG 流/轮询按 >1920 宽发帧时才累计秒数。
+// 流畅模式（WebRTC，1280 宽）和高清/标准档不计时 —— 它们本来就免费不限时。
+// 未授权用户仍可以把 maxCaptureWidth 设成 2560（/set-quality 不拦），只是超额后按高清出图。
+//
+// 持久化：ultra-usage.json（{date:'YYYY-MM-DD', seconds:N}，本地时区日历日）。
+// 重启服务不会把当日已用时长清零；换天自动归零。
+const ULTRA_LIMIT = 1920;   // 抓屏宽超过它 = 超清档
+const cfgFreemium = productConfig.freemium || {};
+const ULTRA_FREE_SEC = (Number(cfgFreemium.ultraFreeSecPerDay) > 0) ? Math.round(Number(cfgFreemium.ultraFreeSecPerDay)) : 3600;
+const ULTRA_USAGE_FILE = join(HERE, 'ultra-usage.json');
+let ultraUsage = { date: '', seconds: 0 };
+try {
+  const uj = readJsonLoose(ULTRA_USAGE_FILE);
+  if (uj && Number.isFinite(Number(uj.seconds))) {
+    ultraUsage = { date: String(uj.date || ''), seconds: Math.max(0, Math.round(Number(uj.seconds))) };
+  }
+} catch { }
+function localDateStr(d) {
+  const x = d || new Date();
+  return x.getFullYear() + '-' + String(x.getMonth() + 1).padStart(2, '0') + '-' + String(x.getDate()).padStart(2, '0');
+}
+function ultraRollDay() {
+  const today = localDateStr();
+  if (ultraUsage.date !== today) ultraUsage = { date: today, seconds: 0 };
+}
+let ultraServeAt = 0;    // 最近一次"按超清宽度发帧"的时刻（3 秒窗口内视为正在看）
+let ultraDirty = false;
+function ultraNoteServe() { ultraServeAt = Date.now(); }
+function ultraFlush() {
+  if (!ultraDirty) return;
+  ultraDirty = false;
+  try { writeFileSync(ULTRA_USAGE_FILE, JSON.stringify(ultraUsage), 'utf8'); } catch { }
+}
+setInterval(() => {
+  ultraRollDay();
+  // 抓屏是超清档 + 未授权 + 最近 3 秒内真的按超清发过帧 → 计 1 秒
+  if (CAP_W > ULTRA_LIMIT && Date.now() - ultraServeAt < 3000) {
+    let lic = null;
+    try { lic = readLicence(); } catch { lic = null; }
+    if (!lic || !lic.usable) { ultraUsage.seconds += 1; ultraDirty = true; }
+  }
+}, 1000);
+setInterval(ultraFlush, 10000);
+process.on('exit', ultraFlush);
+function ultraStatus() {
+  ultraRollDay();
+  let lic = null;
+  try { lic = readLicence(); } catch { lic = null; }
+  const licensed = !!(lic && lic.usable);
+  const ultra = CAP_W > ULTRA_LIMIT;
+  const remaining = Math.max(0, ULTRA_FREE_SEC - ultraUsage.seconds);
+  const exhausted = ultra && !licensed && remaining <= 0;
+  return {
+    ultra, licensed, limitSec: ULTRA_FREE_SEC,
+    usedSec: ultraUsage.seconds, remainingSec: remaining,
+    exhausted, clamped: exhausted,
+    captureWidth: CAP_W, deliverWidth: exhausted ? Math.min(CAP_W, ULTRA_LIMIT) : CAP_W
+  };
+}
+// 实际允许发出去的帧宽上限：未授权 + 当日超清时长用完 → 压到 1920（高清档）
+function deliverCapW() {
+  return CAP_W > ULTRA_LIMIT && ultraStatus().exhausted ? ULTRA_LIMIT : CAP_W;
+}
 
 function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
@@ -1004,19 +1070,14 @@ function handler(req, res) {
     }
   }
 
-  // ---- 许可证闸门（软停）--------------------------------------------------
-  // 放在鉴权之后：没密钥的人先被拒，有密钥但没授权的才走到这里看到 402。
-  // 用 402 Payment Required 而不是 401，是为了让前端能区分"没钥匙"和"没买"。
-  // /branding/ 下的图片（收款码）必须放行：未授权客户正要靠它找到购买方式。
+  // ---- 半免费：不再整站拦未授权（原 402 软停闸门已拆除，2026-10-29）----------
+  // 原行为：没许可证 → 除白名单外全部 402，画面和操作全停。
+  // 现行为：基本功能全免费，密钥（第一/第二道鉴权）照旧把陌生人挡在外面；
+  // 许可证只影响两件事：
+  //   · 超清画质配额（见上面 ultraStatus/deliverCapW，强制点在 /frame.jpg 与 /stream 发帧处）
+  //   · 个性化功能（页面按 /licence 的 usable 锁定，属外观类功能，客户端强制即可）
+  // /branding/ 下的收款码图片仍然无条件放行：未授权客户要靠它找到购买方式。
   const isBrandingAsset = url.pathname.startsWith('/branding/') && /\.(png|jpe?g)$/i.test(url.pathname);
-  if (!LICENCE_OPEN_PATHS.has(url.pathname) && !isBrandingAsset) {
-    const lic = readLicence();
-    if (!lic.usable) {
-      res.writeHead(402, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
-      res.end('licence-required');
-      return;
-    }
-  }
 
   // 收款码等品牌图片（客户自己放进 branding\ 目录）
   if (isBrandingAsset) {
@@ -1104,7 +1165,9 @@ function handler(req, res) {
       version: (function () { try { const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\\uFEFF/, '')); return String(c.version || ''); } catch { return ''; } })(),
       // branding 由 licence-state.ps1 扫描 branding\ 目录得出（收款码、联系方式），
       // 必须一起返回，否则页面拿不到二维码和联系方式的路径。
-      branding: lic.branding || null
+      branding: lic.branding || null,
+      // 半免费：超清每日配额状态（设置面板显示"今天还剩几分钟超清"、个性化锁定用）
+      ultraQuota: (function () { try { return ultraStatus(); } catch { return null; } })()
     }));
     return;
   }
@@ -1125,12 +1188,22 @@ function handler(req, res) {
     // input= 里也带着 foreground（前台窗口标题），同样只给带密钥的请求
     const inStats = input.stats();
     const inForOut = authorizedReq ? inStats : Object.assign({}, inStats, { foreground: '' });
+    // uq= 超清配额（半免费）：uq=na 不适用（已授权或抓屏本来就不是超清档）；
+    // uq=<剩余秒数> 未授权今日还剩多少超清秒数；uq=0:x 今日已用完、正在按高清出图。
+    // 页面每 2 秒轮询 /health，靠它做"配额用完"的即时提示，不用另开轮询。
+    const uqField = (function () {
+      try {
+        const us = ultraStatus();
+        if (!us.ultra || us.licensed) return 'na';
+        return us.exhausted ? '0:x' : String(us.remainingSec);
+      } catch { return 'na'; }
+    })();
     res.writeHead(frame ? 200 : 503, { 'content-type': 'text/plain' });
     res.end((frame ? 'ok' : 'no-frame') + ' viewers=' + wanted() + ' source=' + (pipeOk ? 'pipe' : 'file')
         + ' age=' + (frameStamp ? ((Date.now() - frameStamp) / 1000).toFixed(1) : -1)
         + ' dropped=' + droppedTotal + ' cap=' + CAP_LEVELS[capLevel] + ' in=' + currentInFps() + ' out=' + currentOutFps() + ' drop10=' + recentDrops(10, healthSid) + ' lag=' + lastLagFrames
         + ' mode=' + sourceState.mode + ' raw=' + (rawStamp ? ((Date.now() - rawStamp) / 1000).toFixed(1) : -1)
-        + ' blk=' + st.blocked + ' blkage=' + st.ageMs + fgField
+        + ' blk=' + st.blocked + ' blkage=' + st.ageMs + ' uq=' + uqField + fgField
         + ' rtc=' + JSON.stringify(rtc.stats()) + ' input=' + JSON.stringify(inForOut));
     return;
   }
@@ -1165,10 +1238,22 @@ function handler(req, res) {
         return qreply(500, { ok: false, message: '写配置文件失败：' + e.message });
       }
       console.log('screen-server: capture width ' + qold + ' -> ' + w + '，准备重启生效');
+      // 半免费：未授权机器设到超清档时，把"每天免费额度/今天还剩多少"讲清楚。
+      // 不拦截——配额用完后发帧处自动按高清出图（见 deliverCapW），设置本身永远允许。
+      let quotaNote = '';
+      let quota = null;
+      try {
+        quota = ultraStatus();
+        if (w > ULTRA_LIMIT && !quota.licensed) {
+          quotaNote = quota.exhausted
+            ? '（提醒：今天的超清免费时长已用完，重启后会先按高清出图，明天 0 点自动恢复；安装许可证不限时长）'
+            : '（未授权机器超清每天免费 ' + Math.round(quota.limitSec / 60) + ' 分钟，今天还剩约 ' + Math.round(quota.remainingSec / 60) + ' 分钟）';
+        }
+      } catch { }
       // 改动：不再自动退出。抓屏几何是 start-screen.ps1 启动时作为参数传进来的，
       // 光重启 screen-server 只会继承旧参数（实测：配置写 2560，capture.mode 里仍是 1440）。
       // 所以这里只保存，由用户点桌面「重启」走完整重启流程，才能真正换分辨率。
-      qreply(200, { ok: true, captureWidth: w, previous: qold, restarting: false, needFullRestart: true, message: '已保存。双击桌面「手机远程」里的「重启」后生效。' });
+      qreply(200, { ok: true, captureWidth: w, previous: qold, restarting: false, needFullRestart: true, ultraQuota: quota, message: '已保存。双击桌面「手机远程」里的「重启」后生效。' + quotaNote });
     });
     return;
   }
@@ -1533,8 +1618,14 @@ function handler(req, res) {
     const wRaw = Number(url.searchParams.get('w') || 0);
     const qRaw = Number(url.searchParams.get('q') || 0);
     // 改动（P0-3）：上限从写死 2560 改成实际抓屏宽度 CAP_W（1920 的机器上不会再被"允许"到 2560）
-    const w = Number.isFinite(wRaw) ? Math.max(0, Math.min(CAP_W, Math.round(wRaw))) : 0;
-    const q = Number.isFinite(qRaw) && qRaw > 0 ? Math.max(20, Math.min(95, Math.round(qRaw))) : 0;
+    // 改动（半免费）：上限再受 deliverCapW() 钳制——未授权且当日超清时长用完时只发 ≤1920 宽
+    const capW = deliverCapW();
+    let w = Number.isFinite(wRaw) ? Math.max(0, Math.min(capW, Math.round(wRaw))) : 0;
+    let q = Number.isFinite(qRaw) && qRaw > 0 ? Math.max(20, Math.min(95, Math.round(qRaw))) : 0;
+    // 配额用完时"不带参数透传原图"的分支必须堵住，否则 2560 原图照样漏出去：强制缩到高清宽
+    if (!w && capW < CAP_W) { w = capW; if (!q) q = 70; }
+    // 计时：这次真的按 >1920 宽出图，才算"正在看超清"
+    if ((w || CAP_W) > ULTRA_LIMIT) ultraNoteServe();
     if (!w && !q) {
       res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': frame.length, 'cache-control': 'no-store' });
       res.end(frame);
@@ -1569,8 +1660,13 @@ function handler(req, res) {
     const wRaw = Number(url.searchParams.get('w') || 0);
     const qRaw = Number(url.searchParams.get('q') || 0);
     // 改动（P0-3）：上限从写死 2560 改成实际抓屏宽度 CAP_W（同 /frame.jpg）
-    const reqW = Number.isFinite(wRaw) ? Math.max(0, Math.min(CAP_W, Math.round(wRaw))) : 0;
-    const reqQ = Number.isFinite(qRaw) && qRaw > 0 ? Math.max(20, Math.min(95, Math.round(qRaw))) : 0;
+    // 改动（半免费）：再受 deliverCapW() 钳制。流是长连接，配额可能在连接中途用完
+    // （或跨天恢复/装上许可证），所以 baseW/baseQ 记住建连时的意图，push() 里每帧复查。
+    const capW = deliverCapW();
+    const baseW = Number.isFinite(wRaw) ? Math.max(0, Math.min(capW, Math.round(wRaw))) : 0;
+    const baseQ = Number.isFinite(qRaw) && qRaw > 0 ? Math.max(20, Math.min(95, Math.round(qRaw))) : 0;
+    let reqW = baseW, reqQ = baseQ;
+    if (!reqW && capW < CAP_W) { reqW = capW; if (!reqQ) reqQ = 65; }
     const sid = String(url.searchParams.get('s') || '').slice(0, 24);   // 丢帧按会话统计
     res.writeHead(200, {
       'content-type': 'multipart/x-mixed-replace; boundary=frameboundary',
@@ -1596,6 +1692,15 @@ function handler(req, res) {
       if (!frame || frameStamp === sent || busy || released) return;
       const stamp = frameStamp;
       const src = frame;
+      // 半免费：每帧推送前复查超清配额——连接中途用完就地降档（缩到 1920 宽），
+      // 跨天恢复或装上许可证则回到建连时的参数。配额计时只认真正按超清宽发出的帧。
+      const capNow = deliverCapW();
+      if (capNow < CAP_W) {
+        if (!reqW || reqW > capNow) { reqW = capNow; if (!reqQ) reqQ = 65; }
+      } else if (reqW !== baseW || reqQ !== baseQ) {
+        reqW = baseW; reqQ = baseQ;
+      }
+      if ((reqW || CAP_W) > ULTRA_LIMIT) ultraNoteServe();
       // 排队阈值按"编码后"的帧大小算（以前用原始 290KB 当阈值，窄带降档后实际帧只有
       // 98KB，要排到 580KB 才开始丢，延迟一路涨到 1 秒多）。但也不能太紧：Chrome 解码
       // multipart 时会短暂停一下，1.2 帧的阈值会把正常抖动误判成拥塞，于是"一直掉帧"。
