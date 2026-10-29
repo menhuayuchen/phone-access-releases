@@ -629,7 +629,9 @@ function authorized(req, url) {
 // 而清单本身又不能免密（原来它里面就带着完整访问密钥）。
 // 折中：页面渲染时现签一个 1 小时有效的 token 塞进 href。裸 GET /manifest.json
 // （不带 k、不带 cookie、不带有效 token）仍然 401；手机浏览器照常能取到清单。
-// token 只放行这一份**不含任何秘密**的文档，过期即作废，不能当第二把钥匙用。
+// token 只放行这一份清单文档，过期即作废，不能当第二把钥匙用。
+// （2026-10-30：清单 start_url 重新带上了密钥——token 只能从已鉴权的页面 HTML 里
+//  拿到，而页面本身、入口二维码里本来就有完整密钥，所以没有新增暴露面。）
 const MANIFEST_TTL_MS = 60 * 60 * 1000;
 function manifestSig(exp) {
   return createHmac('sha256', KEY).update('manifest|' + exp).digest('hex');
@@ -1579,11 +1581,23 @@ function handler(req, res) {
     //   1) start_url 不再拼 ?k=<KEY> —— 装出来的 App 打开 / 时，服务端会下发
     //      screen-key cookie（见下面 '/' 路由），下次进页面靠 cookie 认证，不靠 URL 里的密钥。
     //      原来那行等于把完整访问密钥写进响应体，谁 GET 一次清单谁就拿到钥匙。
-    //   2) cache-control 从 max-age=86400 改成 no-store —— 清单里已经不含敏感信息，
-    //      但"改了不生效 / 旧的还带密钥"这类问题不值得留，直接不缓存。
+    //   2) cache-control 从 max-age=86400 改成 no-store。
+    // 改动（2026-10-30，真机 PWA 回归修复）：上面第 1 条的 cookie 方案在真机上走不通——
+    //   安卓手机（2026-10-30 用户实机，小米 HyperOS）把页面装成 App 后，App 打开
+    //   start_url '/' 时**既不带 cookie 也不带 ?k**，服务端直接 401「这个地址缺了钥匙」
+    //   （浏览器里正常，是因为浏览器地址栏 URL 里本来就带着 k=）。安装出来的 web 应用
+    //   不共享浏览器 cookie 存储（Safari 添加到主屏幕从不共享，安卓此机同样没共享），
+    //   "下次靠 cookie 认证"这条假设不成立。
+    //   所以 start_url 重新带上密钥。这次是安全的：/manifest.json 自 P0-1 起就在
+    //   STRICT_AUTH_PATHS 里，裸 GET（不带 k / 不带 cookie / 不带有效短时 token）仍然 401；
+    //   能读到这份清单的，只有已经拿着密钥的客户端，或渲染过页面的浏览器（页面 HTML 与
+    //   入口二维码里本就含完整密钥）——清单带密钥没有新增任何暴露面。装出来的 App 打开
+    //   start_url='/?k=<密钥>' 直接过鉴权，不依赖任何 cookie。
+    //   代价：轮换了密钥后，旧 App 图标会失效（和旧书签一样），需要重新「添加到主屏幕」
+    //   ——这与「我的远程入口」文档 §四 的既有口径一致。
     res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify({
-      name: '电脑画面', short_name: '电脑画面', start_url: '/',
+      name: '电脑画面', short_name: '电脑画面', start_url: '/?k=' + encodeURIComponent(KEY),
       display: 'standalone', orientation: 'landscape', background_color: '#0b0b0d', theme_color: '#15161a',
       icons: [
         { src: '/icon-192.png?v=' + ICON_V, sizes: '192x192', type: 'image/png' },
