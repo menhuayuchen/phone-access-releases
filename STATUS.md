@@ -739,14 +739,21 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 已对**当前运行的安装**热更新配置（`plans` 和 `share` 直接写进安装目录的 product.config.json），
   刷新手机页面 → 套餐页显示 ¥68；以后重装由 install.ps1 强制同步，不会回退。
 
-### 18.3 v1.0.7 软发布（prerelease）
+### 18.3 v1.0.7 已发正式版（2026-10-30 晚）
 
-- 为了让官网下载到的就是 ¥68 的新版，把 v1.0.7 作为 **prerelease** 发到 GitHub Releases：
-  tag `v1.0.7`，asset `PhoneAccess-Setup-v1.0.7.exe`（52,821,471 B）。
-- 为什么用 prerelease：`/releases/latest` 仍是 v1.0.6，所以**老客户点检查更新不会被打扰**；
-  官网的三处下载按钮直接指向 v1.0.7 的 asset。
-- 转正方法：PATCH release 把 `prerelease=false`（或重新跑 `tools\publish-release.ps1`），
-  然后把官网下载按钮换回 `/releases/latest`。
+- 先做成 prerelease 让官网先能下载，用户确认后**已转正式版**：
+  `PATCH /releases/{id}` 带 `prerelease=false, make_latest=true`；
+  现在 `GET /releases/latest` → **v1.0.7**，asset `PhoneAccess-Setup-v1.0.7.exe`（52,821,471 B，
+  SHA256 `8EF622C7…2187D`）。
+- 官网三处下载按钮已改回 `/releases/latest`（以后发新版不用改页面），实测线上页面已更新
+  （18 KB → 17931 B，含 `releases/latest`）。
+- **端到端验证**（用运行中的服务）：
+  - 把客户版本临时当 `1.0.6` 调 `/update-check` → `hasUpdate=true`，`latest=1.0.7`，
+    `downloadUrl=.../v1.0.7/PhoneAccess-Setup-v1.0.7.exe`；
+  - 恢复 `1.0.7` → `hasUpdate=false`（已是最新）。临时改动已还原。
+- 注意：这台机器本地装的 1.0.7 是**较早的那次构建**（只有设置修复、没有分享/画质/升级修复）。
+  版本号相同，`检查更新` 不会提示自己，需要**手动跑一次最新安装包**才有分享入口。
+
 
 
 
