@@ -83,7 +83,17 @@ let qKbps = 3000, qFps = 24;
       // /ws-audio 处理器注册，销毁 socket 会把后注册的处理器要接的连接也一起打断。
       // "不匹配路径要 destroy" 只能放在最后一个处理器里（见 screen-server.mjs 的 attachAudioWs）。
       if (url.pathname !== '/rtc') return;
-      if (isAllowed && !isAllowed(req, url)) {
+      // 谓词可以返回三种值（2026-10-30 扩展，为了把"并发上限"讲清楚）：
+      //   true      -> 放行
+      //   false     -> 401 未授权
+      //   '429 xxx' -> 原样写成状态行（免费版设备数已满）
+      const verdict = isAllowed ? isAllowed(req, url) : true;
+      if (typeof verdict === 'string') {
+        try { socket.write('HTTP/1.1 ' + verdict + '\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch { }
+        socket.destroy();
+        return;
+      }
+      if (verdict === false) {
         socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n');
         socket.destroy();
         return;

@@ -802,10 +802,23 @@ function readLicence() {
     edition: (chk.payload && chk.payload.edition) || '',
     // 展示用：购买/捐赠入口由 PowerShell 扫 branding 目录得出，与授权无关
     support: disp.support || null,
-    branding: disp.branding || null
+    branding: disp.branding || null,
+    // 7 天全功能试用（2026-10-30）：trial 块由 trial.ps1 算出、licence-state.ps1 写进状态文件。
+    // 试用期内按"全功能"对待（超清不限时 + 个性化解锁），到期自动回落免费档。
+    // effectiveUsable 是页面/发帧/并发上限**统一**要读的那个字段；usable 仍然只表示"有正式许可证"。
+    trial: disp.trial || null,
+    effectiveUsable: !!(chk.ok || (disp.trial && disp.trial.active))
   };
   licenceCache = { stamp: stamp, data: data };
   return data;
+}
+
+// 便宜的全功能判断：许可证有效 或 试用期内。画面发帧、并发上限、页面解锁都用它。
+function isFullFunction() {
+  try {
+    const l = readLicence();
+    return !!(l && l.effectiveUsable);
+  } catch { return false; }
 }
 
 // ---- 许可证验签（Node 侧）----------------------------------------------------
@@ -952,6 +965,9 @@ function parseLicenceText(text) {
 const ULTRA_LIMIT = 1920;   // 抓屏宽超过它 = 超清档
 const cfgFreemium = productConfig.freemium || {};
 const ULTRA_FREE_SEC = (Number(cfgFreemium.ultraFreeSecPerDay) > 0) ? Math.round(Number(cfgFreemium.ultraFreeSecPerDay)) : 3600;
+// 免费版并发观看上限（2026-10-30 用户拍板：最多 3 台设备同时看）。许可证/试用期内不限。
+// 只限制"看画面"的连接数（清晰模式 /stream + 流畅模式 RTC），不影响同一台设备重连。
+const FREE_MAX_VIEWERS = (Number(cfgFreemium.freeMaxViewers) > 0) ? Math.round(Number(cfgFreemium.freeMaxViewers)) : 3;
 const ULTRA_USAGE_FILE = join(HERE, 'ultra-usage.json');
 let ultraUsage = { date: '', seconds: 0 };
 try {
@@ -982,7 +998,8 @@ setInterval(() => {
   if (CAP_W > ULTRA_LIMIT && Date.now() - ultraServeAt < 3000) {
     let lic = null;
     try { lic = readLicence(); } catch { lic = null; }
-    if (!lic || !lic.usable) { ultraUsage.seconds += 1; ultraDirty = true; }
+    // 2026-10-30：试用期内算全功能，不扣每日免费额度
+    if (!lic || !lic.effectiveUsable) { ultraUsage.seconds += 1; ultraDirty = true; }
   }
 }, 1000);
 setInterval(ultraFlush, 10000);
@@ -991,7 +1008,8 @@ function ultraStatus() {
   ultraRollDay();
   let lic = null;
   try { lic = readLicence(); } catch { lic = null; }
-  const licensed = !!(lic && lic.usable);
+  // 2026-10-30：许可证 或 试用期内 = 全功能（超清不限时）
+  const licensed = !!(lic && lic.effectiveUsable);
   const ultra = CAP_W > ULTRA_LIMIT;
   const remaining = Math.max(0, ULTRA_FREE_SEC - ultraUsage.seconds);
   const exhausted = ultra && !licensed && remaining <= 0;
@@ -999,7 +1017,10 @@ function ultraStatus() {
     ultra, licensed, limitSec: ULTRA_FREE_SEC,
     usedSec: ultraUsage.seconds, remainingSec: remaining,
     exhausted, clamped: exhausted,
-    captureWidth: CAP_W, deliverWidth: exhausted ? Math.min(CAP_W, ULTRA_LIMIT) : CAP_W
+    captureWidth: CAP_W, deliverWidth: exhausted ? Math.min(CAP_W, ULTRA_LIMIT) : CAP_W,
+    // 试用信息透给页面（设置面板显示"试用还剩 X 天"）
+    trial: (lic && lic.trial) || null,
+    freeMaxViewers: FREE_MAX_VIEWERS
   };
 }
 // 实际允许发出去的帧宽上限：未授权 + 当日超清时长用完 → 压到 1920（高清档）
@@ -1051,6 +1072,8 @@ function handler(req, res) {
     //     反复改写 + 重启可造成降质/大图抓屏的 DoS，而且是整文件重写；
     //   /update-check 会免密钥触发本机出站请求，并把更新服务器返回的 notes/downloadUrl 读走。
     '/set-quality', '/update-check',
+    // 2026-10-30：下载并启动安装包属于"能执行代码"的接口，必须和 /exec 同级对待
+    '/update-install',
   ]);
   if (STRICT_AUTH_PATHS.has(url.pathname)) {
     // /manifest.json 额外认"页面里现签的短时 token"：浏览器取清单时不带 cookie，
@@ -1162,7 +1185,11 @@ function handler(req, res) {
     } catch { }
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify({
-      usable: !!lic.usable,
+      // usable = 全功能（许可证 或 7 天试用期内）——页面用它解锁超清/个性化，语义保持向后兼容
+      usable: !!lic.effectiveUsable,
+      // licensed = 真的装了许可证（不含试用）；页面用它区分"试用中"和"已购买"
+      licensed: !!lic.usable,
+      trial: lic.trial || null,
       state: lic.state || 'missing',
       machineCode: lic.machineCode || '',
       name: lic.name || '',
@@ -1284,12 +1311,18 @@ function handler(req, res) {
     const current = String((cfgNow && cfgNow.version) || '');
     const upd = (cfgNow && cfgNow.update) || {};
     const src = String(upd.url || '').trim();
-    if (!src) {
+    // GitHub Releases（2026-10-30）：老客户点「检查更新」直接从这个 release 拿新版。
+    // 配置写法 update.github = { "owner": "...", "repo": "..." }，公开仓库不需要 token。
+    // 只做一次 GET，不轮询、不后台检查——和"产品平时不联网"的既有承诺一致。
+    const gh = (upd.github && upd.github.owner && upd.github.repo)
+      ? (String(upd.github.owner).replace(/[^A-Za-z0-9_.-]/g, '') + '/' + String(upd.github.repo).replace(/[^A-Za-z0-9_.-]/g, ''))
+      : '';
+    if (!src && !gh) {
       // 没配更新源也不装作能更新：老实说清楚当前版本，让客户联系卖家
       reply(200, { configured: false, current: current, hasUpdate: false });
       return;
     }
-    if (!/^https?:\/\//i.test(src)) {
+    if (src && !/^https?:\/\//i.test(src)) {
       reply(200, { configured: false, current: current, hasUpdate: false, error: '更新地址格式不对（要 http/https）' });
       return;
     }
@@ -1298,9 +1331,36 @@ function handler(req, res) {
     const timer = setTimeout(() => ac.abort(), timeoutMs);
     (async () => {
       try {
-        const r = await fetch(src, { signal: ac.signal, headers: { 'cache-control': 'no-cache' } });
-        if (!r.ok) { reply(200, { configured: true, current: current, hasUpdate: false, error: '更新服务返回 ' + r.status }); return; }
-        const j = await r.json();
+        let j = null;
+        if (gh) {
+          // GitHub 的 tag 通常带 v 前缀（v1.0.6），配置里的 version 不带（1.0.6），比较前先剥掉
+          const api = 'https://api.github.com/repos/' + gh + '/releases/latest';
+          const r = await fetch(api, {
+            signal: ac.signal,
+            headers: {
+              'accept': 'application/vnd.github+json',
+              'user-agent': 'PhoneAccess-UpdateCheck',
+              'cache-control': 'no-cache'
+            }
+          });
+          if (!r.ok) { reply(200, { configured: true, current: current, hasUpdate: false, error: 'GitHub 返回 ' + r.status }); return; }
+          const rel = await r.json();
+          const assets = Array.isArray(rel && rel.assets) ? rel.assets : [];
+          // 优先挑"看起来是安装包"的 exe；没有就退回 release 页面
+          const exe = assets.find((a) => /\.exe$/i.test(String((a && a.name) || '')) && /setup|install|安装|手机远程/i.test(String((a && a.name) || '')))
+            || assets.find((a) => /\.exe$/i.test(String((a && a.name) || '')));
+          const body = String((rel && rel.body) || '');
+          j = {
+            version: String((rel && rel.tag_name) || '').replace(/^v/i, ''),
+            notes: body.length > 900 ? (body.slice(0, 900) + '…') : body,
+            url: String((exe && exe.browser_download_url) || ''),
+            page: String((rel && rel.html_url) || '')
+          };
+        } else {
+          const r = await fetch(src, { signal: ac.signal, headers: { 'cache-control': 'no-cache' } });
+          if (!r.ok) { reply(200, { configured: true, current: current, hasUpdate: false, error: '更新服务返回 ' + r.status }); return; }
+          j = await r.json();
+        }
         const latest = String((j && j.version) || '');
         // 版本比较：按数字段逐段比，非数字按字符串兜底（够用，不引第三方库）
         const cmp = (a, b) => {
@@ -1320,7 +1380,8 @@ function handler(req, res) {
           latest: latest,
           hasUpdate: hasUpdate,
           notes: String((j && j.notes) || ''),
-          downloadUrl: String((j && j.url) || '')
+          downloadUrl: String((j && j.url) || ''),
+          pageUrl: String((j && j.page) || '')
         });
       } catch (e) {
         const msg = (e && e.name === 'AbortError') ? '检查超时' : ('检查失败：' + ((e && e.message) || '未知错误'));
@@ -1329,6 +1390,57 @@ function handler(req, res) {
         clearTimeout(timer);
       }
     })();
+    return;
+  }
+
+  // ---- 下载并启动新版安装包（客户在「检查更新」里点「下载并安装」才会执行）------
+  // 安全边界：只接受 GitHub 的下载域名 + https + .exe。页面不能指定任意 URL，
+  // 否则这个接口就成了本机上的通用下载器 / SSRF 跳板。
+  if (url.pathname === '/update-install' && req.method === 'POST') {
+    const reply = (code, obj) => {
+      res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(obj));
+    };
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 8192) req.destroy(); });
+    req.on('end', () => {
+      let target = '';
+      try { target = String((JSON.parse(body || '{}') || {}).url || '').trim(); } catch { }
+      if (!/^https:\/\//i.test(target)) return reply(400, { ok: false, message: '下载地址必须是 https' });
+      if (!/\.exe(\?|$)/i.test(target)) return reply(400, { ok: false, message: '下载地址不是 exe 安装包' });
+      let host = '';
+      try { host = new URL(target).hostname.toLowerCase(); } catch { }
+      const allowedHosts = ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com'];
+      if (!allowedHosts.includes(host)) return reply(400, { ok: false, message: '下载地址不在允许的域名内：' + host });
+
+      const tmpDir = process.env.TEMP || process.env.TMP || '.';
+      const fileName = 'PhoneAccess-Update-' + Date.now() + '.exe';
+      const dest = join(tmpDir, fileName);
+      console.log('screen-server: 开始下载新版 -> ' + dest + ' (' + target + ')');
+      const ac = new AbortController();
+      const timer = setTimeout(() => ac.abort(), 10 * 60 * 1000);
+      (async () => {
+        try {
+          const r = await fetch(target, { signal: ac.signal, headers: { 'user-agent': 'PhoneAccess-UpdateCheck', 'cache-control': 'no-cache' } });
+          if (!r.ok) return reply(200, { ok: false, message: '下载失败：HTTP ' + r.status });
+          const len = Number(r.headers.get('content-length') || 0);
+          if (len > 400 * 1024 * 1024) return reply(200, { ok: false, message: '安装包超过 400MB，已拒绝' });
+          const buf = Buffer.from(await r.arrayBuffer());
+          if (!buf.length) return reply(200, { ok: false, message: '下载到的文件是空的' });
+          writeFileSync(dest, buf);
+          console.log('screen-server: 下载完成 ' + Math.round(buf.length / 1024 / 1024) + 'MB，准备启动安装程序');
+          // detached：页面请求结束时安装包继续跑，不用等它结束
+          const p = spawn('cmd.exe', ['/c', 'start', '', dest], { detached: true, stdio: 'ignore', windowsHide: true });
+          p.unref();
+          reply(200, { ok: true, path: dest, bytes: buf.length, message: '已下载到 ' + dest + '，正在打开安装程序（如果弹出管理员授权请点「是」）。' });
+        } catch (e) {
+          const msg = (e && e.name === 'AbortError') ? '下载超时（10 分钟）' : ('下载失败：' + ((e && e.message) || '未知错误'));
+          reply(200, { ok: false, message: msg });
+        } finally {
+          clearTimeout(timer);
+        }
+      })();
+    });
     return;
   }
 
@@ -1690,6 +1802,21 @@ function handler(req, res) {
     let reqW = baseW, reqQ = baseQ;
     if (!reqW && capW < CAP_W) { reqW = capW; if (!reqQ) reqQ = 65; }
     const sid = String(url.searchParams.get('s') || '').slice(0, 24);   // 丢帧按会话统计
+
+    // ---- 免费版并发上限（2026-10-30）：最多 3 台设备同时看 ----
+    // 只数"正在看画面"的连接：清晰模式本连接 + 流畅模式 RTC 的对端。
+    // 许可证 / 7 天试用期内不限。超限直接回 429 + 一句人话，不占抓屏、不占带宽。
+    if (!isFullFunction()) {
+      const liveViewers = streams + ((function () { try { return rtc.stats().peers || 0; } catch { return 0; } })());
+      if (liveViewers >= FREE_MAX_VIEWERS) {
+        console.log('screen-server: /stream 被并发上限拦下 viewers=' + liveViewers + ' limit=' + FREE_MAX_VIEWERS);
+        res.writeHead(429, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+        res.end('免费版最多 ' + FREE_MAX_VIEWERS + ' 台设备同时观看，现在已经有 ' + liveViewers + ' 台在看了。\n'
+          + '请先关掉其他设备上的页面，或安装许可证解锁多设备同时观看。\n');
+        return;
+      }
+    }
+
     res.writeHead(200, {
       'content-type': 'multipart/x-mixed-replace; boundary=frameboundary',
       'cache-control': 'no-store',
@@ -1777,7 +1904,19 @@ function handler(req, res) {
 let started = 0;
 for (const host of hosts) {
   const s = createServer(handler);
-  rtc.attach(s, (req, url) => authorized(req, url));
+  rtc.attach(s, (req, url) => {
+    if (!authorized(req, url)) return false;
+    // 免费版并发上限同样管流畅模式（RTC）：超限返回一句状态行，页面会提示"设备数已满"。
+    if (!isFullFunction()) {
+      let peers = 0;
+      try { peers = rtc.stats().peers || 0; } catch { }
+      if (streams + peers >= FREE_MAX_VIEWERS) {
+        console.log('rtc: 被并发上限拦下 viewers=' + (streams + peers) + ' limit=' + FREE_MAX_VIEWERS);
+        return '429 Too Many Viewers';
+      }
+    }
+    return true;
+  });
   attachAudioWs(s, KEY);
   s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
   s.listen(port, host, () => {
