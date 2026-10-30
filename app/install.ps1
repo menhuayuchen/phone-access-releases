@@ -894,7 +894,8 @@ try {
     'stop-phone-access.ps1', 'stop-phone-access.cmd',
     'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1',
     # 许可证 + 手机入口 + HTTPS 支持：缺任何一个都会导致功能静默缺失，所以列入必需清单
-    'licence.ps1', 'licence-state.ps1', 'https-setup.ps1',
+    # trial.ps1 由 licence-state.ps1 dot-source（7 天试用的锚点），缺了会让试用静默失效
+    'licence.ps1', 'licence-state.ps1', 'trial.ps1', 'https-setup.ps1',
     'entry.ps1', '手机入口.cmd',
     'uninstall.ps1', 'uninstall.cmd', '使用说明.md',
     'dsh-port.ps1', 'restart.ps1', 'restart.cmd',

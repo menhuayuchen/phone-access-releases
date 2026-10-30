@@ -479,3 +479,73 @@ health ok：`in=24.5 out=24.5`、frame SOF=2560x1600、source=pipe、uq=na（已
 capture.exe=新 Bilinear 包（20480B），旧包快照 `capture.exe.bilinear.bak` 在安装目录；
 page.mjs=视口修复版（commit 5bb3572）；`product.config.json` maxCaptureWidth=2560（超清档，用户 App 当前档位）；
 git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁切）。
+
+---
+
+## 十四、商业化收口（2026-10-30）：7 天试用 / 并发上限 / 检查更新 / 安装器声明
+
+用户拍的板：按「收费点建议」落地四项，但第 4 项从"2~3 台"改成**免费版最多 3 台设备同时看**；
+另外新增两条硬要求：试用必须**防反复卸载重装刷新**，安装包双击后**先弹免责声明+配置要求并强制勾选同意**。
+
+### 14.1 新装 7 天全功能试用（`app/trial.ps1`）
+
+- 试用内容：超清不限时 + 个性化全开 + 多设备不限（试用期内 `effectiveUsable=true`）。
+- 锚点存在安装目录**之外**的四处，取**最早**一条：`HKLM\SOFTWARE\PhoneAccess`、`HKCU` 同名键、
+  `%ProgramData%\PhoneAccess\trial.json`、`%LOCALAPPDATA%\PhoneAccessTrial\trial.json`。
+  刻意不用安装目录（`%LOCALAPPDATA%\PhoneAccess`），那里卸载会被整个删掉。
+- 每条记录带 `machine` + `SHA256(machine|start|salt)` 校验；改 start 或整份拷到别的机器都不认。
+- 带 `lastSeen`，系统时间回拨 >1 天 → `clock-tamper`，试用判失效。
+- `licence-state.ps1` 每次校验时顺带计算，写进 `licence.state.json` 的 `trial{...}` 与 `effectiveUsable`；
+  `screen-server.mjs` 用 `effectiveUsable` 统一判断"全功能"（发帧配额、并发上限、页面解锁）。
+- 天数读 `product.config.json` 的 `freemium.trialDays`（默认 7），改配置不用改代码。
+
+**沙箱实测**（临时 ProgramData/LOCALAPPDATA，不动真机）：run1 试用 7 天 → 删掉安装目录里的副本再跑
+（模拟卸载重装）锚点不变、仍 7 天 → 把 start 改到 8 天前并重算 chk → `expired`、剩余 0 天。
+踩到的两个真 bug 已修（1feed8c）：`return ,$array` 让调用方拿不到元素（等于每次运行都重发试用）、
+非管理员写 HKLM 时满屏红字。
+
+**诚实边界**：纯本地方案挡得住"卸载重装/复制安装目录"，挡不住刻意逆向或手动删光四处记录；
+产品没有中心服务器可对账。对外不要说"绝对防破解"。
+
+### 14.2 免费版并发上限 3 台（`screen-server.mjs` / `rtc.mjs`）
+
+- 计数口径 = 清晰模式 `/stream` 连接数 + 流畅模式 RTC 对端数（即 `wanted()` 的两个源）；同设备重连不重复计数。
+- 超限：`/stream` 回 429 + 一句人话；`rtc.mjs` 的鉴权谓词从布尔扩展为三态（`true`/`false`/`"429 ..."`），
+  流畅模式也被拦，不再表现为"连不上"。
+- 上限值 `freemium.freeMaxViewers`（默认 3）；许可证或试用期内不限。
+
+### 14.3 检查更新接 GitHub Releases（`screen-server.mjs` / `page.mjs`）
+
+- 新配置 `update.github={owner,repo}`：读 `/releases/latest`，`tag_name` 剥 `v` 比版本，
+  正文当说明，优先挑名字像安装包的 `.exe` asset。原"任意 JSON 地址"模式保留，二者互斥。
+- 页面新增「下载并安装」：`POST /update-install` 由**服务端**下载（页面不能指定任意 URL），
+  只允许 `github.com` / `objects.githubusercontent.com` 等域名 + https + `.exe`，
+  落 `%TEMP%` 后 detached 启动。该接口已加入 `STRICT_AUTH_PATHS`（能执行代码，与 `/exec` 同级）。
+- 仍然只有客户点按钮才联网，不后台轮询（与"不给卖家留远程入口"一致）。
+- 卖家侧操作手册见 `docs/发布与更新.md`（含 release 步骤、排错表、国内网络受限时的 `update.url` 备选）。
+
+### 14.4 安装器：装之前先弹声明（`sfx/Sfx.cs`）
+
+- 重写成无依赖的 WinForms 单文件启动器（仍是 csc 直接编译）：配置要求 → 折叠的免责声明（9 条）→
+  同意勾选 → 「同意并继续安装」。**勾选框初始禁用，必须先展开一次免责声明才可勾**；未勾选时安装按钮禁用。
+- 取消/关闭 = 不安装（返回 2）；已安装的机器按升级处理跳过弹窗；`--force-ui` 强制弹、`--silent` 供自动化。
+- `build-sfx.ps1` 改为按时间戳自动重编（避免"改了源码忘重编"发旧包）。
+- `pack.ps1` 与 `install.ps1` 的必需清单都补了 `trial.ps1`。
+
+### 14.5 本轮验证到什么程度
+
+| 项 | 结论 |
+|---|---|
+| `trial.ps1` 首次安装/重装/到期 | 沙箱实测通过（见 14.1） |
+| `node --check` screen-server / rtc / page | 通过 |
+| `csc` 编译 Sfx.exe | 通过（0 warning 0 error） |
+| 页面弹窗、429 文案、下载安装按钮 | 代码就位，**待真机点一遍** |
+| GitHub release 端到端 | **未验证**：`update.github` 还空着，需要卖家先建仓库 |
+| 升级后许可证/配置/试用锚点不丢 | 待装一版实测 |
+
+### 14.6 待办
+
+1. 卖家建 release 仓库 → 填 `update.github` → 发 v1.0.6 → 老机器点一次「检查更新」全流程验收。
+2. 真机上跑一遍试用：新装看「试用 7 天」、卸载重装仍是剩余天数、到期回落免费档。
+3. 三台手机同时看验证第 4 台被拦（清晰 + 流畅两种模式各一次）。
+4. 安装包双击验证：勾选框未展开时不能选、取消不安装、已安装机器直接升级。
