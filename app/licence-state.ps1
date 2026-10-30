@@ -37,6 +37,18 @@ try { $lic = Test-Licence -AppDir $AppDir -ForceMachine:$Force } catch {
     $lic = [pscustomobject]@{ State = 'error'; Usable = $false; MachineCode = ''; Name = ''; Issued = ''; Expires = ''; Edition = ''; Message = ('校验异常：' + $_.Exception.Message) }
 }
 
+# 7 天全功能试用（2026-10-30）：锚点存在安装目录之外，卸载重装不会刷新试用期。
+# 试用期内 effectiveUsable=true —— 页面按它解锁超清不限时 + 个性化，到期自动回落免费档。
+$trial = $null
+try {
+    if (-not (Get-Command Get-TrialState -ErrorAction SilentlyContinue)) {
+        . (Join-Path $here 'trial.ps1')
+    }
+    $trial = Get-TrialState -Dir $AppDir
+} catch {
+    $trial = [pscustomobject]@{ active = $false; state = 'error'; start = ''; ends = ''; daysLeft = 0; days = 7; machine = '' }
+}
+
 # 读 support 配置（捐赠/购买入口），原样透传给页面
 $support = $null
 try {
@@ -69,6 +81,9 @@ try {
 
 $state = [pscustomobject]@{
     usable      = [bool]$lic.Usable
+    # effectiveUsable = 许可证有效 或 试用期内。画面服务/页面统一按这个判断"是否全功能"。
+    effectiveUsable = [bool]($lic.Usable -or ($trial -and $trial.active))
+    trial       = $trial
     state       = [string]$lic.State
     machineCode = [string]$lic.MachineCode
     name        = [string]$lic.Name
