@@ -288,7 +288,7 @@ static class Sfx
             agree.Text = "我已阅读并同意上述免责声明与许可条款";
             agree.AutoSize = true;
             agree.Location = new Point(26, 300);
-            agree.Enabled = false;                // 必须先展开一次，才允许勾选（防止"闭眼同意"）
+            agree.Enabled = true;                 // 2026-10-30 用户要求：一开始就能勾，不强制先展开
             f.Controls.Add(agree);
 
             Label hint = new Label();
@@ -322,7 +322,6 @@ static class Sfx
                     disclaimer.Height = 176;
                     toggle.Text = "▲ 收起免责声明";
                     agree.Location = new Point(26, 474);
-                    agree.Enabled = true;
                 }
                 else
                 {
