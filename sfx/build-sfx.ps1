@@ -116,8 +116,10 @@ Say '正在自验证（解压回临时目录比对）…'
 $verifyDir = Join-Path $env:TEMP ('pa-sfx-verify-' + [guid]::NewGuid().ToString('N'))
 New-Item -ItemType Directory -Path $verifyDir -Force | Out-Null
 try {
-    $p = Start-Process -FilePath $OutFile -ArgumentList @('--extract-only', $verifyDir) -NoNewWindow -Wait -PassThru
-    Say ("  解压进程退出码: " + $p.ExitCode)
+    # 用直接调用代替 Start-Process：本机环境里同时存在 NO_PROXY 和 no_proxy 两个键，
+    # Start-Process 继承环境时会抛 "Key has already been added"，让自验证假失败（2026-10-30 实测）。
+    & $OutFile --extract-only $verifyDir | Out-Null
+    Say ("  解压进程退出码: " + $LASTEXITCODE)
 
     # 包内可能多一层目录
     $root = $verifyDir
