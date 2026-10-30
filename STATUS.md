@@ -822,3 +822,5 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 不能直接放开 viewport：双指已经是"滚动 PC 画面"的核心手势，两者会打架。建议单独做：
 ① 工具栏加 1x/2x 档位按钮（CSS transform 缩放镜像，坐标映射用 getBoundingClientRect 本来就兼容变换）；
 ② 或做「放大镜」浮层。两种都需要真机验证，别在文案先行。
+
+- 1.0.9 已发正式版（2026-10-30 深夜）：/releases/latest = v1.0.9，asset PhoneAccess-Setup-v1.0.9.exe（52,825,702 B）。官网文案已更新，线上校验含「不会替你开机」「没有做双指缩放」。/update-check（本机 1.0.7）已返回 latest=1.0.9、hasUpdate=true。
