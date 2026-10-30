@@ -796,3 +796,5 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 
 
 
+
+- 1.0.8 已发正式版（2026-10-30 深夜）：/releases/latest = v1.0.8，asset PhoneAccess-Setup-v1.0.8.exe（52,825,184 B）。当前安装的 1.0.7 调 /update-check 已返回 hasUpdate=true、下载地址指向 v1.0.8。site/index.html 用的是 /releases/latest，无需改页面。
