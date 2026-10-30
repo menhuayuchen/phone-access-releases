@@ -95,8 +95,8 @@
   "_update说明": "「检查更新」的数据源，二选一。① github: { owner, repo } —— 读 GitHub Releases 的 latest（公开仓库免 token），tag_name 作为版本号（自动剥掉 v 前缀），发布时把安装包 exe 上传成 release asset 即可被识别。② url: 任意返回 JSON 的地址，格式 { \"version\": \"1.0.1\", \"notes\": \"...\", \"url\": \"下载页\" }。两者都留空 = 不做联网检查，只显示当前版本。注意：只有客户主动点「检查更新」才会联网，产品平时不主动连接任何服务器。",
   "update": {
     "github": {
-      "owner": "",
-      "repo": ""
+      "owner": "menhuayuchen",
+      "repo": "phone-access-releases"
     },
     "url": "",
     "timeoutMs": 8000
