@@ -2426,31 +2426,90 @@ bindImg(img);
       if (j.hasUpdate) {
         setMsg('有新版本', '#8CE68C');
         if (ubox) {
+          const hasDl = !!j.downloadUrl;
           ubox.style.display = 'block';
           ubox.innerHTML = '<div style="color:#8CE68C;font-weight:600;margin-bottom:6px">新版本 '
             + escHtml(j.latest) + '（当前 ' + escHtml(j.current) + '）</div>'
             + (j.notes ? '<div style="margin-bottom:8px;white-space:pre-wrap">' + escHtml(j.notes) + '</div>' : '')
             + '<div style="color:#868c96;margin-bottom:10px">安装新版不会丢配置和许可证。</div>'
-            + (j.downloadUrl
-              ? '<button id="updGo" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:9px;padding:9px 16px;font-size:13px;cursor:pointer">下载并安装</button>'
+            + (hasDl
+              ? '<div id="updProgWrap" style="display:none;margin:0 0 8px">'
+                  + '<div style="height:6px;background:#0f1014;border:1px solid #262932;border-radius:5px;overflow:hidden">'
+                  + '<div id="updBar" style="height:100%;width:0;background:#8CE68C;transition:width .25s"></div></div>'
+                  + '<div id="updProg" style="color:#868c96;margin-top:6px;font-size:12px"></div></div>'
+                + '<button id="updGo" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:9px;padding:9px 16px;font-size:13px;cursor:pointer">'
+                + (j.mirror ? '用国内镜像下载' : '下载并安装') + '</button>'
+                + (j.fallbackUrl ? ' <button id="updGo2" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:9px 14px;font-size:13px;cursor:pointer">改用 GitHub 下载</button>' : '')
                 + '<div id="updGoMsg" style="color:#868c96;margin-top:8px;font-size:12px"></div>'
+                + '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">'
+                + '下载不动多半是网络到 GitHub 不通。可以点「打开发布页」用浏览器/下载工具下，或者让卖家发国内网盘链接。<br>'
+                + '<a href="' + escHtml(j.pageUrl || '#') + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">打开发布页</a>'
+                + ' · <a id="updCopy" href="#" style="color:#8fb6ff">复制下载地址</a></div>'
               : '<div style="color:#868c96">这次发布没有附安装包，去发布页手动下载：'
                 + escHtml(j.pageUrl || '') + '</div>');
           const go = ubox.querySelector('#updGo');
-          if (go) go.addEventListener('click', async () => {
-            const m = ubox.querySelector('#updGoMsg');
-            go.disabled = true; go.style.opacity = '.6'; go.textContent = '下载中…';
-            if (m) m.textContent = '安装包 50MB 左右，按网速可能要一两分钟，别关页面。';
+          const go2 = ubox.querySelector('#updGo2');
+          const m = ubox.querySelector('#updGoMsg');
+          const bar = ubox.querySelector('#updBar');
+          const prog = ubox.querySelector('#updProg');
+          const wrap = ubox.querySelector('#updProgWrap');
+          let pollTimer = 0;
+          const stopPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = 0; } };
+          const fmtMb = (n) => (Number(n) / 1024 / 1024).toFixed(1) + ' MB';
+          const poll = async () => {
+            try {
+              const p = await fetch('/update-progress?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
+              if (!prog) return;
+              if (p.phase === 'connecting') prog.textContent = '正在连接下载服务器…（20 秒没响应会自动失败）';
+              else if (p.phase === 'downloading') {
+                const pct = p.total ? p.pct : 0;
+                if (bar) bar.style.width = (p.total ? pct : 5) + '%';
+                prog.textContent = '已下载 ' + fmtMb(p.bytes) + (p.total ? ' / ' + fmtMb(p.total) + '（' + pct + '%）' : '')
+                  + (p.speedKB ? ' · ' + (p.speedKB / 1024).toFixed(1) + ' MB/s' : '')
+                  + (p.total && p.speedKB ? ' · 预计还需 ' + Math.max(1, Math.round((p.total - p.bytes) / (p.speedKB * 1024) / 60)) + ' 分钟' : '')
+                  + (p.idleSec > 6 ? ' · 已 ' + p.idleSec + ' 秒没新数据…' : '');
+              } else if (p.phase === 'done') prog.textContent = '下载完成，正在打开安装程序…';
+              else if (p.phase === 'error') prog.textContent = p.error || '下载失败';
+            } catch (e) { }
+          };
+          const start = async (url, btn) => {
+            if (!url) return;
+            if (wrap) wrap.style.display = 'block';
+            if (bar) bar.style.width = '2%';
+            if (prog) prog.textContent = '正在连接下载服务器…';
+            if (m) m.textContent = '';
+            [go, go2].forEach((b) => { if (b) { b.disabled = true; b.style.opacity = '.6'; } });
+            if (btn) btn.textContent = '下载中…';
+            stopPoll();
+            pollTimer = setInterval(poll, 1000);
+            poll();
             let r = null;
             try {
               r = await fetch('/update-install', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ url: j.downloadUrl })
+                body: JSON.stringify({ url })
               }).then((x) => x.json());
             } catch (e) { r = null; }
-            go.disabled = false; go.style.opacity = '1'; go.textContent = '下载并安装';
-            if (m) m.textContent = (r && r.message) || '下载没成功，稍后再试或联系卖家。';
+            stopPoll();
+            poll();
+            [go, go2].forEach((b) => { if (b) { b.disabled = false; b.style.opacity = '1'; } });
+            if (btn) btn.textContent = (j.mirror && url === j.mirror) ? '用国内镜像下载' : '下载并安装';
+            if (m) {
+              m.style.color = (r && r.ok) ? '#8CE58C' : '#ff6b6b';
+              m.textContent = (r && r.message) || '下载没成功：网络可能到不了 GitHub，可以重试、改用另一个源，或让卖家发国内网盘链接。';
+            }
+            if (r && r.ok && bar) bar.style.width = '100%';
+          };
+          if (go) go.addEventListener('click', () => start(j.downloadUrl, go));
+          if (go2) go2.addEventListener('click', () => start(j.fallbackUrl, go2));
+          const cp = ubox.querySelector('#updCopy');
+          if (cp) cp.addEventListener('click', (ev) => {
+            ev.preventDefault();
+            if (copyText(j.downloadUrl || '')) {
+              cp.textContent = '已复制';
+              setTimeout(() => { cp.textContent = '复制下载地址'; }, 1500);
+            }
           });
         }
       } else {

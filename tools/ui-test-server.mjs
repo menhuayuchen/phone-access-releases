@@ -68,6 +68,23 @@ const HEALTH = (c) => {
   return 'ok viewers=1 source=file age=0.4 dropped=0 cap=1920 in=8 out=8 drop10= lag=0 mode=420 raw=0 blk=0 blkage=0 uq=' + uq + ' rtc={"peers":0} input={"x":0,"y":0}';
 };
 
+// 更新流程打桩：用来在浏览器里看「检查更新 → 下载进度 → 失败提示」的界面
+let mockUpd = { phase: 'idle', bytes: 0, total: 52400000, startedAt: 0, lastByteAt: 0, error: '' };
+function mockProgress() {
+  const now = Date.now();
+  const secs = mockUpd.startedAt ? Math.max(0.2, (now - mockUpd.startedAt) / 1000) : 0;
+  return {
+    active: mockUpd.phase === 'connecting' || mockUpd.phase === 'downloading',
+    phase: mockUpd.phase,
+    bytes: mockUpd.bytes,
+    total: mockUpd.total,
+    pct: mockUpd.total ? Math.round(mockUpd.bytes * 100 / mockUpd.total) : 0,
+    speedKB: (mockUpd.bytes > 0 && secs > 0) ? Math.round(mockUpd.bytes / 1024 / secs) : 0,
+    idleSec: mockUpd.lastByteAt ? Math.max(0, Math.round((now - mockUpd.lastByteAt) / 1000)) : 0,
+    error: mockUpd.error || ''
+  };
+}
+
 http.createServer((req, res) => {
   const url = new URL(req.url, 'http://127.0.0.1');
   const which = url.searchParams.get('case') || 'trial';
@@ -79,6 +96,32 @@ http.createServer((req, res) => {
   if (url.pathname === '/sources') return json({ monitors: [{ i: 0, x: 0, y: 0, w: 1920, h: 1080 }], windows: [] });
   if (url.pathname === '/frame.jpg') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(PNG_1x1); }
   if (url.pathname === '/manifest.json') return json({ name: '手机远程', short_name: '手机远程', start_url: '/?k=TESTKEY', display: 'standalone' });
+  if (url.pathname === '/update-check') {
+    return json({
+      configured: true, current: '1.0.7', latest: '1.0.8', hasUpdate: true,
+      notes: '测试台：模拟一个 1.0.8 更新，用来检查进度/失败提示。',
+      downloadUrl: 'https://example.com/PhoneAccess-Setup-v1.0.8.exe',
+      fallbackUrl: '', mirror: '', pageUrl: 'https://example.com/releases'
+    });
+  }
+  if (url.pathname === '/update-progress') return json(mockProgress());
+  if (url.pathname === '/update-install' && req.method === 'POST') {
+    // 模拟：连接 1 秒 → 下载到 ~10MB → 6 秒时"太慢"失败，页面应显示进度和红色错误
+    mockUpd = { phase: 'connecting', bytes: 0, total: 52400000, startedAt: Date.now(), lastByteAt: Date.now(), error: '' };
+    setTimeout(() => { mockUpd.phase = 'downloading'; }, 1000);
+    const tick = setInterval(() => {
+      if (mockUpd.phase !== 'downloading') return;
+      mockUpd.bytes = Math.min(mockUpd.total, mockUpd.bytes + 2.5 * 1024 * 1024);
+      mockUpd.lastByteAt = Date.now();
+    }, 500);
+    setTimeout(() => {
+      clearInterval(tick);
+      mockUpd.phase = 'error';
+      mockUpd.error = '下载太慢：平均只有 25 KB/s，按这个速度还要约 35 分钟，已停止。';
+      json({ ok: false, message: mockUpd.error });
+    }, 6000);
+    return;
+  }
   if (url.pathname === '/set-quality' && req.method === 'POST') {
     let body = '';
     req.on('data', (c) => { body += c; });

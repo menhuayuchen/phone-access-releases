@@ -14,7 +14,7 @@ import { PAGE } from './page.mjs';
 // 现在由启动脚本按主显示器物理分辨率算好传进来；没传就读 product.config.json；都没有才用 2560×1600 兜底。
 
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync } from 'node:fs';
 import { randomBytes, createPublicKey, createVerify, createHmac, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
@@ -1042,6 +1042,34 @@ function deliverCapW() {
   return CAP_W > ULTRA_LIMIT && ultraStatus().exhausted ? ULTRA_LIMIT : CAP_W;
 }
 
+// ---- 应用内更新的下载进度（2026-10-30 加）-----------------------------------
+// 以前 /update-install 只有"全部下载完"或"10 分钟超时"两种结局：国内不翻墙时
+// 连 objects.githubusercontent.com 会一直挂着，页面永远"下载中…"，电脑端也不报错。
+// 现在改成流式下载 + 20 秒无数据看门狗 + 页面轮询进度，失败能立刻说清楚原因。
+let updateState = {
+  at: 0,                 // 最近一次状态变化
+  phase: 'idle',         // idle | connecting | downloading | done | error
+  bytes: 0, total: 0,
+  startedAt: 0, lastByteAt: 0,
+  error: '', url: ''
+};
+function updatePublicState() {
+  const now = Date.now();
+  const secs = updateState.startedAt ? Math.max(0.2, (now - updateState.startedAt) / 1000) : 0;
+  return {
+    active: updateState.phase === 'connecting' || updateState.phase === 'downloading',
+    phase: updateState.phase,
+    bytes: updateState.bytes,
+    total: updateState.total,
+    pct: updateState.total > 0 ? Math.min(100, Math.round(updateState.bytes * 100 / updateState.total)) : 0,
+    speedKB: (updateState.bytes > 0 && secs > 0) ? Math.round(updateState.bytes / 1024 / secs) : 0,
+    idleSec: updateState.lastByteAt ? Math.max(0, Math.round((now - updateState.lastByteAt) / 1000)) : 0,
+    elapsedSec: Math.round(secs),
+    error: updateState.error || '',
+    at: updateState.at
+  };
+}
+
 function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
 
@@ -1328,6 +1356,13 @@ function handler(req, res) {
   }
 
 
+  // ---- 更新下载进度（页面每 1 秒轮询一次，用来显示"已下载 x/50MB"和卡住提示）----
+  if (url.pathname === '/update-progress') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(updatePublicState()));
+    return;
+  }
+
   // ---- 检查更新（客户主动点才会执行）------------------------------------------
   // 设计原则（和"不给卖家留远程入口"一致）：**只有客户点这个按钮，本机才去联网**。
   // 产品平时不做任何出站请求、不后台轮询、不回连。
@@ -1343,6 +1378,10 @@ function handler(req, res) {
     const current = String((cfgNow && cfgNow.version) || '');
     const upd = (cfgNow && cfgNow.update) || {};
     const src = String(upd.url || '').trim();
+    // 国内镜像（2026-10-30）：GitHub 直连不稳时，卖家在 update.mirror 填一个能直连的 exe 地址
+    // （例如国内 OSS/COS 直链）。只认 https + .exe；页面把它当首选、GitHub 当备选。
+    const mirror = String(upd.mirror || '').trim();
+    const mirrorOk = /^https:\/\/\S+\.exe(\?\S*)?$/i.test(mirror);
     // GitHub Releases（2026-10-30）：老客户点「检查更新」直接从这个 release 拿新版。
     // 配置写法 update.github = { "owner": "...", "repo": "..." }，公开仓库不需要 token。
     // 只做一次 GET，不轮询、不后台检查——和"产品平时不联网"的既有承诺一致。
@@ -1412,7 +1451,10 @@ function handler(req, res) {
           latest: latest,
           hasUpdate: hasUpdate,
           notes: String((j && j.notes) || ''),
-          downloadUrl: String((j && j.url) || ''),
+          // 有国内镜像就优先用它（客户在没代理的环境下 GitHub 基本下不动）；GitHub 作为备选
+          downloadUrl: mirrorOk ? mirror : String((j && j.url) || ''),
+          fallbackUrl: mirrorOk ? String((j && j.url) || '') : '',
+          mirror: mirrorOk ? mirror : '',
           pageUrl: String((j && j.page) || '')
         });
       } catch (e) {
@@ -1426,8 +1468,10 @@ function handler(req, res) {
   }
 
   // ---- 下载并启动新版安装包（客户在「检查更新」里点「下载并安装」才会执行）------
-  // 安全边界：只接受 GitHub 的下载域名 + https + .exe。页面不能指定任意 URL，
-  // 否则这个接口就成了本机上的通用下载器 / SSRF 跳板。
+  // 安全边界：只接受 GitHub 的下载域名 / 配置里的国内镜像域名 + https + .exe。
+  // 页面不能指定任意 URL，否则这个接口就成了本机上的通用下载器 / SSRF 跳板。
+  // 2026-10-30：改成流式下载 + 看门狗 + 进度。原来只是一次 arrayBuffer() 等 10 分钟，
+  // 国内不翻墙时连 GitHub 会一直挂着，页面永远"下载中…"，电脑端也不报错。
   if (url.pathname === '/update-install' && req.method === 'POST') {
     const reply = (code, obj) => {
       res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -1440,36 +1484,122 @@ function handler(req, res) {
       try { target = String((JSON.parse(body || '{}') || {}).url || '').trim(); } catch { }
       if (!/^https:\/\//i.test(target)) return reply(400, { ok: false, message: '下载地址必须是 https' });
       if (!/\.exe(\?|$)/i.test(target)) return reply(400, { ok: false, message: '下载地址不是 exe 安装包' });
+      // 允许的域名 = GitHub 下载域名 + 配置里的国内镜像域名（只由卖家在配置里指定）
+      let mirror = '';
+      try {
+        const mcfg = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
+        mirror = String((mcfg.update && mcfg.update.mirror) || '').trim();
+      } catch { }
+      const allowedHosts = ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com'];
+      try {
+        if (/^https:\/\//i.test(mirror)) {
+          const mh = new URL(mirror).hostname.toLowerCase();
+          if (mh) allowedHosts.push(mh);
+        }
+      } catch { }
       let host = '';
       try { host = new URL(target).hostname.toLowerCase(); } catch { }
-      const allowedHosts = ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com'];
       if (!allowedHosts.includes(host)) return reply(400, { ok: false, message: '下载地址不在允许的域名内：' + host });
 
       const tmpDir = process.env.TEMP || process.env.TMP || '.';
       const fileName = 'PhoneAccess-Update-' + Date.now() + '.exe';
       const dest = join(tmpDir, fileName);
+      const part = dest + '.part';
       console.log('screen-server: 开始下载新版 -> ' + dest + ' (' + target + ')');
+
+      updateState = { at: Date.now(), phase: 'connecting', bytes: 0, total: 0, startedAt: Date.now(), lastByteAt: Date.now(), error: '', url: target };
       const ac = new AbortController();
-      const timer = setTimeout(() => ac.abort(), 10 * 60 * 1000);
+      let aborted = false;
+      const abortWith = (reason) => {
+        if (aborted) return;
+        aborted = true;
+        updateState.phase = 'error';
+        updateState.error = reason;
+        updateState.at = Date.now();
+        try { ac.abort(); } catch { }
+      };
+      // 看门狗：连接 20 秒无响应 / 下载中 20 秒没新数据 / 总时长 8 分钟 → 立即判失败
+      const watchdog = setInterval(() => {
+        const idle = Date.now() - updateState.lastByteAt;
+        if (updateState.phase === 'connecting' && Date.now() - updateState.startedAt > 20000) {
+          abortWith('连接下载服务器超时（20 秒没响应）。国内直连 GitHub 经常这样：请开代理重试，或让卖家发国内网盘链接。');
+        } else if (updateState.phase === 'downloading' && idle > 20000) {
+          abortWith('下载卡住了（20 秒没新数据）。网络不稳或被中断：可以重试，或让卖家发国内网盘链接。');
+        } else if (updateState.phase === 'downloading' && updateState.total > 0 && Date.now() - updateState.startedAt > 45000) {
+          // 慢速看门狗（2026-10-30 实测）：国内直连 GitHub 的 asset CDN 实测只有 ~25 KB/s，
+          // 52MB 要下 35 分钟——不拦的话用户会以为"点了没反应"。低于 60KB/s 且预计还要 >10 分钟就直接判失败。
+          const secs = (Date.now() - updateState.startedAt) / 1000;
+          const speed = updateState.bytes / Math.max(1, secs);                 // B/s
+          const remainSec = speed > 0 ? (updateState.total - updateState.bytes) / speed : Infinity;
+          if (speed < 60 * 1024 && remainSec > 600) {
+            abortWith('下载太慢：平均只有 ' + Math.max(1, Math.round(speed / 1024)) + ' KB/s，按这个速度还要约 '
+              + Math.round(remainSec / 60) + ' 分钟，已停止。国内直连 GitHub 常见这种情况：请开代理重试，或让卖家发国内网盘链接。');
+          }
+        } else if (Date.now() - updateState.startedAt > 8 * 60 * 1000) {
+          abortWith('下载超时（超过 8 分钟）。');
+        }
+      }, 1000);
       (async () => {
         try {
-          const r = await fetch(target, { signal: ac.signal, headers: { 'user-agent': 'PhoneAccess-UpdateCheck', 'cache-control': 'no-cache' } });
-          if (!r.ok) return reply(200, { ok: false, message: '下载失败：HTTP ' + r.status });
-          const len = Number(r.headers.get('content-length') || 0);
-          if (len > 400 * 1024 * 1024) return reply(200, { ok: false, message: '安装包超过 400MB，已拒绝' });
-          const buf = Buffer.from(await r.arrayBuffer());
-          if (!buf.length) return reply(200, { ok: false, message: '下载到的文件是空的' });
-          writeFileSync(dest, buf);
+          const r = await fetch(target, {
+            signal: ac.signal,
+            headers: { 'user-agent': 'PhoneAccess-UpdateCheck', 'cache-control': 'no-cache' }
+          });
+          if (!r.ok) throw new Error('下载失败：HTTP ' + r.status);
+          const total = Number(r.headers.get('content-length') || 0);
+          if (total > 400 * 1024 * 1024) throw new Error('安装包超过 400MB，已拒绝');
+          updateState.phase = 'downloading';
+          updateState.total = total;
+          updateState.at = Date.now();
+          const reader = (r.body && typeof r.body.getReader === 'function') ? r.body.getReader() : null;
+          const parts = [];
+          let got = 0;
+          if (reader) {
+            while (true) {
+              const { done, value } = await reader.read();
+              if (done) break;
+              if (aborted) throw new Error(updateState.error || '已中止');
+              const chunk = Buffer.from(value);
+              got += chunk.length;
+              if (got > 400 * 1024 * 1024) throw new Error('安装包超过 400MB，已拒绝');
+              parts.push(chunk);
+              updateState.bytes = got;
+              updateState.lastByteAt = Date.now();
+            }
+          } else {
+            const buf = Buffer.from(await r.arrayBuffer());
+            got = buf.length; parts.push(buf);
+            updateState.bytes = got; updateState.lastByteAt = Date.now();
+          }
+          if (aborted) throw new Error(updateState.error || '已中止');
+          const buf = Buffer.concat(parts);
+          if (!buf.length) throw new Error('下载到的文件是空的');
+          writeFileSync(part, buf);
+          try { renameSync(part, dest); } catch { writeFileSync(dest, buf); try { unlinkSync(part); } catch { } }
+          updateState.phase = 'done';
+          updateState.at = Date.now();
           console.log('screen-server: 下载完成 ' + Math.round(buf.length / 1024 / 1024) + 'MB，准备启动安装程序');
           // detached：页面请求结束时安装包继续跑，不用等它结束
           const p = spawn('cmd.exe', ['/c', 'start', '', dest], { detached: true, stdio: 'ignore', windowsHide: true });
           p.unref();
-          reply(200, { ok: true, path: dest, bytes: buf.length, message: '已下载到 ' + dest + '，正在打开安装程序（如果弹出管理员授权请点「是」）。' });
+          reply(200, { ok: true, path: dest, bytes: buf.length, message: '已下载完（' + Math.round(buf.length / 1024 / 1024) + ' MB），正在打开安装程序。如果弹出管理员授权请点「是」。' });
         } catch (e) {
-          const msg = (e && e.name === 'AbortError') ? '下载超时（10 分钟）' : ('下载失败：' + ((e && e.message) || '未知错误'));
-          reply(200, { ok: false, message: msg });
+          // 网络层错误（DNS/TCP 被挡、连接被重置）对客户来说就是"连不上 GitHub"，
+          // 不要直接把 undici 的 "fetch failed" 抛给用户，要给出下一步怎么办。
+          const rawMsg = String((e && e.message) || '');
+          const netErr = /fetch failed|ENOTFOUND|ECONNRESET|ETIMEDOUT|ECONNREFUSED|EAI_AGAIN|socket hang up|other side closed/i.test(rawMsg);
+          const reason = aborted
+            ? (updateState.error || '下载已中止')
+            : ((e && e.name === 'AbortError')
+              ? '下载已中止'
+              : (netErr
+                ? '连不上下载服务器（网络到 GitHub 不通）。请开代理重试，或让卖家发国内网盘链接。'
+                : ('下载失败：' + (rawMsg || '未知错误'))));
+          if (!aborted) { updateState.phase = 'error'; updateState.error = reason; updateState.at = Date.now(); }
+          try { unlinkSync(part); } catch { }
+          reply(200, { ok: false, message: reason });
         } finally {
-          clearTimeout(timer);
+          clearInterval(watchdog);
         }
       })();
     });
