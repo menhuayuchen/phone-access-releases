@@ -80,20 +80,34 @@ function Get-TrialPaths {
     [void]$list.Add((Join-Path $pd 'PhoneAccess\trial.json'))
     [void]$list.Add((Join-Path $lad 'PhoneAccessTrial\trial.json'))
     [void]$list.Add((Join-Path $Dir 'trial.json'))
-    return , $list.ToArray()
+    return $list.ToArray()
 }
 
 function Read-TrialRegValue {
+    # 用 reg.exe 而不是 PowerShell 注册表提供程序：非管理员时 New-Item 会往错误流喷一堆红字，
+    # 而"写不进去"在这里是完全正常的情况（没提权），不该吓到客户。
     param([string]$Key, [string]$Name)
-    try { return [string](Get-ItemProperty -LiteralPath $Key -Name $Name -ErrorAction Stop).$Name } catch { return '' }
+    try {
+        $hive = 'HKLM'
+        if ($Key -like 'HKCU*') { $hive = 'HKCU' }
+        $path = $hive + '\SOFTWARE\PhoneAccess'
+        $out = & reg query $path /v $Name 2>$null
+        if ($LASTEXITCODE -ne 0 -or -not $out) { return '' }
+        foreach ($line in @($out)) {
+            if ($line -match ('^\s+' + [regex]::Escape($Name) + '\s+REG_SZ\s+(.*)$')) { return $matches[1].Trim() }
+        }
+        return ''
+    } catch { return '' }
 }
 
 function Write-TrialRegValue {
     param([string]$Key, [string]$Name, [string]$Value)
     try {
-        if (-not (Test-Path -LiteralPath $Key)) { New-Item -Path $Key -Force | Out-Null }
-        New-ItemProperty -LiteralPath $Key -Name $Name -Value $Value -PropertyType String -Force | Out-Null
-        return $true
+        $hive = 'HKLM'
+        if ($Key -like 'HKCU*') { $hive = 'HKCU' }
+        $path = $hive + '\SOFTWARE\PhoneAccess'
+        & reg add $path /v $Name /t REG_SZ /d $Value /f 1>$null 2>$null
+        return ($LASTEXITCODE -eq 0)
     } catch { return $false }
 }
 
@@ -123,7 +137,7 @@ function Read-TrialCandidates {
             [void]$found.Add([pscustomobject]@{ start = $s; lastSeen = $ls; source = $kv.name })
         } catch { }
     }
-    return , $found.ToArray()
+    return $found.ToArray()
 }
 
 function Save-TrialRecord {
