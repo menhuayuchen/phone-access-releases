@@ -1751,6 +1751,12 @@ bindImg(img);
     + 'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
     + '<path d="M20.8 5.6a5.1 5.1 0 0 0-7.2 0L12 7.2l-1.6-1.6a5.1 5.1 0 1 0-7.2 7.2L12 21.6l8.8-8.8'
     + 'a5.1 5.1 0 0 0 0-7.2z"/></svg>';
+  // 套餐按钮图标（价签）——2026-10-30 加：和设置/支持同一套圆形按钮
+  const ICON_PRICE = '<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" '
+    + 'stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M20.6 13.4 13.4 20.6a2 2 0 0 1-2.8 0L3.3 13.3a2 2 0 0 1-.6-1.5l.2-6.1a2 2 0 0 1 1.9-1.9l6.1-.2'
+    + 'a2 2 0 0 1 1.5.6l7.3 7.3a2 2 0 0 1 0 2.8z"/>'
+    + '<circle cx="8.2" cy="8.2" r="1.3"/></svg>';
   const BTN_CSS = 'width:34px;height:34px;display:flex;align-items:center;justify-content:center;'
     + 'border-radius:50%;background:rgba(26,28,34,.9);color:#8CE68C;border:1px solid rgba(140,230,140,.38);'
     + 'cursor:pointer;padding:0;backdrop-filter:blur(6px);-webkit-tap-highlight-color:transparent;'
@@ -2361,6 +2367,41 @@ bindImg(img);
   }
 
 
+  // 套餐面板（2026-10-30）：三档价格的卡片页。内容全部来自 product.config.json 的 plans，
+  // 卖家改价/改文案不用改代码；每张卡下方统一给收款码与联系方式（复用支持面板的渲染）。
+  function openPlans(lic) {
+    const plans = (lic && lic.plans) || {};
+    const items = Array.isArray(plans.items) ? plans.items : [];
+    let body = '';
+    if (plans.note) {
+      body += '<div style="color:#8b9098;font-size:13px;margin-bottom:10px">' + escHtml(plans.note) + '</div>';
+    }
+    items.forEach((p) => {
+      const hl = !!p.highlight;
+      const feats = (p.features || []).map((f) => '<li style="margin:3px 0">' + escHtml(f) + '</li>').join('');
+      body += '<div style="border:1px solid ' + (hl ? '#3f7a4a' : '#2c2f38') + ';border-radius:12px;'
+        + 'padding:13px 14px;margin-bottom:10px;background:' + (hl ? 'rgba(47,107,58,.16)' : '#1a1c22') + '">'
+        + '<div style="display:flex;align-items:baseline;justify-content:space-between;gap:8px;flex-wrap:wrap">'
+        + '<div style="font-size:15px;font-weight:600;color:' + (hl ? '#8CE68C' : '#e8eaee') + '">'
+        + escHtml(p.name || '') + '</div>'
+        + (p.tag ? '<span style="font-size:11px;color:' + (hl ? '#8CE68C' : '#868c96')
+          + ';border:1px solid currentColor;border-radius:20px;padding:1px 8px">' + escHtml(p.tag) + '</span>' : '')
+        + '</div>'
+        + '<div style="margin:6px 0 2px"><span style="font-size:22px;font-weight:700;color:#e8eaee">'
+        + escHtml(p.price || '') + '</span><span style="font-size:12px;color:#868c96;margin-left:6px">'
+        + escHtml(p.unit || '') + '</span></div>'
+        + (feats ? '<ul style="margin:8px 0 0;padding-left:18px;color:#aeb3bb;font-size:13px;line-height:1.65">'
+          + feats + '</ul>' : '')
+        + (p.small ? '<div style="margin-top:8px;color:#6b7078;font-size:11.5px">' + escHtml(p.small) + '</div>' : '')
+        + '</div>';
+    });
+    body += '<div style="color:#868c96;font-size:12px;line-height:1.75;margin-top:4px">'
+      + '· 许可证按机器绑定（CPU + 主板），换硬盘、重装系统不受影响<br>'
+      + '· 付款后把「机器码 + 付款截图」发给作者，签发后手机上粘贴即生效<br>'
+      + '· 联系方式：</div>'
+      + '<div style="margin-top:10px">' + supportHtml(lic, true) + '</div>';
+    openSheet(plans.title || '套餐与价格', body, 'plClose');
+  }
   function openSupport(lic) {
     const title = (lic.support && lic.support.title) ? lic.support.title : '支持 / 购买';
     // 三种状态分开显示（2026-10-30 加试用）：已购买 / 试用中 / 免费
@@ -2405,6 +2446,15 @@ bindImg(img);
       + 'display:flex;flex-direction:column;gap:8px;align-items:flex-end';
     const gear = makeBtn('paGear', ICON_GEAR, '设置');
     wrap.appendChild(gear);
+    // 套餐按钮（2026-10-30 加）：三种方案写在这里，价格由 product.config.json 的 plans 提供，
+    // 卖家改价格/改文案不用改代码。plans.enabled=false 就整个隐藏。
+    const plans = lic.plans || null;
+    const showPlans = !!(plans && plans.enabled !== false && Array.isArray(plans.items) && plans.items.length);
+    let priceBtn = null;
+    if (showPlans) {
+      priceBtn = makeBtn('paPlans', ICON_PRICE, (plans.title || '套餐与价格'));
+      wrap.appendChild(priceBtn);
+    }
     // 支持按钮：卖家可以在 product.config.json 里用 support.enabled=false 整体关掉
     const showSupport = !(lic.support && lic.support.enabled === false);
     let heart = null;
@@ -2414,6 +2464,7 @@ bindImg(img);
     }
     document.body.appendChild(wrap);
     gear.addEventListener('click', () => openSettings(lic));
+    if (priceBtn) priceBtn.addEventListener('click', () => openPlans(lic));
     if (heart) heart.addEventListener('click', () => openSupport(lic));
   }
 

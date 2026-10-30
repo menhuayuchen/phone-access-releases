@@ -1203,6 +1203,9 @@ function handler(req, res) {
       // branding 由 licence-state.ps1 扫描 branding\ 目录得出（收款码、联系方式），
       // 必须一起返回，否则页面拿不到二维码和联系方式的路径。
       branding: lic.branding || null,
+      // 套餐页（2026-10-30）：价格与文案全在 product.config.json 的 plans 里，
+      // 卖家改价/改档位不用改代码、不用重新发版（重启服务即生效）。
+      plans: (function () { try { const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); return c.plans || null; } catch { return null; } })(),
       // 半免费：超清每日配额状态（设置面板显示"今天还剩几分钟超清"、个性化锁定用）
       ultraQuota: (function () { try { return ultraStatus(); } catch { return null; } })()
     }));
