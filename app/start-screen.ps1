@@ -174,10 +174,10 @@ if ($cap.Count -eq 0) {
     if (Test-Path $bak) { Copy-Item $bak $capExe -Force; Write-Host '[!] capture.exe restored from backup' }
     else { throw "capture.exe missing - compile capture.cs with csc" }
   }
-$capCmd = "`"$capExe`" `"$frameFile`" $($geo.Width) 40 `"$(Join-Path $here 'screen-capture.log')`" 62 `"$viewersFile`" dsh-screen-frames `"$(Join-Path $here 'capture.interval')`" `"$(Join-Path $here 'capture.mode')`""
+$capCmd = "`"$capExe`" `"$frameFile`" $($geo.Width) 33 `"$(Join-Path $here 'screen-capture.log')`" 70 `"$viewersFile`" dsh-screen-frames `"$(Join-Path $here 'capture.interval')`" `"$(Join-Path $here 'capture.mode')`""
   # 改动（P0-3）：抓屏宽度参数 2560 → $geo.Width。上面那行 $capCmd 是历史遗留死代码（定义了但没用），
   # 为免以后有人 grep 到 2560 又抄错，一并换成同一个变量，不删（删代码属于重构，不在本次范围）。
-  Start-Detached "cmd.exe /c `"`"$capExe`" `"$frameFile`" $($geo.Width) 40 `"$(Join-Path $here 'screen-capture.log')`" 62 `"$viewersFile`" dsh-screen-frames `"$(Join-Path $here 'capture.interval')`" `"$(Join-Path $here 'capture.mode')`" > nul 2>&1`"" | Out-Null
+  Start-Detached "cmd.exe /c `"`"$capExe`" `"$frameFile`" $($geo.Width) 33 `"$(Join-Path $here 'screen-capture.log')`" 70 `"$viewersFile`" dsh-screen-frames `"$(Join-Path $here 'capture.interval')`" `"$(Join-Path $here 'capture.mode')`" > nul 2>&1`"" | Out-Null
   Start-Sleep -Seconds 3
 } else {
   Write-Host "[i] capture already running (pid $($cap[0].Id))"

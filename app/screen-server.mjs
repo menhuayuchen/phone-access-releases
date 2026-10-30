@@ -100,12 +100,26 @@ const CAP = parseGeometry(
   cfgW >= 320 ? cfgW : 2560,
   cfgH >= 200 ? cfgH : (cfgW >= 320 ? Math.round(cfgW * 1600 / 2560) : 1600),
 );
-// 宽度上限（与 .ps1 侧 Get-CaptureGeometry 的 maxCaptureWidth 同义）；0 或未配置 = 不额外限制
-const CAP_W = (cfgMaxW > 0 && CAP.width > cfgMaxW) ? cfgMaxW : CAP.width;
-const CAP_H = CAP_W === CAP.width ? CAP.height : Math.round(CAP.height * CAP_W / CAP.width);
+// ---- 抓屏宽度 与 发送宽度（2026-10-30 画质修复）-----------------------------------
+// capture.exe 只按显示器原生宽度抓（上限 2560），**不再按画质档位缩**：
+//   实测同一台机器（2560×1600）：原生抓屏 24.7fps（间隔 40ms）/ 29.7fps（间隔 33ms）；
+//   让 capture.exe 缩到 1440 反而只有 18.6fps，而且 GDI+ Bilinear 缩放会让小字发虚。
+// 所以画质档位改成「发送宽度」：CAP_W = 用户选的 1440/1920/2560，缩放在服务端用 sharp(Lanczos) 做。
+// 好处：① 三档都不掉帧（抓屏永远原生）② 缩小后比抓屏侧缩放清晰 ③ CAP_W 是 let，切档立即生效、不用重启。
+const CAPTURE_W = CAP.width;
+const CAPTURE_H = CAP.height;
+let CAP_W = (cfgMaxW > 0 && CAPTURE_W > cfgMaxW) ? cfgMaxW : CAPTURE_W;
+let CAP_H = CAP_W === CAPTURE_W ? CAPTURE_H : Math.round(CAPTURE_H * CAP_W / CAPTURE_W);
+function setDeliveryWidth(w) {
+  const n = Math.round(Number(w));
+  if (!Number.isFinite(n) || n < 320) return CAP_W;
+  CAP_W = Math.min(CAPTURE_W, n);
+  CAP_H = Math.round(CAPTURE_H * CAP_W / CAPTURE_W);
+  return CAP_W;
+}
 
-// 流畅模式（WebRTC）输出宽度：默认取抓屏宽的一半（2560→1280，与改动前完全一致）。
-// 高度按抓屏宽高比推，并向下取偶数（I420 色度 2x2 抽样要求偶数尺寸）。
+// 流畅模式（WebRTC）输出宽度：默认取"发送宽度"的一半（2560→1280，与改动前完全一致）。
+// RTC 轨道尺寸建连时锁定，所以取启动时的档位；之后切画质不影响流畅模式（避免黑屏）。
 const evenDown = (n) => Math.max(2, n - (n % 2));
 const cfgRtcW = Number(cfgScreen.rtcWidth) || 0;
 const RTC_W = cfgRtcW >= 320 ? evenDown(cfgRtcW) : evenDown(Math.max(320, Math.round(CAP_W / 2)));
@@ -327,7 +341,7 @@ const encCache = new Map();
 function encodeStream(buf, stamp, w, q) {
   // 要的就是满宽（或更宽）：直接透传抓屏原图。再编码一遍等于二次 JPEG 压缩，肉眼可见掉细节。
   // 改动（P0-3）：满宽的判据从写死 2560 改成实际抓屏宽度 CAP_W（1920 的机器不再每次都白编码一遍）。
-  if (!w || w >= (sourceState.width || CAP_W)) return Promise.resolve(buf);
+  if (!w || w >= (sourceState.width || CAPTURE_W)) return Promise.resolve(buf);
   const key = stamp + ':' + w + ':' + q;
   const hit = encCache.get(key);
   if (hit) return Promise.resolve(hit);
@@ -386,7 +400,7 @@ function publishViewers() {
   // 改动（P0-3）：这里原来写死 2560。现在一律按实际抓屏宽度 CAP_W 抓：只要有人在看清晰模式（流或轮询），
   // 就必须按原始宽度抓，否则流畅模式把抓屏降到一半时，清晰那边会被悄悄降清晰度（以前就是这个行为）。
   // 流畅模式的降采样交给 decode.mjs（它本来就按 RTC_W 编码），这里不动抓屏。
-  const w = CAP_W;
+  const w = CAPTURE_W;
   if (sourceState.width !== w) {
     sourceState.width = w;
     writeMode();
@@ -1248,9 +1262,10 @@ function handler(req, res) {
     return;
   }
 
-  // ---- 画质档位（改抓屏宽度，直接影响帧率/延迟/流量）--------------------------
-  // 为什么必须重启：抓屏宽度是 capture.exe 的启动参数，CAP_W 在服务启动时算好就固定了。
-  // 所以只能"写配置 -> 主动退出 -> 守护进程用新配置把它拉起来"（约 8 秒）。
+  // ---- 画质档位（改"发送宽度"，立即生效，不再需要重启）-------------------------
+  // 2026-10-30 画质修复：抓屏永远按显示器原生宽度（见顶部 CAPTURE_W 的注释），
+  // 画质档位只改服务端 sharp 降采样的目标宽度。CAP_W 是活变量，/stream 每帧按它重算，
+  // 所以这里写配置 + 改 CAP_W 就生效了 —— 以前要整机重启，用户实测"点哪个都一样糊"。
   // 安全性：只接受 800..3840 的整数，写进我们自己配置里的一个数字，不接受任意内容。
   if (url.pathname === '/set-quality' && req.method === 'POST') {
     let qbody = '';
@@ -1270,30 +1285,42 @@ function handler(req, res) {
       try { qcfg = JSON.parse(readFileSync(qcfgPath, 'utf8').replace(/^\uFEFF/, '')); } catch { }
       if (!qcfg) return qreply(500, { ok: false, message: '读不到配置文件，无法修改' });
       if (!qcfg.screen) qcfg.screen = {};
-      const qold = Number(qcfg.screen.maxCaptureWidth || 0);
       qcfg.screen.maxCaptureWidth = w;
       try {
         writeFileSync(qcfgPath, JSON.stringify(qcfg, null, 2), 'utf8');
       } catch (e) {
         return qreply(500, { ok: false, message: '写配置文件失败：' + e.message });
       }
-      console.log('screen-server: capture width ' + qold + ' -> ' + w + '，准备重启生效');
+      const prevW = CAP_W;
+      const applied = setDeliveryWidth(w);
+      console.log('screen-server: delivery width ' + prevW + ' -> ' + applied
+        + '（抓屏仍按原生 ' + CAPTURE_W + '，立即生效）');
       // 半免费：未授权机器设到超清档时，把"每天免费额度/今天还剩多少"讲清楚。
       // 不拦截——配额用完后发帧处自动按高清出图（见 deliverCapW），设置本身永远允许。
       let quotaNote = '';
       let quota = null;
       try {
         quota = ultraStatus();
-        if (w > ULTRA_LIMIT && !quota.licensed) {
+        if (applied > ULTRA_LIMIT && !quota.licensed) {
           quotaNote = quota.exhausted
-            ? '（提醒：今天的超清免费时长已用完，重启后会先按高清出图，明天 0 点自动恢复；安装许可证不限时长）'
+            ? '（提醒：今天的超清免费时长已用完，现在会先按高清出图，明天 0 点自动恢复；安装许可证不限时长）'
             : '（未授权机器超清每天免费 ' + Math.round(quota.limitSec / 60) + ' 分钟，今天还剩约 ' + Math.round(quota.remainingSec / 60) + ' 分钟）';
         }
       } catch { }
-      // 改动：不再自动退出。抓屏几何是 start-screen.ps1 启动时作为参数传进来的，
-      // 光重启 screen-server 只会继承旧参数（实测：配置写 2560，capture.mode 里仍是 1440）。
-      // 所以这里只保存，由用户点桌面「重启」走完整重启流程，才能真正换分辨率。
-      qreply(200, { ok: true, captureWidth: w, previous: qold, restarting: false, needFullRestart: true, ultraQuota: quota, message: '已保存。双击桌面「手机远程」里的「重启」后生效。' + quotaNote });
+      // 立即生效：不需要重启。抓屏宽度本来就是原生的，画质档位只是服务端的发送宽度。
+      qreply(200, {
+        ok: true,
+        captureWidth: applied,
+        requested: w,
+        previous: prevW,
+        captureNative: CAPTURE_W,
+        restarting: false,
+        needFullRestart: false,
+        ultraQuota: quota,
+        message: '已生效：发送宽度 ' + applied
+          + (applied < CAPTURE_W ? '（抓屏仍按原分辨率 ' + CAPTURE_W + '，所以字更清楚、帧率不掉）' : '（原分辨率，最清晰）')
+          + '，不用重启。' + quotaNote
+      });
     });
     return;
   }
@@ -1505,8 +1532,8 @@ function handler(req, res) {
   if (url.pathname === '/rtc-off' && req.method === 'POST') {
     rtcMode = false;
     // 改动（P0-3）：这里原来把宽度写回 2560，会触发一次抓屏管线重启（画面卡 1~2 秒）。
-    // 现在写回实际抓屏宽度 CAP_W（与 publishViewers() 一致），非 2560 的机器不会再白抖一下。
-    sourceState.width = CAP_W;
+    // 现在写回实际抓屏宽度 CAPTURE_W（与 publishViewers() 一致），非 2560 的机器不会再白抖一下。
+    sourceState.width = CAPTURE_W;
     writeMode();
     res.writeHead(200, { 'content-type': 'application/json' });
     res.end(JSON.stringify({ ok: true, rtcMode, ...sourceState }));
@@ -1632,7 +1659,7 @@ function handler(req, res) {
         // 于是 P0-3 "按实际抓屏宽度自适应"的修复在 /mode 这条路上被架空了：
         // 传一个 99999 就会让抓屏进程去申请一张巨大的图（内存/CPU 白烧）。
         if (Number.isInteger(m.width)) {
-          sourceState.width = Math.max(0, Math.min(CAP_W, Math.round(m.width)));
+          sourceState.width = Math.max(0, Math.min(CAPTURE_W, Math.round(m.width)));
         }
         const unchanged = JSON.stringify(sourceState) === before;
         // 值没变就别重写控制文件：capture 看到文件变化会重启抓屏循环（画面会卡一下）。
@@ -1754,15 +1781,14 @@ function handler(req, res) {
     // 结果缓存到下一帧到来。不带参数时行为不变（原图）。
     const wRaw = Number(url.searchParams.get('w') || 0);
     const qRaw = Number(url.searchParams.get('q') || 0);
-    // 改动（P0-3）：上限从写死 2560 改成实际抓屏宽度 CAP_W（1920 的机器上不会再被"允许"到 2560）
-    // 改动（半免费）：上限再受 deliverCapW() 钳制——未授权且当日超清时长用完时只发 ≤1920 宽
+    // 上限 = 当前画质档位（deliverCapW：再叠加"未授权且当日超清用完 → ≤1920"的钳制）
     const capW = deliverCapW();
     let w = Number.isFinite(wRaw) ? Math.max(0, Math.min(capW, Math.round(wRaw))) : 0;
     let q = Number.isFinite(qRaw) && qRaw > 0 ? Math.max(20, Math.min(95, Math.round(qRaw))) : 0;
-    // 配额用完时"不带参数透传原图"的分支必须堵住，否则 2560 原图照样漏出去：强制缩到高清宽
-    if (!w && capW < CAP_W) { w = capW; if (!q) q = 70; }
+    // 画质档位低于抓屏宽时，即使页面没带参数也要缩（否则 2560 原图照发，流量和档位都对不上）
+    if (!w && capW < CAPTURE_W) { w = capW; if (!q) q = 70; }
     // 计时：这次真的按 >1920 宽出图，才算"正在看超清"
-    if ((w || CAP_W) > ULTRA_LIMIT) ultraNoteServe();
+    if ((w || CAPTURE_W) > ULTRA_LIMIT) ultraNoteServe();
     if (!w && !q) {
       res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': frame.length, 'cache-control': 'no-store' });
       res.end(frame);
@@ -1796,14 +1822,14 @@ function handler(req, res) {
     // 根本推不动，只会越排越多 → 延迟从 100ms 涨到几秒。降到 1280 宽一帧 ~40KB 就能跑满帧率。
     const wRaw = Number(url.searchParams.get('w') || 0);
     const qRaw = Number(url.searchParams.get('q') || 0);
-    // 改动（P0-3）：上限从写死 2560 改成实际抓屏宽度 CAP_W（同 /frame.jpg）
-    // 改动（半免费）：再受 deliverCapW() 钳制。流是长连接，配额可能在连接中途用完
-    // （或跨天恢复/装上许可证），所以 baseW/baseQ 记住建连时的意图，push() 里每帧复查。
+    // 上限 = 当前画质档位（deliverCapW，含"超清配额用完 → ≤1920"的钳制）。流是长连接，
+    // 画质可能在连接中途被切，所以 baseW/baseQ 只记"建连时页面自己的意图"，
+    // 实际发送宽度每帧在 push() 里按**当前**档位重算。
     const capW = deliverCapW();
     const baseW = Number.isFinite(wRaw) ? Math.max(0, Math.min(capW, Math.round(wRaw))) : 0;
     const baseQ = Number.isFinite(qRaw) && qRaw > 0 ? Math.max(20, Math.min(95, Math.round(qRaw))) : 0;
     let reqW = baseW, reqQ = baseQ;
-    if (!reqW && capW < CAP_W) { reqW = capW; if (!reqQ) reqQ = 65; }
+    if (!reqW && capW < CAPTURE_W) { reqW = capW; if (!reqQ) reqQ = 70; }
     const sid = String(url.searchParams.get('s') || '').slice(0, 24);   // 丢帧按会话统计
 
     // ---- 免费版并发上限（2026-10-30）：最多 3 台设备同时看 ----
@@ -1844,15 +1870,14 @@ function handler(req, res) {
       if (!frame || frameStamp === sent || busy || released) return;
       const stamp = frameStamp;
       const src = frame;
-      // 半免费：每帧推送前复查超清配额——连接中途用完就地降档（缩到 1920 宽），
-      // 跨天恢复或装上许可证则回到建连时的参数。配额计时只认真正按超清宽发出的帧。
+      // 每帧按"当前"画质档位重算发送宽度：这样在手机上切换画质立即生效，
+      // 不用重连、不用重启服务（以前改完必须整机重启才会换分辨率）。
+      // 配额（免费版超清 1 小时）也在这里复查：中途用完就地降到 1920，跨天恢复自动回去。
       const capNow = deliverCapW();
-      if (capNow < CAP_W) {
-        if (!reqW || reqW > capNow) { reqW = capNow; if (!reqQ) reqQ = 65; }
-      } else if (reqW !== baseW || reqQ !== baseQ) {
-        reqW = baseW; reqQ = baseQ;
-      }
-      if ((reqW || CAP_W) > ULTRA_LIMIT) ultraNoteServe();
+      const wantW = baseW > 0 ? Math.min(baseW, capNow) : (capNow < CAPTURE_W ? capNow : 0);
+      const wantQ = baseQ > 0 ? baseQ : (wantW ? 70 : 0);
+      reqW = wantW; reqQ = wantQ;
+      if ((reqW || CAPTURE_W) > ULTRA_LIMIT) ultraNoteServe();
       // 排队阈值按"编码后"的帧大小算（以前用原始 290KB 当阈值，窄带降档后实际帧只有
       // 98KB，要排到 580KB 才开始丢，延迟一路涨到 1 秒多）。但也不能太紧：Chrome 解码
       // multipart 时会短暂停一下，1.2 帧的阈值会把正常抖动误判成拥塞，于是"一直掉帧"。

@@ -2241,7 +2241,7 @@ bindImg(img);
     } catch (e) { }
     body += setSection('连接与画面', connInner);
 
-    // 画面质量（改抓屏宽度：直接影响帧率、延迟、手机流量）
+    // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
     // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
     // 手机屏会把三档都压到屏幕宽。所以按钮上直接标流量估算，说明文案讲清"差距在放大细节和流量"。
@@ -2268,15 +2268,13 @@ bindImg(img);
         + '</div>';
     }
     qInner += '<div style="color:#868c96;font-size:11.5px;margin-top:9px;line-height:1.6">'
-      + '手机屏会把三档都压到屏幕宽，正常看差别不大——<br>'
-      + '真正的差距在双指放大后的小字细节（超清依然锐利）和流量消耗。<br>'
-      + '高清/标准免费不限时；超清未授权每天免费 1 小时，许可证不限时长。<br>'
-      + '改完请双击桌面「手机远程」里的「重启」，约 8 秒后刷新生效。</div>'
+      + '切换后立即生效，不用重启。抓屏始终按电脑原分辨率，三档只是「发到手机上的宽度」：<br>'
+      + '数字小的更省流量；数字大的双指放大看小字更清楚（帧率三档一样）。<br>'
+      + '手机屏会把画面压到屏幕宽，正常看差别不大，真正的差距在放大后的小字和流量。<br>'
+      + '高清/标准免费不限时；超清未授权每天免费 1 小时，许可证不限时长。</div>'
       + '<div id="setQMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>';
-    // 画面质量：已验证有效（实测 1920 → capture.exe 参数变 1920）。
-    // 但抓屏几何是 start-screen.ps1 启动时传的参数，start-screen 在端口已监听时不会重启
-    // server（154 行），所以只重启 screen-server 会继承旧参数。
-    // 因此 UI 明确写「保存后双击桌面重启」，不假装自动生效。
+    // 2026-10-30 画质修复：抓屏宽度不再随档位变（详情见 screen-server.mjs 顶部注释），
+    // 所以换档不需要重启；这里也不再写「请双击桌面重启」。
     body += setSection('画面质量', qInner);
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
@@ -2325,7 +2323,7 @@ bindImg(img);
     const rl = box.querySelector('#setReload');
     if (rl) rl.addEventListener('click', () => location.reload());
 
-    // 画面质量按钮：写配置 → 服务自动重启 → 轮询恢复后刷新
+    // 画面质量按钮：POST /set-quality（服务端立即按新宽度发送，无需重启/重连）
     const qMsg = box.querySelector('#setQMsg');
     const qBtns = [...box.querySelectorAll('.paQ')];
     qBtns.forEach((b) => b.addEventListener('click', async () => {
@@ -2346,16 +2344,21 @@ bindImg(img);
         if (qMsg) { qMsg.style.color = '#ff6b6b'; qMsg.textContent = (r && r.message) || '设置失败'; }
         return;
       }
-      // 改动：不再假装"自动重启生效"。抓屏几何必须走完整重启（桌面「重启」）才会变，
-      // 这里只显示明确的下一步，避免用户以为设置没生效是 bug。
-      qualityPending = Date.now();   // 等服务重启恢复 → pollStats 钩子整页刷新一次（iOS 独立模式，见 pollStats 内注释）
-      const needFull = !!(r && r.needFullRestart);
+      // 已生效：画质现在只是"发送宽度"，服务端逐帧按新宽度缩放，不需要重启也不用重连。
+      // 直接把高亮刷到新档位上，避免用户以为没点中。
+      const applied = Number((r && r.captureWidth) || 0);
+      if (applied) {
+        qBtns.forEach((x) => {
+          const on = Number(x.getAttribute('data-w')) === applied;
+          x.style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
+          x.style.color = on ? '#8fb6ff' : '#c9ccd1';
+          x.style.borderColor = on ? '#3f6fd0' : '#343842';
+        });
+      }
       if (qMsg) {
         qMsg.style.color = '#8CE58C';
-        // 服务端 message 现在附带超清配额提醒（未授权设超清时），原样透出
-        qMsg.textContent = (r && r.message) || (needFull
-          ? '已保存。请双击桌面「手机远程」里的「重启」生效。'
-          : '已保存。');
+        // 服务端 message 附带"实际发送宽度 + 超清配额提醒"，原样透出
+        qMsg.textContent = (r && r.message) || '已生效，不用重启。';
       }
       qBtns.forEach((x) => { x.dataset.busy = ''; x.style.opacity = '1'; });
     }));

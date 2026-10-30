@@ -267,7 +267,8 @@ public class DshProductDpi {
 #   1) product.config.json 的 screen.captureWidth/Height 非 0 → 用它
 #   2) 否则读主显示器物理分辨率（DPI 感知后读，1920 的机器就是 1920，不是 2560）
 #   3) 再不行才退回 2560×1600（唯一允许的写死默认值，只作为兜底）
-# maxCaptureWidth（默认 2560）是宽度上限：4K 机器仍抓 2560 宽，避免带宽翻倍（与改造前行为一致）。
+# maxCaptureWidth（默认 2560）在 1.0.7 起不再影响抓屏：它只是"发送宽度"档位（由 screen-server 缩放）。
+# 抓屏宽度只受硬上限 2560 约束（4K 机器仍然只抓 2560 宽，避免带宽/CPU 翻倍）。
 function Get-CaptureGeometry {
   param($Config)
 
@@ -285,8 +286,11 @@ function Get-CaptureGeometry {
   }
   if ($h -lt 200) { $h = [int][math]::Round($w * 1600 / 2560) }   # 只知道宽时按原默认比例 16:10 估高
 
+  # 改动（2026-10-30 画质修复）：抓屏宽度只受产品硬上限 2560 约束，**不再被画质档位
+  # screen.maxCaptureWidth 压小**——画质档位现在是服务端的"发送宽度"（见 screen-server.mjs）。
+  # 实测：让 capture.exe 内缩到 1440 只有 18.6fps（GDI+ 缩放占住 GDI 通道，copy 31→47ms），
+  # 原生抓 2560 有 24.7~29.7fps，而且服务端 Lanczos 缩放比抓屏侧 Bilinear 清晰。
   $maxW = 2560
-  try { $maxW = [int](Get-ConfigValue $Config @('screen', 'maxCaptureWidth') 2560) } catch { $maxW = 2560 }
   if ($maxW -gt 0 -and $w -gt $maxW) {
     $h = [int][math]::Round($h * $maxW / [double]$w)
     $w = $maxW
