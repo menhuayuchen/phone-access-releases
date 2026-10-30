@@ -718,4 +718,35 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 待真机：装新包后设置应显示 1.0.7；点「检查更新」应返回"已是最新"（发布 1.0.7 后会提示升级）。
 - 待办：注册/发布落地页 → 把 `share.link` 改成站点地址。
 
+## 18. 官网已上线 + 调价 ¥68 + v1.0.7 软发布（2026-10-30 晚）
+
+### 18.1 官网
+
+- 地址：https://menhuayuchen.github.io/phone-access-releases/
+  （`phone-access-releases` 仓库的 `gh-pages` 分支，GitHub Pages 自动发布，build_type=legacy）
+- 内容：`site/index.html` 单文件（约 18 KB，无外部字体/图片/CDN），深色、响应式：
+  卖点 / 4 个功能 / 三步使用 / 三档价格 / FAQ / 下载 / 免责声明。
+- 备用镜像：https://raw.githack.com/menhuayuchen/phone-access-releases/gh-pages/index.html
+  （同一份文件，GitHub 打不开时用；jsDelivr 对 .html 返回 text/plain，不能当页面用，已实测）。
+- 国内访问：github.io 在部分网络会慢/打不开。兜底 = ①页面写明"打不开发邮件要网盘链接"；
+  ②`docs/网站与分享.md` 写好了换国内 OSS/COS 的步骤；③有域名后可绑自定义域名。
+- `product.config.json` 的 `share.link` 已指向官网；分享文案带"¥68 一次买断 + 打不开就回我一声"。
+
+### 18.2 调价
+
+- 专业版 **¥98 → ¥68**：`product.config.json` 的 `plans`（App 套餐页）+ `site/index.html` + 文档同步。
+  文案加了「一次买断，不订阅 · 用三年平均每天不到 7 分钱」。
+- 已对**当前运行的安装**热更新配置（`plans` 和 `share` 直接写进安装目录的 product.config.json），
+  刷新手机页面 → 套餐页显示 ¥68；以后重装由 install.ps1 强制同步，不会回退。
+
+### 18.3 v1.0.7 软发布（prerelease）
+
+- 为了让官网下载到的就是 ¥68 的新版，把 v1.0.7 作为 **prerelease** 发到 GitHub Releases：
+  tag `v1.0.7`，asset `PhoneAccess-Setup-v1.0.7.exe`（52,821,471 B）。
+- 为什么用 prerelease：`/releases/latest` 仍是 v1.0.6，所以**老客户点检查更新不会被打扰**；
+  官网的三处下载按钮直接指向 v1.0.7 的 asset。
+- 转正方法：PATCH release 把 `prerelease=false`（或重新跑 `tools\publish-release.ps1`），
+  然后把官网下载按钮换回 `/releases/latest`。
+
+
 
