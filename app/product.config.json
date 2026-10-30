@@ -84,6 +84,13 @@
       }
     ]
   },
+  "_share说明": "「支持/购买」面板里的分享区（2026-10-30 加）。改这里不用改代码、不用重新打包（重启服务即生效）。{link} 会替换成 link；link 填你的网站/下载页，留空就显示“联系我拿安装包”。enabled=false 隐藏整个分享区。",
+  "share": {
+    "enabled": true,
+    "title": "分享给朋友（对方装好就能用）",
+    "link": "https://github.com/menhuayuchen/phone-access-releases/releases/latest",
+    "text": "我在用「手机远程」：手机就能看电脑屏幕，还能点、能打字，出门在外办点事很方便。\n装好即用，免费版日常就够，专业版一次性买断。\n下载试用：{link}"
+  },
   "_support说明": "未授权时页面右下角的『支持/购买』入口。enabled=false 就整个隐藏。收款码图片放安装目录的 branding\\ 目录：支付宝.png / 微信.png；联系信息写成 branding\\联系.txt 的内容。改完不用重新打包、不用改代码。",
   "support": {
     "enabled": true,

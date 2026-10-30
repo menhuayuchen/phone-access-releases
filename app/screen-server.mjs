@@ -1220,6 +1220,8 @@ function handler(req, res) {
       // 套餐页（2026-10-30）：价格与文案全在 product.config.json 的 plans 里，
       // 卖家改价/改档位不用改代码、不用重新发版（重启服务即生效）。
       plans: (function () { try { const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); return c.plans || null; } catch { return null; } })(),
+      // 分享文案（2026-10-30）：产品推广用，内容在 product.config.json 的 share 里改，不用改代码
+      share: (function () { try { const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); return c.share || null; } catch { return null; } })(),
       // 半免费：超清每日配额状态（设置面板显示"今天还剩几分钟超清"、个性化锁定用）
       ultraQuota: (function () { try { return ultraStatus(); } catch { return null; } })()
     }));

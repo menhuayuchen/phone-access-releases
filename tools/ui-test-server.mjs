@@ -28,6 +28,12 @@ const base = (over = {}) => Object.assign({
   support: { enabled: true, title: '支持 / 购买许可证', note: '纯支持也行，谢谢！', showMachineCode: true },
   branding: { alipay: '', wechat: '', contact: '购买许可证 / 技术支持\n邮箱：ccc475235@gmail.com' },
   plans: { enabled: true, title: '套餐与价格', items: [] },
+  share: {
+    enabled: true,
+    title: '分享给朋友（对方装好就能用）',
+    link: 'https://example.com/pa-demo',
+    text: '我在用「手机远程」：手机就能看电脑屏幕，还能点、能打字。\n下载试用：{link}'
+  },
   ultraQuota: { ultra: true, remainingSec: 3600, limitSec: 3600, exhausted: false }
 }, over);
 

@@ -1730,6 +1730,38 @@ bindImg(img);
       + '</div></div>';
   }
 
+  // ---- 「分享给朋友」（2026-10-30 加）------------------------------------------
+  // 和「支持/购买」放在同一个面板里：产品要推广，但**绝不能**把当前访问地址（带 k= 的钥匙）转出去。
+  // 分享文案来自 product.config.json 的 share.text，{link} 会被替换成 share.link。
+  // 用 navigator.share（手机系统分享面板）优先，不支持就退回"复制文案"。
+  function shareBlockHtml(lic) {
+    const s = lic.share || {};
+    if (s.enabled === false) return '';
+    const link = String(s.link || '').trim();
+    const tpl = String(s.text || '').trim()
+      || '我在用「手机远程」：手机就能看电脑屏幕，还能点、能打字，出门在外很方便。\n下载试用（免费版日常够用）：{link}';
+    const text = tpl.replace(/\{link\}/g, link || '（联系我拿安装包）');
+    const title = String(s.title || '分享给朋友');
+    let h = '<div style="margin:16px 0 0;padding-top:14px;border-top:1px solid #23252c">'
+      + '<div style="color:#8b9098;font-size:12px;margin-bottom:6px">' + esc(title) + '</div>'
+      + '<pre id="shareText" style="margin:0;white-space:pre-wrap;word-break:break-word;'
+      + 'font:12.5px/1.7 system-ui,-apple-system,"Microsoft YaHei",sans-serif;color:#c9ccd1;'
+      + 'background:#14151a;border:1px solid #24262e;border-radius:8px;padding:10px;user-select:all">'
+      + esc(text) + '</pre>'
+      + '<div style="display:flex;gap:10px;flex-wrap:wrap;margin-top:9px">'
+      + '<button id="shareCopy" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;'
+      + 'border-radius:8px;padding:8px 13px;font-size:13px;cursor:pointer">复制分享文案</button>'
+      + (typeof navigator !== 'undefined' && navigator.share
+        ? '<button id="shareSend" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;'
+          + 'padding:8px 14px;font-size:13px;cursor:pointer">用系统分享…</button>'
+        : '')
+      + '</div>'
+      + '<div style="color:#6b7078;font-size:11.5px;line-height:1.6;margin-top:8px">'
+      + '只转发这段文字就够了——别把上面带 <code>k=</code> 的完整地址发给别人，那是你这台电脑的钥匙。</div>'
+      + '</div>';
+    return h;
+  }
+
   // 原「未授权整屏遮罩」blockPage 已删除（半免费 2026-10-29）：免费模式不再拦画面，
   // 粘贴许可证的激活入口移进设置面板「许可证」分区（见 bindLicencePaste）。
 
@@ -2491,11 +2523,35 @@ bindImg(img);
             + '· 多设备同时观看：免费版最多 3 台<br>'
             + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>'))
       + machineCodeHtml(lic)
-      + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>';
+      + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>'
+      + shareBlockHtml(lic);
     const box = openSheet(title, body, 'spClose');
     const cp = box.querySelector('#licCopy');
     if (cp) cp.addEventListener('click', () => {
       if (copyText(lic.machineCode)) { cp.textContent = '已复制'; setTimeout(() => { cp.textContent = '复制'; }, 1500); }
+    });
+    // 分享给朋友：复制文案 / 系统分享（不支持 navigator.share 的环境自动退回复制）
+    const shareTextEl = box.querySelector('#shareText');
+    const shareText = () => (shareTextEl ? shareTextEl.textContent : '');
+    const sc = box.querySelector('#shareCopy');
+    if (sc) sc.addEventListener('click', () => {
+      if (copyText(shareText())) {
+        sc.textContent = '已复制';
+        setTimeout(() => { sc.textContent = '复制分享文案'; }, 1500);
+      } else {
+        sc.textContent = '复制失败：长按上面文字手动复制';
+      }
+    });
+    const ss = box.querySelector('#shareSend');
+    if (ss) ss.addEventListener('click', async () => {
+      try {
+        await navigator.share({ title: (lic.share && lic.share.title) || '手机远程', text: shareText() });
+      } catch (e) {
+        if (copyText(shareText())) {
+          ss.textContent = '已复制';
+          setTimeout(() => { ss.textContent = '用系统分享…'; }, 1500);
+        }
+      }
     });
   }
 
