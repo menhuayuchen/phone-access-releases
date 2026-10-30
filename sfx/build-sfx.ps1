@@ -42,6 +42,31 @@ Say ("  文件 " + $srcCount + " 个 / " + [math]::Round($srcBytes / 1MB, 1) + "
 
 # ---- 2. 检查启动器 ----
 $sfxExe = Join-Path $here 'Sfx.exe'
+
+# ---- 1.5 源码改了就重编启动器（2026-10-30：安装前弹"免责声明+配置要求+同意勾选"）----
+# 以前 Sfx.exe 是手工编好放在仓库里的，源码改了忘重编就会发出发旧 exe 的包。
+# 这里按时间戳自动重编，csc 找不到时退回"用现成的"，不阻断打包（打包机可能没装 .NET SDK）。
+$csc = 'C:\Windows\Microsoft.NET\Framework64\v4.0.30319\csc.exe'
+if (-not (Test-Path -LiteralPath $csc)) { $csc = 'C:\Windows\Microsoft.NET\Framework\v4.0.30319\csc.exe' }
+$sfxSrc = Join-Path $here 'Sfx.cs'
+if ((Test-Path -LiteralPath $csc) -and (Test-Path -LiteralPath $sfxSrc)) {
+    $needBuild = $true
+    if (Test-Path -LiteralPath $sfxExe) {
+        $needBuild = ((Get-Item -LiteralPath $sfxSrc).LastWriteTime -gt (Get-Item -LiteralPath $sfxExe).LastWriteTime)
+    }
+    if ($needBuild) {
+        Say '正在编译启动器（Sfx.cs -> Sfx.exe）…' 'Cyan'
+        & $csc /nologo /target:exe /codepage:65001 /optimize /out:$sfxExe `
+            /r:System.dll /r:System.Core.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
+            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll $sfxSrc
+        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sfxExe)) {
+            Say '[x] 启动器编译失败，先修好再打包（不要把旧 Sfx.exe 当新的发出去）' 'Red'
+            exit 1
+        }
+        Say ('  启动器已更新: ' + [math]::Round((Get-Item -LiteralPath $sfxExe).Length / 1KB, 1) + ' KB') 'Green'
+    }
+}
+
 if (-not (Test-Path -LiteralPath $sfxExe)) { Say '[x] 没找到 Sfx.exe，先编译 Sfx.cs' 'Red'; exit 1 }
 
 # ---- 3. 打 zip ----

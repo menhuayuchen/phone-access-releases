@@ -1,4 +1,4 @@
-﻿# pack.ps1 — 把 app\ 打成"可以发给客户"的基础档产品包（卖家侧构建工具，不随包发给客户）
+# pack.ps1 — 把 app\ 打成"可以发给客户"的基础档产品包（卖家侧构建工具，不随包发给客户）
 #
 # 干什么（对照 app\PACKAGING.md）：
 #   1) 从生产目录（只读）补二进制：capture.exe / input.exe / audio.exe / sources.exe /
@@ -112,6 +112,8 @@ $appFiles = @(
   # 许可证：校验与状态生成随包分发。私钥在 seller-keys 目录（app 之外），天然打不进来。
   'licence.ps1',
   'licence-state.ps1',
+  # 7 天试用锚点（2026-10-30）：licence-state.ps1 会 dot-source 它，缺了会退回"试用不可用"。
+  'trial.ps1',
   'https-setup.ps1',
   'start-phone-access.ps1',
   'start-phone-access.cmd',
