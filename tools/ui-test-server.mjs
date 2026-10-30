@@ -73,7 +73,18 @@ http.createServer((req, res) => {
   if (url.pathname === '/sources') return json({ monitors: [{ i: 0, x: 0, y: 0, w: 1920, h: 1080 }], windows: [] });
   if (url.pathname === '/frame.jpg') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(PNG_1x1); }
   if (url.pathname === '/manifest.json') return json({ name: '手机远程', short_name: '手机远程', start_url: '/?k=TESTKEY', display: 'standalone' });
-  if (['/mode', '/rtc-on', '/rtc-off', '/unblock', '/showdesktop', '/set-quality', '/update-check'].includes(url.pathname)) {
+  if (url.pathname === '/set-quality' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; });
+    req.on('end', () => {
+      let w = 0;
+      try { w = Math.round(Number((JSON.parse(body || '{}') || {}).captureWidth)) || 0; } catch { }
+      c.captureWidth = w;   // 重新打开设置时高亮应停在新档位
+      json({ ok: true, captureWidth: w, requested: w, captureNative: 2560, needFullRestart: false, message: '已生效（测试台）：发送宽度 ' + w + '，不用重启。' });
+    });
+    return;
+  }
+  if (['/mode', '/rtc-on', '/rtc-off', '/unblock', '/showdesktop', '/update-check'].includes(url.pathname)) {
     return json({ ok: true, configured: false, current: '1.0.7' });
   }
   if (url.pathname === '/') {
