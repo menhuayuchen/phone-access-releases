@@ -35,6 +35,8 @@ param(
     # 更新说明；不填则用一段默认文案
     [string]$NotesPath = '',
     [string]$Token = '',
+    # token 文件：tools\set-github-token.ps1 写入的位置。没传 -Token、也没有 GH_TOKEN 时读它。
+    [string]$TokenFile = (Join-Path $env:USERPROFILE '.gh-token'),
     [switch]$Private,
     [switch]$DryRun
 )
@@ -51,11 +53,16 @@ if (-not (Test-Path -LiteralPath $root)) { $root = (Get-Location).Path }
 # ---- 1. Token ----
 $tok = $Token
 if (-not $tok) { $tok = $env:GH_TOKEN }
+if (-not $tok -and (Test-Path -LiteralPath $TokenFile)) {
+    $tok = (Get-Content -LiteralPath $TokenFile -Raw).Trim()
+}
 if (-not $tok) {
     Fail @'
-没有 token。两种给法（任选）：
-  1) 当前窗口临时设环境变量：$env:GH_TOKEN = 'ghp_xxxx'
-  2) 直接传参：-Token 'ghp_xxxx'
+没有 token。三种给法（任选）：
+  1) 推荐：双击 tools\设置GitHub令牌.cmd（等同于 tools\set-github-token.ps1），
+     粘贴后它会先验证再存到 %USERPROFILE%\.gh-token，本脚本以后自动读取；
+  2) 当前窗口临时设环境变量：$env:GH_TOKEN = 'ghp_xxxx'
+  3) 直接传参：-Token 'ghp_xxxx'
 Token 在 GitHub → Settings → Developer settings → Personal access tokens 里创建。
 '@
 }
