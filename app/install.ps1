@@ -1285,21 +1285,33 @@ try {
         if (Test-Path -LiteralPath $cfgSrc2) {
           $oldCfg = Get-Content -LiteralPath $cfgDst -Raw -Encoding UTF8 | ConvertFrom-Json
           $defCfg = Get-Content -LiteralPath $cfgSrc2 -Raw -Encoding UTF8 | ConvertFrom-Json
-          $added = New-Object System.Collections.ArrayList
+          $changed = New-Object System.Collections.ArrayList
           $oldNames = @($oldCfg.PSObject.Properties.Name)
+          # 第一步：包里有、老配置完全没有的顶层键 → 补上（客户已经设过的值不动）。
           foreach ($prop in $defCfg.PSObject.Properties) {
             if (-not ($oldNames -contains $prop.Name)) {
               $oldCfg | Add-Member -NotePropertyName $prop.Name -NotePropertyValue $prop.Value -Force
-              [void]$added.Add($prop.Name)
+              [void]$changed.Add($prop.Name)
             }
           }
-          if ($added.Count -gt 0) {
+          # 第二步（2026-10-30 修复）：version / update / plans / freemium / share 是**产品自带的信息**，
+          # 不是客户设置。它们老配置里也有旧值，只“补缺”的话升级后永远停在旧版本：
+          #   设置里显示旧版本号（客户以为没升级成功）、
+          #   检查更新读到的是旧 update（没有后来才加的 update.github）→ 永远说“还没配置更新源”。
+          # 这几类改成每次升级都用包里的值覆盖；端口/开关/屏幕分辨率/许可证等客户设置仍然一个字不动。
+          foreach ($k in @('version', 'update', 'plans', 'freemium', 'share')) {
+            $defProp = $defCfg.PSObject.Properties[$k]
+            if ($null -eq $defProp) { continue }
+            $oldCfg | Add-Member -NotePropertyName $k -NotePropertyValue $defProp.Value -Force
+            [void]$changed.Add('同步:' + $k)
+          }
+          if ($changed.Count -gt 0) {
             [System.IO.File]::WriteAllText($cfgDst, ($oldCfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
-            Write-Ok ('已给旧配置补上 ' + $added.Count + ' 个新字段：' + ($added -join '、') + '（原有设置未改动）')
+            Write-Ok ('已更新 product.config.json：' + ($changed -join '、') + '（版本号/更新源/套餐/试用规则来自新版本；端口和开关等客户设置未动）')
           }
         }
       } catch {
-        Write-WarnLine ('旧配置补新字段时出错（不影响安装）：' + $_.Exception.Message)
+        Write-WarnLine ('旧配置迁移时出错（不影响安装）：' + $_.Exception.Message)
       }
     }
   }
