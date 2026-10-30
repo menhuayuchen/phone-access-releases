@@ -15,3 +15,5 @@ Desktop.ini
 app/licence.json
 app/licence.state.json
 app/ultra-usage.json
+# 7 天试用的本机锚点（trial.ps1 在源码目录跑一次就会生成；每台机器不同，绝不进版本库）
+app/trial.json
