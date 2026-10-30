@@ -2329,10 +2329,29 @@ bindImg(img);
           ubox.style.display = 'block';
           ubox.innerHTML = '<div style="color:#8CE68C;font-weight:600;margin-bottom:6px">新版本 '
             + escHtml(j.latest) + '（当前 ' + escHtml(j.current) + '）</div>'
-            + (j.notes ? '<div style="margin-bottom:8px">' + escHtml(j.notes) + '</div>' : '')
-            + '<div style="color:#868c96">安装新版不会丢配置和许可证。'
-            + (j.downloadUrl ? '下载地址：<span style="color:#8fb6ff;word-break:break-all">'
-              + escHtml(j.downloadUrl) + '</span>' : '找卖家拿安装包。') + '</div>';
+            + (j.notes ? '<div style="margin-bottom:8px;white-space:pre-wrap">' + escHtml(j.notes) + '</div>' : '')
+            + '<div style="color:#868c96;margin-bottom:10px">安装新版不会丢配置和许可证。</div>'
+            + (j.downloadUrl
+              ? '<button id="updGo" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:9px;padding:9px 16px;font-size:13px;cursor:pointer">下载并安装</button>'
+                + '<div id="updGoMsg" style="color:#868c96;margin-top:8px;font-size:12px"></div>'
+              : '<div style="color:#868c96">这次发布没有附安装包，去发布页手动下载：'
+                + escHtml(j.pageUrl || '') + '</div>');
+          const go = ubox.querySelector('#updGo');
+          if (go) go.addEventListener('click', async () => {
+            const m = ubox.querySelector('#updGoMsg');
+            go.disabled = true; go.style.opacity = '.6'; go.textContent = '下载中…';
+            if (m) m.textContent = '安装包 50MB 左右，按网速可能要一两分钟，别关页面。';
+            let r = null;
+            try {
+              r = await fetch('/update-install', {
+                method: 'POST',
+                headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ url: j.downloadUrl })
+              }).then((x) => x.json());
+            } catch (e) { r = null; }
+            go.disabled = false; go.style.opacity = '1'; go.textContent = '下载并安装';
+            if (m) m.textContent = (r && r.message) || '下载没成功，稍后再试或联系卖家。';
+          });
         }
       } else {
         setMsg('已是最新版本', '#8CE68C');
@@ -2344,15 +2363,30 @@ bindImg(img);
 
   function openSupport(lic) {
     const title = (lic.support && lic.support.title) ? lic.support.title : '支持 / 购买';
+    // 三种状态分开显示（2026-10-30 加试用）：已购买 / 试用中 / 免费
+    const trial = lic.trial || null;
+    const trialLine = (trial && trial.active && trial.daysLeft)
+      ? ('试用中（还剩 ' + trial.daysLeft + ' 天）')
+      : (trial && trial.state === 'expired' ? '试用已结束' : '免费模式');
+    const statusText = lic.licensed ? '已授权' : trialLine;
     const body = '<div style="color:#8b9098;font-size:13px;margin-bottom:4px">许可证状态：'
-      + (lic.usable ? '已授权' : '免费模式')
+      + statusText
       + (lic.name ? ('（' + escHtml(lic.name) + '）') : '') + '</div>'
-      + (lic.usable ? '' :
-        '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
-        + '<div style="color:#e8eaee;font-weight:600;margin-bottom:4px">安装许可证后解锁</div>'
-        + '· 超清画质（2560）不限时长 —— 免费模式每天 1 小时<br>'
-        + '· 个性化：颜色主题 / 光标形状（含导入自定义图片）/ 光标大小颜色 / 自定义主题导入<br>'
-        + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>')
+      + (lic.licensed ? '' :
+        (trial && trial.active
+          ? '<div style="background:#1a1c22;border:1px solid #2b3a2f;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
+            + '<div style="color:#8CE68C;font-weight:600;margin-bottom:4px">试用中：全功能已解锁</div>'
+            + '· 超清画质（2560）不限时长<br>'
+            + '· 个性化：主题 / 光标形状与颜色 / 自定义导入<br>'
+            + '· 多设备同时观看不限台数<br>'
+            + '<span style="color:#6b7078">到期时间 ' + escHtml(String(trial.ends || ''))
+            + '，之后自动回落免费档（基础功能永久免费）</span></div>'
+          : '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
+            + '<div style="color:#e8eaee;font-weight:600;margin-bottom:4px">安装许可证后解锁</div>'
+            + '· 超清画质（2560）不限时长 —— 免费模式每天 1 小时<br>'
+            + '· 个性化：颜色主题 / 光标形状（含导入自定义图片）/ 光标大小颜色 / 自定义主题导入<br>'
+            + '· 多设备同时观看：免费版最多 3 台<br>'
+            + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>'))
       + machineCodeHtml(lic)
       + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>';
     const box = openSheet(title, body, 'spClose');
