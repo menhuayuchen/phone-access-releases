@@ -141,7 +141,9 @@
         <h1>手机就能看电脑、<br><em>点鼠标、打字</em></h1>
         <p class="lead">
           电脑上装一个软件，手机浏览器打开就能看屏幕、点、打字。
-          出门在外看下进度、回个消息、改个文件，不用再找 TeamViewer 的免费时限，也不用把电脑一直开着远程桌面。
+          出门在外看下进度、回个消息、改个文件，不用再找 TeamViewer 的免费时限，
+          也不用开 Windows 远程桌面、不用公网 IP。
+          <span style="color:#8d95a3">（电脑要开着并联网，它不会替你开机。）</span>
         </p>
         <div class="cta">
           <a class="btn btn-main" href="https://github.com/menhuayuchen/phone-access-releases/releases/latest">下载 Windows 版</a>
@@ -163,7 +165,7 @@
             </div>
           </div>
         </div>
-        <div class="hud">实时帧率 <b>26.5 fps</b><br>延迟 <b>66 ms</b><br>超清 · 可缩放</div>
+        <div class="hud">实时帧率 <b>26.5 fps</b><br>延迟 <b>66 ms</b><br>超清 <b>2560</b></div>
       </div>
     </div>
   </div>
@@ -176,7 +178,7 @@
         <div class="card">
           <div class="ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round"><rect x="3" y="4" width="18" height="12" rx="2"/><path d="M8 20h8M12 16v4"/></svg></div>
           <h3>超高清晰度</h3>
-          <p>最高 2560 宽出图，双指放大看小字依然锐利；三档画质随时切，立即生效。</p>
+          <p>最高 2560 宽出图，文字、表格边缘清楚；三档画质随时切，立即生效。</p>
         </div>
         <div class="card">
           <div class="ico"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linejoin="round"><path d="M13 2 4 14h6l-1 8 9-12h-6z"/></svg></div>
@@ -205,7 +207,8 @@
         <div class="step">
           <b>1</b>
           <h3>电脑装好</h3>
-          <p>下载安装包，双击安装。安装前会显示免责声明和配置要求，勾选同意后一路下一步。</p>
+          <p>下载安装包，双击安装。安装前会显示免责声明和配置要求，勾选同意后一路下一步。
+            装完把「自动睡眠」关掉（Windows 设置 → 系统 → 电源），否则电脑睡着了会断线。</p>
         </div>
         <div class="step">
           <b>2</b>
@@ -271,6 +274,14 @@
     <div class="wrap">
       <h2>常见问题</h2>
       <p class="sub">下载之前先看这几条。</p>
+      <details>
+        <summary>电脑关机或睡眠了，还能连吗？</summary>
+        <p>不能。它需要电脑<b>开机、联网、程序在运行</b>——不会替你开机。安装时要按提示把 Windows 的「自动睡眠」关掉（设置 → 系统 → 电源 → 屏幕和睡眠都选「从不」），否则电脑睡着就会断线。</p>
+      </details>
+      <details>
+        <summary>可以放大画面看小字吗？</summary>
+        <p>网页本身没有做双指缩放（双指手势用来滚动页面内容）。想看细节建议选「超清」档；部分手机可以用系统的放大功能（iOS 辅助功能 → 缩放 / 安卓无障碍 → 放大手势）。</p>
+      </details>
       <details>
         <summary>需要公网 IP 或者路由器端口映射吗？</summary>
         <p>不需要。同一 Wi-Fi 下手机直接连电脑；在外面时通过 Tailscale（免费账号够用）走私有网络，不用把电脑暴露到公网。</p>
