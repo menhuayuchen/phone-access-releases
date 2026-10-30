@@ -1832,7 +1832,7 @@ bindImg(img);
     let h = '';
     if (!licensed) {
       h += '<div style="color:#868c96;font-size:12.5px;margin-bottom:10px;line-height:1.6">'
-        + '个性化是许可证功能，免费模式下显示默认外观。'
+        + '个性化是许可证功能，免费版里显示默认外观。'
         + '<a href="#" id="p13nBuy" style="color:#8fb6ff">看看怎么解锁</a></div>';
     }
     const curT = licensed ? P.loadTheme() : 'dark';
@@ -2106,7 +2106,10 @@ bindImg(img);
       const tick = async () => {
         try {
           const j = await fetch('/licence?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
-          if (j && j.usable) { setM('好了！正在刷新页面…', '#4ade80'); setTimeout(() => location.reload(), 800); return; }
+          // 必须看 licensed（真的装了许可证），不能看 usable：试用期内 usable 本来就是 true，
+          // 用它判断会在守护进程还没重新校验许可证时就"假成功"刷新页面（用户会看到还是免费版）。
+          const accepted = j && ((typeof j.licensed === 'boolean') ? j.licensed : !!j.usable);
+          if (accepted) { setM('好了！正在刷新页面…', '#4ade80'); setTimeout(() => location.reload(), 800); return; }
         } catch (e) { }
         if (Date.now() - started > 20000) {
           setM('已保存，但还没生效。刷新页面看看。', '#ffb454');
@@ -2120,40 +2123,96 @@ bindImg(img);
     });
   }
 
+  // ---- 「许可证」分区：专业版 / 免费版 + 试用剩余 + 粘贴激活 -------------------
+  // 改动（2026-10-30，用户真机/虚拟机实测反馈）：原来这里用 lic.usable 判断"已授权"，
+  // 但 /licence 的 usable 语义是"全功能可用（正式许可证 **或** 7 天试用期内）"。
+  // 于是新装还没付款的用户在试用期内被显示成「已授权 · 有效期 永久」，
+  // 而且粘贴框是按 lic.usable 隐藏的 —— 客户真买了反而找不到粘贴的地方。
+  // 现在显示口径统一用 lic.licensed（真的装了许可证）：
+  //   专业版 = 有许可证；免费版 = 没有（再写清"试用还剩几天 / 是不是已结束"）。
+  // lic.usable 仍然只负责"解锁超清/个性化/并发"的行为判断，不进文案。
+  function trialSummary(trial) {
+    const t = trial || null;
+    const days = (t && Number(t.days)) > 0 ? Number(t.days) : 7;
+    if (t && t.active) {
+      const left = Number(t.daysLeft || 0);
+      const ends = String(t.ends || '').slice(0, 10);
+      let s = days + ' 天全功能试用中 · ' + (left > 0 ? ('还剩 ' + left + ' 天') : '今天到期');
+      if (ends) s += '（' + ends + ' 到期）';
+      return s;
+    }
+    if (t && t.state === 'expired') return days + ' 天全功能试用已结束';
+    if (t && t.state === 'clock-tamper') return '试用已失效（检测到系统时间被调过）';
+    if (t && t.state === 'no-machine') return '读不到机器码，试用无法校验（按免费版）';
+    return '';
+  }
+
+  function pasteBlock(compact) {
+    return '<div' + (compact
+      ? ' style="margin-top:10px"'
+      : ' style="margin-top:12px;padding-top:11px;border-top:1px solid #23252c"') + '>'
+      + '<div style="font-weight:600;margin-bottom:6px;font-size:13.5px">已有许可证？粘贴到这里激活</div>'
+      + '<textarea id="setLicPaste" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false" '
+      + 'placeholder="把卖家发你的整段文字原样粘贴进来…" style="width:100%;box-sizing:border-box;background:#0f1014;color:#e8eaee;'
+      + 'border:1px solid #262932;border-radius:9px;padding:9px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:none"></textarea>'
+      + '<div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + '<button id="setLicApply" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:9px 15px;'
+      + 'font-size:13.5px;cursor:pointer">验证并安装</button>'
+      + '<span id="setLicMsg" style="font-size:12.5px;color:#868c96"></span></div></div>';
+  }
+
+  function licenceInner(lic) {
+    const licensed = !!lic.licensed;
+    const exp = (lic.expires && lic.expires !== 'never') ? String(lic.expires) : '永久';
+    const uq = lic.ultraQuota || null;
+    let h = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
+      + setPill(licensed, '专业版', '免费版')
+      + (lic.name ? '<span style="color:#aeb3bb;font-size:13px">' + escHtml(String(lic.name)) + '</span>' : '')
+      + '</div>';
+    // 有许可证文件但没通过（换了机器 / 过期 / 文件损坏）：把原因摆出来，
+    // 否则客户只看到"免费版"会以为标错了。
+    if (!licensed && lic.state && lic.state !== 'missing' && lic.state !== 'ok') {
+      h += '<div style="margin-top:8px;color:#ffb454;font-size:12.5px;line-height:1.6">'
+        + escHtml(String(lic.message || '许可证校验没通过')) + '</div>';
+    }
+    if (licensed) {
+      h += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp)) + '</div>'
+        + '<div style="color:#868c96;font-size:12.5px;margin-top:6px;line-height:1.7">'
+        + '超清画质不限时长 · 个性化已解锁 · 同时观看不限台数</div>';
+      // 已授权也保留粘贴入口（换许可证 / 续期要用），默认折叠不占地方
+      h += '<details style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
+        + '<summary style="cursor:pointer;color:#8fb6ff;font-size:13px">换许可证 / 续期：点这里粘贴新的</summary>'
+        + pasteBlock(true) + '</details>';
+      return h;
+    }
+    const trialOn = !!(lic.trial && lic.trial.active);
+    const tl = trialSummary(lic.trial);
+    if (tl) {
+      h += '<div style="margin-top:9px;font-size:13px;line-height:1.6;color:' + (trialOn ? '#8CE68C' : '#ffb454') + '">'
+        + escHtml(tl) + '</div>';
+    }
+    h += '<div style="color:#868c96;font-size:12.5px;margin-top:5px;line-height:1.7">'
+      + (trialOn
+        ? '试用期内按专业版算：超清不限时长 · 个性化全开 · 同时观看不限台数<br>'
+          + '试用结束后不会锁画面，自动回落到免费版（基础功能一直免费）。'
+        : '免费版可用：画面 + 触控 + 声音 + 流畅模式 + 高清/标准画质（不限时）<br>'
+          + '免费版限制：超清每天 1 小时 · 个性化锁定 · 同时观看最多 3 台')
+      + '</div>';
+    // 每日超清配额只对"真的免费版"有意义：试用期内超清本来就不限时，别显示这行让人误解
+    if (!trialOn && uq && uq.ultra) {
+      h += '<div style="color:' + (uq.exhausted ? '#ffb454' : '#868c96') + ';font-size:12.5px;margin-top:6px">'
+        + (uq.exhausted ? '今日超清时长已用完 · 正按高清出图 · 明天 0 点恢复'
+          : '今日超清还剩约 ' + fmtUq(uq.remainingSec) + '（免费版每天 ' + fmtUq(uq.limitSec) + '）') + '</div>';
+    }
+    h += pasteBlock(false);
+    return h;
+  }
+
   function openSettings(lic) {
-    const exp = (lic.expires && lic.expires !== 'never') ? lic.expires : '永久';
     const ver = String(lic.version || '—');
     let body = '';
-
-    // 许可证（半免费：未授权 = 免费模式，不再整屏拦截；激活入口就在设置里）
-    const uq = lic.ultraQuota || null;
-    let licInner = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
-      + setPill(!!lic.usable, '已授权', '免费模式')
-      + (lic.name ? '<span style="color:#aeb3bb;font-size:13px">' + escHtml(lic.name) + '</span>' : '')
-      + '</div>';
-    if (lic.usable) {
-      licInner += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp)) + '</div>'
-        + '<div style="color:#868c96;font-size:12.5px;margin-top:6px">超清画质不限时长 · 个性化已解锁</div>';
-    } else {
-      licInner += '<div style="color:#868c96;font-size:12.5px;margin-top:8px;line-height:1.7">'
-        + '免费：画面 + 触控 + 声音 + 流畅模式 + 高清/标准画质（不限时）<br>'
-        + '许可证解锁：超清不限时长（免费每天 1 小时）+ 个性化（主题/光标/导入）</div>';
-      if (uq && uq.ultra) {
-        licInner += '<div style="color:' + (uq.exhausted ? '#ffb454' : '#868c96') + ';font-size:12.5px;margin-top:6px">'
-          + (uq.exhausted ? '今日超清时长已用完 · 正按高清出图 · 明天 0 点恢复'
-            : '今日超清还剩约 ' + fmtUq(uq.remainingSec) + '（每天免费 ' + fmtUq(uq.limitSec) + '）') + '</div>';
-      }
-      licInner += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
-        + '<div style="font-weight:600;margin-bottom:6px;font-size:13.5px">已有许可证？粘贴到这里激活</div>'
-        + '<textarea id="setLicPaste" rows="3" autocapitalize="off" autocorrect="off" spellcheck="false" '
-        + 'placeholder="在这里粘贴许可证内容…" style="width:100%;box-sizing:border-box;background:#0f1014;color:#e8eaee;'
-        + 'border:1px solid #262932;border-radius:9px;padding:9px;font:12px/1.5 ui-monospace,Consolas,monospace;resize:vertical"></textarea>'
-        + '<div style="margin-top:8px;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-        + '<button id="setLicApply" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:9px 15px;'
-        + 'font-size:13.5px;cursor:pointer">验证并安装</button>'
-        + '<span id="setLicMsg" style="font-size:12.5px;color:#868c96"></span></div></div>';
-    }
-    body += setSection('许可证', licInner);
+    const uq = lic.ultraQuota || null;   // 画面质量分区也要用（超清配额提示）
+    body += setSection('许可证', licenceInner(lic));
 
     // 机器码（可复制）
     body += setSection('本机机器码',
@@ -2404,27 +2463,27 @@ bindImg(img);
   }
   function openSupport(lic) {
     const title = (lic.support && lic.support.title) ? lic.support.title : '支持 / 购买';
-    // 三种状态分开显示（2026-10-30 加试用）：已购买 / 试用中 / 免费
-    const trial = lic.trial || null;
-    const trialLine = (trial && trial.active && trial.daysLeft)
-      ? ('试用中（还剩 ' + trial.daysLeft + ' 天）')
-      : (trial && trial.state === 'expired' ? '试用已结束' : '免费模式');
-    const statusText = lic.licensed ? '已授权' : trialLine;
-    const body = '<div style="color:#8b9098;font-size:13px;margin-bottom:4px">许可证状态：'
+    // 三种状态分开显示（2026-10-30 加试用）：专业版 / 免费版·试用中 / 免费版
+    // 口径与设置面板一致：一律看 licensed，不看 usable（usable 试用期内也是 true）。
+    const trialLine = trialSummary(lic.trial);
+    const statusText = lic.licensed
+      ? '专业版（已购买）'
+      : ('免费版' + (trialLine ? ' · ' + trialLine : ''));
+    const body = '<div style="color:#8b9098;font-size:13px;margin-bottom:4px">当前版本：'
       + statusText
       + (lic.name ? ('（' + escHtml(lic.name) + '）') : '') + '</div>'
       + (lic.licensed ? '' :
-        (trial && trial.active
+        (lic.trial && lic.trial.active
           ? '<div style="background:#1a1c22;border:1px solid #2b3a2f;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
             + '<div style="color:#8CE68C;font-weight:600;margin-bottom:4px">试用中：全功能已解锁</div>'
             + '· 超清画质（2560）不限时长<br>'
             + '· 个性化：主题 / 光标形状与颜色 / 自定义导入<br>'
             + '· 多设备同时观看不限台数<br>'
-            + '<span style="color:#6b7078">到期时间 ' + escHtml(String(trial.ends || ''))
-            + '，之后自动回落免费档（基础功能永久免费）</span></div>'
+            + '<span style="color:#6b7078">到期时间 ' + escHtml(String(lic.trial.ends || ''))
+            + '，之后自动回落免费版（基础功能永久免费）</span></div>'
           : '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
             + '<div style="color:#e8eaee;font-weight:600;margin-bottom:4px">安装许可证后解锁</div>'
-            + '· 超清画质（2560）不限时长 —— 免费模式每天 1 小时<br>'
+            + '· 超清画质（2560）不限时长 —— 免费版每天 1 小时<br>'
             + '· 个性化：颜色主题 / 光标形状（含导入自定义图片）/ 光标大小颜色 / 自定义主题导入<br>'
             + '· 多设备同时观看：免费版最多 3 台<br>'
             + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>'))
@@ -2463,9 +2522,12 @@ bindImg(img);
       wrap.appendChild(heart);
     }
     document.body.appendChild(wrap);
-    gear.addEventListener('click', () => openSettings(lic));
-    if (priceBtn) priceBtn.addEventListener('click', () => openPlans(lic));
-    if (heart) heart.addEventListener('click', () => openSupport(lic));
+    // 用最新的许可证信息而不是页面加载时那一份：页面可能开着跨过试用到期，
+    // 30 秒轮询会更新 window.__paLic，弹层每次都读最新的才不会显示过期状态。
+    const latest = () => (window.__paLic || lic);
+    gear.addEventListener('click', () => openSettings(latest()));
+    if (priceBtn) priceBtn.addEventListener('click', () => openPlans(latest()));
+    if (heart) heart.addEventListener('click', () => openSupport(latest()));
   }
 
   // 个性化锁定项点击"看看怎么解锁"时打开支持面板
@@ -2481,7 +2543,16 @@ bindImg(img);
     if (!lic.usable) {
       let noted = false;
       try { noted = !!sessionStorage.getItem('paFreeNoted'); sessionStorage.setItem('paFreeNoted', '1'); } catch (e) { }
-      if (!noted) setTimeout(() => setNote('当前为免费模式：超清每天 1 小时 · 个性化锁定。点右侧「❤」看解锁方式', 9000), 1500);
+      if (!noted) setTimeout(() => setNote('当前为免费版：超清每天 1 小时 · 个性化锁定。点右下角齿轮看详情或粘贴许可证', 9000), 1500);
+    } else if (!lic.licensed && lic.trial && lic.trial.active) {
+      // 免费版（7 天全功能试用期内）：进页面提示一次剩余天数，别每刷一次都弹。
+      let noted = false;
+      try { noted = !!sessionStorage.getItem('paTrialNoted'); sessionStorage.setItem('paTrialNoted', '1'); } catch (e) { }
+      if (!noted) {
+        const ends = String(lic.trial.ends || '').slice(0, 10);
+        setTimeout(() => setNote('免费版 · 全功能试用还剩 ' + Number(lic.trial.daysLeft || 0) + ' 天'
+          + (ends ? '（' + ends + ' 到期）' : '') + ' · 点右下角齿轮看详情 / 粘贴许可证', 9000), 1500);
+      }
     }
     // 低频轮询许可证状态：客户"放许可证文件/在另一台设备粘贴"后，本页不用刷新也能解锁
     setInterval(() => {
