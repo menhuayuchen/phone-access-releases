@@ -1461,6 +1461,14 @@ bindImg(img);
   ];
   const DOT_COLORS = ['#ffd166', '#6ee7a0', '#74c0fc', '#ff8787', '#ffffff', '#ff9de2'];
   const DOT_DEFAULT = { size: 10, color: '#ffd166' };
+  // 2026-10-31：自定义取色器用的主题字段（顺序就是设置面板里的顺序）
+  const THEME_FIELDS = [
+    { k: 'bodyBg', name: '背景', def: '#0b0b0d' },
+    { k: 'headerBg', name: '顶栏', def: '#15161a' },
+    { k: 'btnBg', name: '按钮', def: '#24262b' },
+    { k: 'btnColor', name: '文字', def: '#c9ccd1' },
+    { k: 'accent', name: '强调', def: '#8CE68C' }
+  ];
   // 光标形状（2026-10-29 新增；2026-10-30 规则澄清，用户拍板）：
   //   五种内置形状（圆点/圆环/十字/箭头/方框）全部可调颜色 + 大小；
   //   只有用户自定义导入的图片（custom）只能调大小，不可调颜色（图片自带颜色，染色无意义）。
@@ -1529,6 +1537,14 @@ bindImg(img);
     }
   }
   function isHex(c) { return typeof c === 'string' && /^#([0-9a-fA-F]{3}|[0-9a-fA-F]{6}|[0-9a-fA-F]{8})$/.test(c.trim()); }
+  // <input type="color"> 只吃 #rrggbb：#abc 要展开、8 位去掉 alpha；非法值回落默认
+  function toColorInput(v, d) {
+    if (!isHex(v)) return d;
+    let s = String(v).trim().slice(1).toLowerCase();
+    if (s.length === 3) s = s.split('').map((c) => c + c).join('');
+    if (s.length === 8) s = s.slice(0, 6);
+    return '#' + s;
+  }
   function loadCustom() {
     try { const j = JSON.parse(localStorage.getItem(LS_CUSTOM) || 'null'); return (j && typeof j === 'object' && !Array.isArray(j)) ? j : null; } catch (e) { return null; }
   }
@@ -1664,7 +1680,8 @@ bindImg(img);
     loadTheme: loadTheme, loadCursor: loadCursor, loadCustom: loadCustom,
     loadCursorImg: loadCursorImg, saveCursorImg: saveCursorImg, clearCursorImg: clearCursorImg,
     saveTheme: saveTheme, saveCursor: saveCursor, saveCustom: saveCustom,
-    isHex: isHex, themeByKey: themeByKey
+    isHex: isHex, themeByKey: themeByKey,
+    THEME_FIELDS: THEME_FIELDS, toColorInput: toColorInput
   };
 })();
 
@@ -1879,6 +1896,17 @@ bindImg(img);
         + (locked ? '🔒' : '') + escHtml(t.name) + '</button>';
     }
     h += '</div>';
+    // 2026-10-31：自定义配色取色器（主题）。以前只能手写 JSON，现在点色块直接改。
+    const cust0 = licensed ? P.loadCustom() : null;
+    h += '<div style="color:#868c96;font-size:12px;margin:10px 0 6px">自定义配色（主题）' + lock + '</div>'
+      + '<div id="p13nThemePick" style="display:flex;gap:10px;flex-wrap:wrap">';
+    for (const f of P.THEME_FIELDS) {
+      h += '<label style="display:flex;flex-direction:column;align-items:center;gap:3px;font-size:11.5px;color:#aeb3bb">'
+        + escHtml(f.name)
+        + '<input type="color" class="p13nTC" data-f="' + f.k + '" value="' + P.toColorInput(cust0 && cust0[f.k], f.def) + '"'
+        + ' style="width:44px;height:30px;border:1px solid #3a3e4a;border-radius:8px;background:#1b1d23;padding:1px"' + (licensed ? '' : ' disabled') + '></label>';
+    }
+    h += '</div>';
     const curC = licensed ? (P.loadCursor() || P.DOT_DEFAULT) : P.DOT_DEFAULT;
     const curSize = Math.max(6, Math.min(24, Math.round(Number(curC.size) || P.DOT_DEFAULT.size)));
     const curColor = P.isHex(curC.color) ? String(curC.color) : P.DOT_DEFAULT.color;
@@ -1920,7 +1948,10 @@ bindImg(img);
         + 'border:2px solid ' + (on ? '#8fb6ff' : 'rgba(255,255,255,.18)') + ';cursor:pointer;padding:0;'
         + 'opacity:' + (cOff ? '.4' : '1') + '"' + (cOff ? ' disabled' : '') + '></button>';
     }
-    h += '</div>';
+    h += '</div>'
+      + '<label style="display:inline-flex;align-items:center;gap:8px;font-size:11.5px;color:#aeb3bb;margin-top:8px">自定义颜色'
+      + '<input type="color" id="p13nColorPick" value="' + P.toColorInput(curColor, '#ffd166') + '"'
+      + ' style="width:44px;height:30px;border:1px solid #3a3e4a;border-radius:8px;background:#1b1d23;padding:1px"' + (licensed && curShape !== 'custom' ? '' : ' disabled') + '></label>';
     const cust = licensed ? P.loadCustom() : null;
     h += '<div style="color:#868c96;font-size:12px;margin:14px 0 6px">导入自定义主题' + lock + '</div>'
       + '<textarea id="p13nImport" rows="3" spellcheck="false" '
@@ -1966,18 +1997,37 @@ bindImg(img);
     }
     box.querySelectorAll('.p13nT').forEach((b) => b.addEventListener('click', () => {
       const k = b.getAttribute('data-k');
-      if (k === 'custom' && !P.loadCustom()) { setMsg('先在下面导入一个自定义主题，再选「自定义」', '#ffb454'); return; }
+      if (k === 'custom' && !P.loadCustom()) { setMsg('先在上面选个颜色（或用下面 JSON 导入），再选「自定义」', '#ffb454'); return; }
       P.saveTheme(k);
       P.applyTheme(k);
       markTheme(k);
       setMsg('已应用主题：' + P.themeByKey(k).name, '#8CE68C');
     }));
+    // ---- 自定义配色（主题取色器，2026-10-31）----
+    const themePick = box.querySelector('#p13nThemePick');
+    if (themePick) {
+      const applyFromPickers = () => {
+        const j = { name: '我的主题' };
+        themePick.querySelectorAll('.p13nTC').forEach((inp) => {
+          const f = inp.getAttribute('data-f');
+          if (f && P.isHex(inp.value)) j[f] = inp.value;
+        });
+        if (Object.keys(j).length <= 1) return;
+        P.saveCustom(j);
+        P.saveTheme('custom');
+        P.applyTheme('custom');
+        markTheme('custom');
+        setMsg('已应用自定义配色（想换回预设主题点上面）', '#8CE68C');
+      };
+      themePick.querySelectorAll('.p13nTC').forEach((inp) => inp.addEventListener('input', applyFromPickers));
+    }
     // ---- 光标形状（2026-10-29 新增）----
     const imgRow = box.querySelector('#p13nImgRow');
     const imgPick = box.querySelector('#p13nImgPick');
     const imgFile = box.querySelector('#p13nImgFile');
     const imgState = box.querySelector('#p13nImgState');
     const colorHint = box.querySelector('#p13nColorHint');
+    const colorPick = box.querySelector('#p13nColorPick');
     const markShape = (k) => {
       box.querySelectorAll('.p13nS').forEach((x) => {
         const on = x.getAttribute('data-s') === k;
@@ -1991,6 +2041,7 @@ bindImg(img);
     const syncColorRow = (shape) => {
       const canColor = !!(P.CURSOR_SHAPES[shape] && P.CURSOR_SHAPES[shape].colorable);
       box.querySelectorAll('.p13nC').forEach((x) => { x.disabled = !canColor; x.style.opacity = canColor ? '1' : '.4'; });
+      if (colorPick) colorPick.disabled = !canColor;
       if (colorHint) colorHint.style.display = canColor ? 'none' : '';
     };
     const curCursorCfg = () => P.loadCursor() || { size: P.DOT_DEFAULT.size, color: P.DOT_DEFAULT.color };
@@ -2090,8 +2141,23 @@ bindImg(img);
       cur.color = c;
       P.saveCursor(cur); P.applyCursor(cur);
       box.querySelectorAll('.p13nC').forEach((x) => { x.style.borderColor = (x.getAttribute('data-c') === c) ? '#8fb6ff' : 'rgba(255,255,255,.18)'; });
+      if (colorPick) colorPick.value = P.toColorInput(c, '#ffd166');
       syncPreview();
     }));
+    // 光标自定义取色器（2026-10-31）：任意颜色，不再受 6 个预设色限制
+    if (colorPick) colorPick.addEventListener('input', () => {
+      const v = String(colorPick.value || '').trim();
+      if (!P.isHex(v)) return;
+      const c = curCursorCfg();
+      c.color = v;
+      P.saveCursor(c); P.applyCursor(c);
+      const hit = P.DOT_COLORS.find((x) => x.toLowerCase() === v.toLowerCase());
+      box.querySelectorAll('.p13nC').forEach((x) => {
+        x.style.borderColor = (hit && x.getAttribute('data-c') === hit) ? '#8fb6ff' : 'rgba(255,255,255,.18)';
+      });
+      syncPreview();
+      setMsg('光标颜色：' + v, '#8CE68C');
+    });
     const ib = box.querySelector('#p13nImportBtn');
     if (ib) ib.addEventListener('click', () => {
       const ta = box.querySelector('#p13nImport');
@@ -2104,6 +2170,11 @@ bindImg(img);
       }
       if (j.name != null) j.name = String(j.name).slice(0, 24);
       P.saveCustom(j);
+      // 同步到取色器，方便继续微调
+      if (themePick) themePick.querySelectorAll('.p13nTC').forEach((inp) => {
+        const f = inp.getAttribute('data-f');
+        if (f && P.isHex(j[f])) inp.value = P.toColorInput(j[f], inp.value);
+      });
       P.saveTheme('custom');
       P.applyTheme('custom');
       markTheme('custom');
