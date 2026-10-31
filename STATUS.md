@@ -884,3 +884,25 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
   ③ 发新版时把 mirror 指向「该版本 Gitee 文件」再打包，老客户端下一次更新才会拿到这个配置。
 - 待办：等 1.0.10 正式发版时，把 1.0.10 的 exe 传到 Gitee（ASCII 名），
   在 `product.config.json` 的 `update.mirror` 填对应直链 → 打包发布；同时给本机装的那版手工补上 mirror 做端到端验证。
+
+## 24. Gitee 镜像落地 + 体验版限购（2026-10-31 中午）
+
+### 24.1 Gitee：删掉错的、换上正式版（已用令牌脚本完成）
+
+- 用 `%USERPROFILE%\.gitee-token`（用户已保存，令牌有效，账号 menhuayuchen）。
+- 删除错误附件：`【点这里安装】手机远程-v1.0.9-候选.exe`（attach id 3548898，HTTP 204）。
+- 上传正式版：`PhoneAccess-Setup-v1.0.9.exe`（attach id 3549005，52,825,702 B）。
+- 无 cookie 验证：`GET` 直链 → 200，`content-type: application/vnd.microsoft.portable-executable`，
+  下载 52,825,702 B，SHA256 `BFB43692…0CDE`（与 GitHub 正式版一致），速度 **1.31 MB/s（40 秒）**。
+- 当前直链（tag 还是中文的，能用；下一版建议 ASCII `v1.0.10`）：
+  `https://gitee.com/menhuayuchen/phone-access-download/releases/download/<中文tag>/PhoneAccess-Setup-v1.0.9.exe`
+- 注意：`update.mirror` 还没接——客户端配置里要带上 mirror 才生效，等 1.0.10 发版时一起写。
+
+### 24.2 体验版限购 3 次
+
+- 文案已加：App 套餐页（`product.config.json` 的 trial `small`）、官网体验版卡片、使用说明。
+- **无法系统级强制**：离线授权没有中心服务器，客户端记不住购买次数（删文件/重装可绕过）。
+- 新增卖家工具 `tools\count-trial-licences.ps1 -Machine "机器码"`：扫描 `seller-keys\licence-*.json`，
+  统计该机器 `edition=trial` 的签发次数并提示剩余可卖次数（实测：VM 机器码 1 次，陌生机器码 0 次）。
+- 签发流程写进 `docs/完整流程-卖家与客户.md` §4.4：`-Days 30 -Edition trial`，发 `.code.txt` 一行短码。
+- 本轮仍未 bump 版本/发布（遵守规则）；等 1.0.10 一起收口。
