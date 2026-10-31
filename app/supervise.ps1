@@ -64,8 +64,9 @@ function Get-Owner([int]$localPort) {
     Select-Object -First 1).OwningProcess
 }
 
-# Extra doors (LAN on the WLAN address, tailnet IP) are separate proxy processes and
-# need their own checks; the tailnet name door is the 127.0.0.1:8650 listener above.
+# Extra doors: the tailnet-IP door is a separate proxy process and needs its own check;
+# the tailnet name door is the 127.0.0.1:8650 listener above.
+# 2026-10-31 安全收紧：LAN 门已移除，不再检查 lan-url.txt（旧文件残留也不管）。
 function Test-UrlDoor([string]$urlFile) {
   if (-not (Test-Path $urlFile)) { return $true }
   $u = (Get-Content $urlFile -Raw).Trim()
@@ -77,8 +78,8 @@ function Test-UrlDoor([string]$urlFile) {
       Where-Object { $_.LocalAddress -eq $hostIp })
 }
 
-function Test-LanDoor {
-  return (Test-UrlDoor (Join-Path $here 'lan-url.txt')) -and (Test-UrlDoor (Join-Path $here 'tailip-url.txt'))
+function Test-TailDoor {
+  return (Test-UrlDoor (Join-Path $here 'tailip-url.txt'))
 }
 
 function Save-Diagnostics([string]$reason) {
@@ -258,8 +259,8 @@ while ($true) {
     }
     $notListeningRounds = 0
 
-    if ($enableDsh -and (-not $proxyPid -or -not (Test-LanDoor))) {
-      Log "a proxy door is not listening (tailnet=$([bool]$proxyPid) lan=$([bool](Test-LanDoor))); restarting proxies"
+    if ($enableDsh -and (-not $proxyPid -or -not (Test-TailDoor))) {
+      Log "a proxy door is not listening (tailnet=$([bool]$proxyPid) tailip=$([bool](Test-TailDoor))); restarting proxies"
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restart -Quiet 2>&1 |
         Out-File -FilePath $log -Append -Encoding utf8
       Start-Sleep -Seconds 10

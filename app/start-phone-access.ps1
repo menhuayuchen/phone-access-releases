@@ -107,13 +107,8 @@ function Start-Proxy([string]$listenHost, [int]$listenPort, [string]$targetHost,
   Start-Sleep -Seconds 1
 }
 
-$lan = Get-LanIp
-if (-not $lan) {
-  # 改动（自启修复）：原来这里直接 exit 1，导致有线网 / 网卡别名不是 WLAN|Wi-Fi（如"以太网"）
-  # 的客户，开机后自启全部失败、且日志只有一行。方案甲（enableDsh=false）只用 Tailscale，
-  # 根本不需要局域网地址；方案乙也只在启用 DSH 的 LAN 门时才用。所以改成只警告、不退出。
-  Write-Host '[!] 没找到局域网地址（可能是有线网，或网卡别名不是 WLAN/Wi-Fi）。继续启动，走纯 Tailscale 入口。'
-}
+# 2026-10-31 安全收紧：不再提供局域网（不带 Tailscale）的入口。
+# 所有访问都必须走 Tailscale；同一 Wi-Fi 下 Tailscale 自己会选直连路径，速度不受影响。
 
 # 改动（P0-4）：DSH 与它的三扇门只在 enableDsh=true 时启动（方案甲下 8642/8650 完全不出现）。
 if ($enableDsh) {
@@ -180,8 +175,7 @@ if ($enableDsh) {
   }
 
   Start-Proxy '127.0.0.1' $tailPort '127.0.0.1' $dshTargetPort 'tailnet'
-  # 改动（自启修复）：没有局域网地址时跳过 LAN 门，不要让 $lan 为空去绑监听
-  if ($lan) { Start-Proxy $lan $dshPort '127.0.0.1' $dshTargetPort 'lan' }
+  # 2026-10-31：去掉 LAN 门——不允许绕过 Tailscale 从同一局域网直接访问。
   # DNS-free tailnet door: works even when a peer cannot resolve MagicDNS names
   if ($tsIp) { Start-Proxy $tsIp $dshPort '127.0.0.1' $dshTargetPort 'tailip' }
 
@@ -197,7 +191,7 @@ if ($enableDsh) {
     }
     & $ts serve --bg --http=$servePort "http://127.0.0.1:$tailPort" | Out-Null
   } else {
-    Write-Host '[!] Tailscale is not connected; the name-based entry is skipped (IP/LAN still work).'
+    Write-Host '[!] Tailscale is not connected; the name-based entry is skipped (IP still works).'
   }
 } else {
   # 客户可见文案：交付给客户的版本里绝不出现"DSH"字样（那是卖家自用时的叫法）。
@@ -259,8 +253,6 @@ if ($enableDsh) {
 
   $tailUrl = if ($dns -and $token) { "http://$dns/?token=$token" } else { $null }
   $ipUrl   = if ($tsIp -and $token) { "http://${tsIp}:$dshPort/?token=$token" } else { $null }
-  # 改动（自启修复）：没有局域网地址时不生成 LAN 网址，避免出现 http://:8642/ 这种无效地址
-  $lanUrl  = if ($lan) { "http://${lan}:$dshPort/?token=$token" } else { $null }
 
   function Write-Qr([string]$url, [string]$urlFile, [string]$qrFile) {
     $previous = if (Test-Path $urlFile) { (Get-Content $urlFile -Raw).Trim() } else { '' }
@@ -296,7 +288,6 @@ if ($enableDsh) {
   $qrPath = $null
   if ($tailUrl) { $qrPath = Write-Qr $tailUrl (Join-Path $here 'phone-url.txt') (Join-Path $here 'phone-qr.png') }
   if ($ipUrl) { Write-Qr $ipUrl (Join-Path $here 'tailip-url.txt') (Join-Path $here 'qr-tailip.png') | Out-Null }
-  if ($lanUrl) { Set-Content -Path (Join-Path $here 'lan-url.txt') -Value $lanUrl -Encoding UTF8 }
 
   # Permanent bookmark: /go?k=<screen key> always redirects to the *current* token, so this
   # URL+QR never expires (DSH mints a new token on every start, this rides along).
@@ -316,16 +307,11 @@ if ($enableDsh) {
   if ($tailUrl) { Write-Host "  $tailUrl" } else { Write-Host '  (Tailscale not connected)' }
   Write-Host 'Tailnet by IP (no DNS needed):'
   if ($ipUrl) { Write-Host "  $ipUrl" }
-  if ($lanUrl) {
-    Write-Host 'LAN (same Wi-Fi, faster):'
-    Write-Host "  $lanUrl"
-  }
 } else {
   Write-Host ''
   # 客户可见文案：不提 DSH。顺带把"能装成 App"的 https 地址也标出来。
   Write-Host '手机入口（画面服务）：'
   $surl = Join-Path $here 'screen-url.txt'
-  $surlLan = Join-Path $here 'screen-url-lan.txt'
   $surlIp = Join-Path $here 'screen-url-ip.txt'
   if (Test-Path $surl) {
     $main = (Get-Content $surl -Raw).Trim()
@@ -336,6 +322,5 @@ if ($enableDsh) {
     }
   } else { Write-Host '  主入口: (未生成，Tailscale 可能没连上)' }
   if (Test-Path $surlIp) { Write-Host ('  备用入口（http，数字 IP）: ' + (Get-Content $surlIp -Raw).Trim()) }
-  if (Test-Path $surlLan) { Write-Host ('  局域网  : ' + (Get-Content $surlLan -Raw).Trim()) }
 }
 if (-not $Quiet) { Read-Host 'Press Enter to exit' }

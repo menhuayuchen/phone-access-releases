@@ -1080,6 +1080,18 @@ function handler(req, res) {
   // 之外，所有路由都先过这道门。
   const ra = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
   const la = String(req.socket.localAddress || '').replace(/^::ffff:/, '');
+  // 2026-10-31 安全收紧（用户要求）：只接受 Tailscale 网络内的访问。
+  // 允许来源：本机 127.0.0.1 / ::1（tailscale serve 的转发也走这里），或 tailnet 100.64.0.0/10。
+  // 这样即使以后误把局域网地址加回监听，同一 Wi-Fi 的其它设备也进不来；同一 Wi-Fi 下想更快，
+  // 由 Tailscale 自己选直连路径，而不是绕过 Tailscale。
+  const fromTailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ra);
+  if (ra !== '127.0.0.1' && ra !== '::1' && !fromTailnet) {
+    try {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
+      res.end('只接受 Tailscale 访问：请先在手机上打开 Tailscale 并连接，再用电脑上显示的地址打开。');
+    } catch { }
+    return;
+  }
   const isLocalConn = ra === '127.0.0.1' || ra === '::1' || (ra && ra === la);
   if (!isLocalConn && !authorized(req, url)) {
     rejectAuth(req, res, url, ra);

@@ -18,9 +18,9 @@
 
 撤销：.\harden-firewall.ps1 -Undo
 
-注意：跑完之后，手机上"同一 Wi-Fi 更快"的局域网链接会连不上，必须用 Tailscale 地址：
+注意（2026-10-31 起）：产品默认就只监听 Tailscale，不再提供局域网入口；这个脚本只是额外加固。
+手机上必须用 Tailscale 地址（同一 Wi-Fi 下 Tailscale 也是直连，速度不会比局域网差）：
   http://100.108.92.22:8642/go?k=<屏幕密钥>
-Tailscale 在同一个 Wi-Fi 下也是直连（不经中转），速度不会比局域网差。
 #>
 param([switch]$Undo)
 

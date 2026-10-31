@@ -66,18 +66,24 @@ if (-not (Test-Path $keyFile)) {
 }
 $key = (Get-Content $keyFile -Raw).Trim()
 
-$lan = Get-LanIp
 # 改动（P0-1/P0-2）：tailnet 地址改成自动发现（tailscale ip -4 优先，失败再从 status --json 补），
-# 不再依赖写死的 tailscale.exe 路径；取不到就只绑 LAN 地址（与原来的降级行为一致，只是多一行原因）。
+# 不再依赖写死的 tailscale.exe 路径；取不到就抛错，不再回退到局域网地址。
+# 2026-10-31 安全收紧：**所有访问都必须走 Tailscale**，同一 Wi-Fi 也不例外
+# （Tailscale 自己会在同一局域网里走直连，速度不受影响）。局域网不带 Tailscale 的连接一律不监听。
 $tsState = Get-TailscaleInfo -TailscaleExe $ts
 $tsIp = $tsState.Ip
-if (-not $tsIp) { Write-Host "[!] 没取到 tailnet 地址（$($tsState.Note)），画面只能走局域网地址" }
+if (-not $tsIp) {
+  Write-Host "[x] Tailscale 没有连上（$($tsState.Note)）。"
+  Write-Host "    出于安全考虑，不提供绕过 Tailscale 的局域网入口；请先登录 Tailscale，再重新启动。"
+  if (-not $Quiet) { Read-Host '按回车退出' }
+  exit 1
+}
 # 改动（PWA/HTTPS）：额外绑 127.0.0.1。
 # 原因：手机要"安装成 App"必须走 HTTPS（service worker 只在安全上下文可用），
 # 而 HTTPS 由 tailscale serve 提供，它默认转发到 127.0.0.1:<port>。
 # 原来这里只绑 tailnet 地址和局域网地址，serve 转发过来会连接被拒。
 # 绑 127.0.0.1 只对本机可见，不扩大暴露面（局域网和公网仍然进不来）。
-$hosts = @('127.0.0.1', $tsIp, $lan) | Where-Object { $_ } | Select-Object -Unique
+$hosts = @('127.0.0.1', $tsIp) | Where-Object { $_ } | Select-Object -Unique
 $viewersFile = Join-Path $here 'viewers.count'
 
 # 改动（P0-4）：启动前先查端口冲突。以前绑定失败只在 screen-server.log 里留一行，
@@ -254,7 +260,6 @@ $httpsUrl = Get-HttpsScreenUrl -tailscaleExe $ts -port $screenPort -key $key
 # 备用入口必须在：Tailscale 的域名解析偶尔会抽，那时只有数字 IP 能进。
 $ipUrl    = if ($tsIp) { "http://${tsIp}:$screenPort/?k=$key" } else { $null }
 $tailUrl  = if ($httpsUrl) { $httpsUrl } elseif ($ipUrl) { $ipUrl } else { $null }
-$lanUrl   = if ($lan) { "http://${lan}:$screenPort/?k=$key" } else { $null }
 
 function Write-Qr([string]$url, [string]$urlFile, [string]$qrFile) {
   $previous = if (Test-Path $urlFile) { (Get-Content $urlFile -Raw).Trim() } else { '' }
@@ -279,7 +284,6 @@ $qrIp = $null
 if ($ipUrl) {
     $qrIp = Write-Qr $ipUrl (Join-Path $here 'screen-url-ip.txt') (Join-Path $here 'screen-qr-ip.png')
 }
-if ($lanUrl) { Write-Qr $lanUrl (Join-Path $here 'screen-url-lan.txt') (Join-Path $here 'screen-qr-lan.png') | Out-Null }
 
 Write-Host ''
 if ($httpsUrl) {
@@ -291,7 +295,5 @@ if ($httpsUrl) {
     Write-Host 'Screen viewer (tailnet):'
     if ($tailUrl) { Write-Host "  $tailUrl" } else { Write-Host '  (Tailscale not connected)' }
 }
-Write-Host 'Screen viewer (LAN):'
-if ($lanUrl) { Write-Host "  $lanUrl" }
 if ($qr -and -not $Quiet) { Start-Process -FilePath $qr }
 if (-not $Quiet) { Read-Host 'Press Enter to exit' }

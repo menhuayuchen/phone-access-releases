@@ -939,3 +939,37 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 也可以手动：
   `powershell -File seller-keys\make-licence.ps1 -Machine "..." -Name "..." -Days 30 -Edition trial`
 - 签发记录留在 `seller-keys\licence-*.json`，作为限购 3 次的台账（该目录 gitignore，不能丢）。
+
+## 26. 安全收紧：强制走 Tailscale，移除局域网直连（2026-10-31 晚，用户要求）
+
+用户明确要求：**不管手机和电脑在不在同一个 Wi-Fi，都必须装 Tailscale 并登录同一账号**；
+同一 Wi-Fi 只是让 Tailscale 自己走局域网直连（更快），**不能绕过 Tailscale 直接连电脑**。
+之前文档/官网里“同一 Wi-Fi 不用装 Tailscale”的说法是错的，已全部改掉。
+
+### 26.1 代码改动
+
+- `start-screen.ps1`：画面服务只绑 `127.0.0.1` + tailnet IP；不再绑 LAN IP；
+  不再生成 `screen-url-lan.txt` / `screen-qr-lan.png`；Tailscale 没连上时直接报错退出（不再降级到局域网）。
+- `start-phone-access.ps1`：移除 DSH 的 LAN 门（`proxy-lan`）和 `lan-url.txt`；不再打印 LAN 地址。
+- `supervise.ps1`：守护不再检查 `lan-url.txt`（否则会每 8 秒误判“门没起来”反复重启）。
+- `screen-server.mjs`：增加来源闸门——只接受 `127.0.0.1` / `::1` / tailnet `100.64.0.0/10`；
+  其它来源一律 403（即使以后误绑了 LAN 也进不来）。
+- `harden-firewall.ps1` 注释、`README.md` 里的旧 LAN 说明同步更新。
+
+### 26.2 验证（本机真实服务）
+
+临时用 1.0.10 运行时 + 改后的 `screen-server.mjs`，同时绑 `127.0.0.1 / LAN 10.120.169.250 / tailnet 100.108.92.22`：
+
+| 来源 | 结果 |
+|---|---|
+| `http://127.0.0.1:8773/?k=…` | **200** |
+| `http://10.120.169.250:8773/?k=…`（同一局域网，带正确密钥） | **403**（只接受 Tailscale） |
+| `http://100.108.92.22:8773/?k=…`（tailnet） | **200** |
+
+### 26.3 状态
+
+- 代码/文档已改，**未发版**（当前 latest 仍是 1.0.10，客户安装后仍是旧行为）。
+- 需要发 **1.0.11**（安全修复）才会到客户机器；按发版规则等用户确认。
+- 注意：老客户的 `screen-url-lan.txt` / 旧二维码在升级后会失效，需重新扫 tailnet 入口。
+- Tailscale 安卓官方 APK 约 **100.8 MB**，超过蓝奏云免费单文件 100 MB 上限，没法直接放蓝奏云；
+  需要换 123 云盘/奶牛快传/OSS 等支持更大文件的地方（或蓝奏云会员）。

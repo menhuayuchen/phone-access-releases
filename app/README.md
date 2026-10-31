@@ -8,13 +8,13 @@
 |---|---|---|
 | 异地 / 流量（按名字） | `http://dsh-laptop.tailb9b4f0.ts.net/`（需要 MagicDNS 能解析） | 快（P2P） |
 | 异地 / 流量（**不依赖 DNS**） | `http://100.108.92.22:8642/` ← 平板/设备解析不了名字时用这个 | 快（P2P） |
-| 同一 Wi-Fi | `http://<电脑 WLAN IP>:8642/`，当前是 `http://10.120.215.45:8642/` | 最快 |
+| 同一 Wi-Fi | 仍然走 Tailscale（同一 Wi-Fi 下 Tailscale 自动直连），**没有绕过 Tailscale 的 LAN 入口** | 最快 |
 
 - 登录二维码：`phone-qr.png`（名字入口）、`qr-tailip.png`（IP 入口）；对应地址 `phone-url.txt`、
-  `tailip-url.txt`、`lan-url.txt`。扫一次下发 **30 天** cookie，三个入口共用同一份 cookie。
+  `tailip-url.txt`。扫一次下发 **30 天** cookie，两个入口共用同一份 cookie。
 - 拿到的是完整 DSH Web UI：和电脑共用同一个 `~/.dsh`，同一工作区、同一份会话列表。
-- **打不开时先分两种情况**：同 Wi-Fi → 用 LAN 地址（完全不经过 Tailscale）；异地 →
-  确认设备上 Tailscale 已连接，再用 IP 入口（名字解析失败时 IP 仍然通）。
+- **打不开时**：先确认设备上 Tailscale 已连接（2026-10-31 起所有入口都只监听 Tailscale；
+  同一 Wi-Fi 也不再提供 lan 地址），再用 IP 入口（名字解析失败时 IP 仍然通）。
 
 ## 结构（为什么不是直接开桌面版那个窗口）
 
@@ -92,14 +92,14 @@ supervisor 每 8 秒检查一次：
 | 场景 | 地址 |
 |---|---|
 | 异地（tailnet 直连 IP，不依赖 DNS） | `http://100.108.92.22:8660/?k=<key>` ← `screen-url.txt` / `screen-qr.png` |
-| 同一 Wi-Fi | `http://10.120.215.45:8660/?k=<key>` ← `screen-url-lan.txt` / `screen-qr-lan.png` |
+| 同一 Wi-Fi | 仍然走 Tailscale（自动直连）；`screen-url-lan.txt` 已废弃，不再生成 |
 
 组成：
 
 ```
 capture.exe（C# 抓屏循环：BitBlt + 双缓冲流水线，~32 fps、2560 宽、JPEG q62）─> 命名管道 `dsh-screen-frames`（内存）
                                                                     │
-screen-server.mjs（只绑 Tailscale IP 与 WLAN IP）──> MJPEG 网页 ──────┘
+screen-server.mjs（只绑 Tailscale IP 与 127.0.0.1）──> MJPEG 网页 ──────┘
 ```
 
 - **DPI 感知**：这台机器是 2560×1600 + 150% 缩放，抓屏程序启动时声明
@@ -1226,7 +1226,7 @@ TCP 在长肥管道上丢一个包就要等重传，画面会累积滞后；中�
    否则浏览器里任意网页都能 `fetch('http://127.0.0.1:8660/exec')` 执行命令。
 2. **必须 `content-type: application/json`**：网页表单只能发 `text/plain` / `urlencoded` / `multipart`，
    拦住 CSRF。
-3. 服务只监听 Tailscale / 局域网私有地址，不碰 `0.0.0.0`。
+3. 服务只监听 Tailscale 地址与 127.0.0.1，不碰 `0.0.0.0`，也不再监听局域网地址。
 
 实测：不带 key → `{"ok":false,"err":"forbidden"}`；带 key 但 `text/plain` → 同样 403；两者都对才执行。
 
