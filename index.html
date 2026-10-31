@@ -327,6 +327,18 @@
         另外重启后一般要等 <b>10~60 秒</b> 服务才起来；刚开机连不上先等一分钟再试。</p>
       </details>
       <details>
+        <summary>手机上怎么“安装到桌面”？为什么要开 HTTPS？</summary>
+        <p>
+          “安装应用 / 添加到主屏幕”需要 <b>HTTPS</b>（浏览器的安全要求），HTTPS 由 Tailscale 提供，一次性设置：<br>
+          1. 电脑上打开 <a href="https://login.tailscale.com/admin/dns" target="_blank" rel="noreferrer">Tailscale 后台 → DNS</a>；<br>
+          2. 找到 <b>HTTPS Certificates</b> → 点 <b>Enable HTTPS</b>；<br>
+          3. 回到电脑，双击「启动」（或等 1 分钟，守护进程会自动重配 443 端口）；<br>
+          4. 重新打开「手机入口」，用 <code>https://&lt;机器名&gt;.ts.net/?k=…</code> 打开，就能在浏览器菜单里“安装应用 / 添加到主屏幕”。<br>
+          没有 HTTPS 也能用 http 看画面，只是不能装成 App。Tailscale 官方说明：
+          <a href="https://tailscale.com/kb/1153/enabling-https" target="_blank" rel="noreferrer">Enabling HTTPS</a>。
+        </p>
+      </details>
+      <details>
         <summary>电脑关机或睡眠了，还能连吗？</summary>
         <p>不能。它需要电脑<b>开机、联网、程序在运行</b>——不会替你开机。安装时要按提示把 Windows 的「自动睡眠」关掉（设置 → 系统 → 电源 → 屏幕和睡眠都选「从不」），否则电脑睡着就会断线。</p>
       </details>
