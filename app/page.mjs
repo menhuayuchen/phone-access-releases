@@ -2193,12 +2193,39 @@ bindImg(img);
       + '<span id="setLicMsg" style="font-size:12.5px;color:#868c96"></span></div></div>';
   }
 
+  // 2026-10-31：新增「体验版」（¥10 / 1 个月全功能）。许可证 payload 里 edition='trial'（或 'month'）
+  // 就显示体验版徽章；其它 edition（basic/owner/test…）显示专业版。到期时间由许可证 expires 控制，
+  // 到期后 licensed=false，自动回落免费版。
+  function licenceKind(lic) {
+    const e = String((lic && lic.edition) || '').toLowerCase();
+    if (e === 'trial' || e === 'trial30' || e === 'month') {
+      return { label: '体验版', trial: true, color: '#8fb6ff', bg: 'rgba(143,182,255,.13)', border: 'rgba(143,182,255,.4)' };
+    }
+    return { label: '专业版', trial: false, color: '#8CE68C', bg: 'rgba(140,230,140,.13)', border: 'rgba(140,230,140,.4)' };
+  }
+  function licencePill(lic, licensed) {
+    const k = licensed ? licenceKind(lic)
+      : { label: '免费版', color: '#ffb454', bg: 'rgba(255,180,84,.13)', border: 'rgba(255,180,84,.45)' };
+    return '<span style="display:inline-flex;align-items:center;gap:6px;background:' + k.bg + ';color:' + k.color
+      + ';border:1px solid ' + k.border + ';border-radius:999px;padding:3px 10px;font-size:12px;font-weight:600">'
+      + '<span style="width:6px;height:6px;border-radius:50%;background:' + k.color + '"></span>'
+      + escHtml(k.label) + '</span>';
+  }
+  function daysLeftText(exp) {
+    if (!exp || exp === 'never') return '';
+    const t = Date.parse(String(exp) + 'T23:59:59');
+    if (!Number.isFinite(t)) return '';
+    const d = Math.ceil((t - Date.now()) / 86400000);
+    return d > 0 ? '（还剩 ' + d + ' 天）' : '';
+  }
+
   function licenceInner(lic) {
     const licensed = !!lic.licensed;
     const exp = (lic.expires && lic.expires !== 'never') ? String(lic.expires) : '永久';
     const uq = lic.ultraQuota || null;
+    const kind = licenceKind(lic);
     let h = '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap">'
-      + setPill(licensed, '专业版', '免费版')
+      + licencePill(lic, licensed)
       + (lic.name ? '<span style="color:#aeb3bb;font-size:13px">' + escHtml(String(lic.name)) + '</span>' : '')
       + '</div>';
     // 有许可证文件但没通过（换了机器 / 过期 / 文件损坏）：把原因摆出来，
@@ -2208,9 +2235,13 @@ bindImg(img);
         + escHtml(String(lic.message || '许可证校验没通过')) + '</div>';
     }
     if (licensed) {
-      h += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp)) + '</div>'
-        + '<div style="color:#868c96;font-size:12.5px;margin-top:6px;line-height:1.7">'
-        + '超清画质不限时长 · 个性化已解锁 · 同时观看不限台数</div>';
+      h += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp) + (exp === '永久' ? '' : daysLeftText(exp))) + '</div>'
+        + (kind.trial
+          ? '<div style="color:#8fb6ff;font-size:12.5px;margin-top:6px;line-height:1.7">'
+            + '体验版：1 个月全功能（超清不限时 · 个性化 · 多设备）。<br>'
+            + '到期后自动回落免费版，不自动续费；想继续用可以买专业版（一次买断）。</div>'
+          : '<div style="color:#868c96;font-size:12.5px;margin-top:6px;line-height:1.7">'
+            + '超清画质不限时长 · 个性化已解锁 · 同时观看不限台数</div>');
       // 已授权也保留粘贴入口（换许可证 / 续期要用），默认折叠不占地方
       h += '<details style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
         + '<summary style="cursor:pointer;color:#8fb6ff;font-size:13px">换许可证 / 续期：点这里粘贴新的</summary>'
@@ -2447,7 +2478,9 @@ bindImg(img);
                 + '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">'
                 + '下载不动多半是网络到 GitHub 不通。可以点「打开发布页」用浏览器/下载工具下，或者让卖家发国内网盘链接。<br>'
                 + '<a href="' + escHtml(j.pageUrl || '#') + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">打开发布页</a>'
-                + ' · <a id="updCopy" href="#" style="color:#8fb6ff">复制下载地址</a></div>'
+                + ' · <a id="updCopy" href="#" style="color:#8fb6ff">复制下载地址</a>'
+                + (j.mirrorPage ? ' · <a href="' + escHtml(j.mirrorPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">国内网盘下载（手动）</a>' : '')
+                + '</div>'
               : '<div style="color:#868c96">这次发布没有附安装包，去发布页手动下载：'
                 + escHtml(j.pageUrl || '') + '</div>');
           const go = ubox.querySelector('#updGo');
@@ -2563,11 +2596,13 @@ bindImg(img);
     // 三种状态分开显示（2026-10-30 加试用）：专业版 / 免费版·试用中 / 免费版
     // 口径与设置面板一致：一律看 licensed，不看 usable（usable 试用期内也是 true）。
     const trialLine = trialSummary(lic.trial);
+    const stKind = licenceKind(lic);
+    const stExp = (lic.expires && lic.expires !== 'never') ? String(lic.expires) : '';
     const statusText = lic.licensed
-      ? '专业版（已购买）'
+      ? (stKind.label + '（' + (stExp ? '有效期至 ' + stExp : '永久') + '）')
       : ('免费版' + (trialLine ? ' · ' + trialLine : ''));
     const body = '<div style="color:#8b9098;font-size:13px;margin-bottom:4px">当前版本：'
-      + statusText
+      + escHtml(statusText)
       + (lic.name ? ('（' + escHtml(lic.name) + '）') : '') + '</div>'
       + (lic.licensed ? '' :
         (lic.trial && lic.trial.active

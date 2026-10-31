@@ -85,7 +85,7 @@
   .step h3{margin:0 0 5px;font-size:15.5px}
   .step p{margin:0;color:var(--muted);font-size:14px;line-height:1.7}
   /* pricing */
-  .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(224px,1fr));gap:16px}
   .plan{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;position:relative}
   .plan.hot{border-color:#3f7a4a;background:rgba(47,107,58,.13)}
   .plan h3{margin:0;font-size:17px}
@@ -227,7 +227,7 @@
   <section id="pricing">
     <div class="wrap">
       <h2>价格</h2>
-      <p class="sub">免费版永久可用，不是试用到期就不能用。专业版一次买断，不订阅。</p>
+      <p class="sub">免费版永久可用，不是试用到期就不能用。想先试全功能可以买「体验版」¥10 用 1 个月；确定长期用就上专业版，一次买断不订阅。</p>
       <div class="plans">
         <div class="plan">
           <h3>免费版</h3>
@@ -239,6 +239,18 @@
             <li>超清 2560 每天 1 小时</li>
             <li>最多 3 台设备同时看</li>
             <li>7 天全功能试用</li>
+          </ul>
+        </div>
+        <div class="plan">
+          <h3>体验版 <span style="font-size:11px;color:var(--blue);border:1px solid currentColor;border-radius:20px;padding:1px 8px;vertical-align:2px">先试试</span></h3>
+          <div class="tagline">全功能一个月</div>
+          <div class="price">¥10<span>1 个月</span></div>
+          <div style="color:var(--blue);font-size:12.5px;margin-top:2px">不自动续费 · 到期自动回免费版</div>
+          <ul>
+            <li>1 个月内按专业版用</li>
+            <li>超清 2560 不限时长</li>
+            <li>个性化全开、同时观看不限台数</li>
+            <li>想继续用可升级专业版（¥68 一次买断）</li>
           </ul>
         </div>
         <div class="plan hot">

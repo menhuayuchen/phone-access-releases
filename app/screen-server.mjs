@@ -1236,6 +1236,9 @@ function handler(req, res) {
       machineCode: lic.machineCode || '',
       name: lic.name || '',
       expires: lic.expires || '',
+      // edition：许可证里写 'trial'（或 'month'）= 体验版（1 个月），其它视为专业版；
+      // 页面据此显示不同徽章（2026-10-31 加）
+      edition: lic.edition || '',
       message: lic.message || '',
       support: support,
       // 当前抓屏宽度上限（手机「设置」里高亮当前画质档位用）
@@ -1382,6 +1385,9 @@ function handler(req, res) {
     // （例如国内 OSS/COS 直链）。只认 https + .exe；页面把它当首选、GitHub 当备选。
     const mirror = String(upd.mirror || '').trim();
     const mirrorOk = /^https:\/\/\S+\.exe(\?\S*)?$/i.test(mirror);
+    // 手动下载页（2026-10-31）：蓝奏云/网盘这类没有稳定直链的，只能给一个"页面"，让客户自己点下载
+    const mirrorPageRaw = String(upd.mirrorPage || '').trim();
+    const mirrorPage = /^https:\/\/\S+/i.test(mirrorPageRaw) ? mirrorPageRaw : '';
     // GitHub Releases（2026-10-30）：老客户点「检查更新」直接从这个 release 拿新版。
     // 配置写法 update.github = { "owner": "...", "repo": "..." }，公开仓库不需要 token。
     // 只做一次 GET，不轮询、不后台检查——和"产品平时不联网"的既有承诺一致。
@@ -1455,6 +1461,7 @@ function handler(req, res) {
           downloadUrl: mirrorOk ? mirror : String((j && j.url) || ''),
           fallbackUrl: mirrorOk ? String((j && j.url) || '') : '',
           mirror: mirrorOk ? mirror : '',
+          mirrorPage: mirrorPage,
           pageUrl: String((j && j.page) || '')
         });
       } catch (e) {

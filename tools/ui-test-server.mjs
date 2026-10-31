@@ -27,7 +27,16 @@ const base = (over = {}) => Object.assign({
   captureWidth: 2560,
   support: { enabled: true, title: '支持 / 购买许可证', note: '纯支持也行，谢谢！', showMachineCode: true },
   branding: { alipay: '', wechat: '', contact: '购买许可证 / 技术支持\n邮箱：ccc475235@gmail.com' },
-  plans: { enabled: true, title: '套餐与价格', items: [] },
+  plans: {
+    enabled: true, title: '套餐与价格',
+    note: '体验版 ¥10 用 1 个月；专业版一次买断永久使用。',
+    items: [
+      { id: 'free', name: '免费版', price: '¥0', unit: '永久免费', features: ['基础功能'] },
+      { id: 'trial', name: '体验版', price: '¥10', unit: '1 个月全功能', features: ['1 个月全功能'] },
+      { id: 'pro', name: '专业版', price: '¥68', unit: '一次性 · 永久使用', highlight: true, features: ['超清不限时'] },
+      { id: 'custom', name: '定制版', price: '面议', unit: '按需报价', features: ['按需报价'] }
+    ]
+  },
   share: {
     enabled: true,
     title: '分享给朋友（对方装好就能用）',
@@ -43,6 +52,11 @@ const EXPIRED = { active: false, state: 'expired', start: '2026-10-15 21:00:00',
 const CASES = {
   // 已购买：永久许可证
   pro: base({ trial: EXPIRED }),
+  // 体验版：1 个月全功能（edition=trial，expires 为未来日期）
+  trialMonth: base({
+    edition: 'trial', name: '体验用户', expires: '2026-11-29',
+    trial: EXPIRED, message: '许可证有效。'
+  }),
   // 新装未付款：7 天全功能试用中（最容易和"已授权/永久"搞混的状态）
   trial: base({
     usable: true, licensed: false, name: '', expires: '', state: 'missing',
@@ -101,7 +115,7 @@ http.createServer((req, res) => {
       configured: true, current: '1.0.7', latest: '1.0.8', hasUpdate: true,
       notes: '测试台：模拟一个 1.0.8 更新，用来检查进度/失败提示。',
       downloadUrl: 'https://example.com/PhoneAccess-Setup-v1.0.8.exe',
-      fallbackUrl: '', mirror: '', pageUrl: 'https://example.com/releases'
+      fallbackUrl: '', mirror: '', mirrorPage: 'https://example.com/lanzou-demo', pageUrl: 'https://example.com/releases'
     });
   }
   if (url.pathname === '/update-progress') return json(mockProgress());
