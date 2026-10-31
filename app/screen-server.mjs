@@ -1388,6 +1388,8 @@ function handler(req, res) {
     // 手动下载页（2026-10-31）：蓝奏云/网盘这类没有稳定直链的，只能给一个"页面"，让客户自己点下载
     const mirrorPageRaw = String(upd.mirrorPage || '').trim();
     const mirrorPage = /^https:\/\/\S+/i.test(mirrorPageRaw) ? mirrorPageRaw : '';
+    // 手动下载页的说明（蓝奏云密码等）：纯文本、限长，页面按文本渲染
+    const mirrorPageNote = mirrorPage ? String(upd.mirrorPageNote || '').slice(0, 60) : '';
     // GitHub Releases（2026-10-30）：老客户点「检查更新」直接从这个 release 拿新版。
     // 配置写法 update.github = { "owner": "...", "repo": "..." }，公开仓库不需要 token。
     // 只做一次 GET，不轮询、不后台检查——和"产品平时不联网"的既有承诺一致。
@@ -1462,6 +1464,7 @@ function handler(req, res) {
           fallbackUrl: mirrorOk ? String((j && j.url) || '') : '',
           mirror: mirrorOk ? mirror : '',
           mirrorPage: mirrorPage,
+          mirrorPageNote: mirrorPageNote,
           pageUrl: String((j && j.page) || '')
         });
       } catch (e) {

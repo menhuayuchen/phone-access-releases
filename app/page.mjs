@@ -2479,7 +2479,8 @@ bindImg(img);
                 + '下载不动多半是网络到 GitHub 不通。可以点「打开发布页」用浏览器/下载工具下，或者让卖家发国内网盘链接。<br>'
                 + '<a href="' + escHtml(j.pageUrl || '#') + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">打开发布页</a>'
                 + ' · <a id="updCopy" href="#" style="color:#8fb6ff">复制下载地址</a>'
-                + (j.mirrorPage ? ' · <a href="' + escHtml(j.mirrorPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">国内网盘下载（手动）</a>' : '')
+                + (j.mirrorPage ? ' · <a href="' + escHtml(j.mirrorPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">国内网盘下载（手动）</a>'
+                  + (j.mirrorPageNote ? '<span style="color:#6b7078">（' + escHtml(j.mirrorPageNote) + '）</span>' : '') : '')
                 + '</div>'
               : '<div style="color:#868c96">这次发布没有附安装包，去发布页手动下载：'
                 + escHtml(j.pageUrl || '') + '</div>');
