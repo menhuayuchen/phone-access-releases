@@ -1057,3 +1057,15 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
   **下一次打包**起，App 内更新失败会显示「国内网盘下载（手动）· 密码 95kq」。
 - 注意：已经发布的 v1.0.11 安装包里配置是空的（发布时清掉了旧蓝奏云），
   所以现有客户的 App 内还看不到这个入口；要全员生效需再发一版（或手动改客户本机配置）。
+
+## 32. Tailscale HTTPS / “安装到桌面”说明（2026-10-31 深夜）
+
+- 产品侧：`https-setup.ps1` 会探测 tailnet 能否签证书；能签就自动
+  `tailscale serve --bg --https=443 http://127.0.0.1:8660`，并把 `https://<机器名>.ts.net/?k=…` 写进 `screen-url.txt`。
+  前提是客户在 **Tailscale 后台 → DNS → HTTPS Certificates** 点过 Enable HTTPS（一次性，不跟安装包走）。
+- 文档：官网 FAQ 新增「手机上怎么‘安装到桌面’？为什么要开 HTTPS？」；《使用说明》《客户使用指南》的
+  「装到手机桌面」一节补充了 4 步开启方法（后台地址 + 官方文档链接）。线上已验证。
+- 说明要点：HTTPS 是浏览器“安装应用/添加到主屏幕”的硬要求；不开也能 http 浏览，只是不能装成 App；
+  `tailscale serve` 只在 tailnet 内，不是公网 Funnel。
+- App 侧改动（`update.mirrorPage` = 蓝奏云新分享 + 密码 95kq）已写进配置，**等下次打包**一起带上；
+  本次不另发版本。
