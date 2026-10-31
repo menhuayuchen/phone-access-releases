@@ -867,3 +867,20 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 按新规则（发布需用户同意），本轮只改代码/配置并在仓库 commit，**没有 bump 版本、没有上传、没有动 latest**。
 - 本地出了候选安装包 `dist\【点这里安装】手机远程-v1.0.9-候选.exe`（配置里的 version 仍是 1.0.9，仅供试用）。
 - 用户同意后再：bump 到 1.0.10 → pack/build-sfx → 发布 → 官网自动跟随。
+
+## 23. Gitee 下载直链实测（2026-10-31）
+
+- 用户建了仓库 `menhuayuchen/phone-access-download`，用「发行版」上传了一个 exe。
+- **直链无 cookie / 无 Referer 也能下**：`GET https://gitee.com/<owner>/<repo>/releases/download/<tag>/<file>`
+  返回 200，302 跳到 `foruda.gitee.com/attach_file/...` CDN；`content-type: application/vnd.microsoft.portable-executable`。
+- 速度实测（本机）：curl 全量 50.4 MB → **35 秒（约 1.44 MB/s）**；Node fetch（UA=PhoneAccess-UpdateCheck）也能正常读。
+  对比 GitHub release asset 的 ~25 KB/s，Gitee 快约 50 倍，**可以作为 `update.mirror` 国内直链**。
+- ⚠️ 这次上传的文件是**候选包**（`【点这里安装】手机远程-v1.0.9-候选.exe`，SHA256 `8D736584…9A94`），
+  不是已发布的正式版 1.0.9（`PhoneAccess-Setup-v1.0.9.exe`，SHA256 `BFB43692…0CDE`），所以**没有接入 `update.mirror`**。
+- 另：tag 和文件名都是中文（`手机远程-v1.0.9-安装包`），URL 会变成长串百分号编码；能用，但建议以后用
+  ASCII：tag `v1.0.10`、文件 `PhoneAccess-Setup-v1.0.10.exe`。
+- **重要机制**：`update.mirror` 读的是**客户端自己安装目录**里的 `product.config.json`。
+  所以：① 新装/升级到带 mirror 的版本才生效；② 老客户端要临时启用，得手动改它安装目录的配置；
+  ③ 发新版时把 mirror 指向「该版本 Gitee 文件」再打包，老客户端下一次更新才会拿到这个配置。
+- 待办：等 1.0.10 正式发版时，把 1.0.10 的 exe 传到 Gitee（ASCII 名），
+  在 `product.config.json` 的 `update.mirror` 填对应直链 → 打包发布；同时给本机装的那版手工补上 mirror 做端到端验证。
