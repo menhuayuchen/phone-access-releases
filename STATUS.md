@@ -1048,3 +1048,12 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 镜像链路验证：用 dist 的 1.0.11 代码起临时服务、配置 version 改成 1.0.10 模拟老客户 →
   `/update-check` 返回 `latest=1.0.11`、`downloadUrl=Gitee`、`fallbackUrl=GitHub`。
 - 本机安装目录仍是 1.0.10，需要手动装一次 `dist\【点这里安装】手机远程-v1.0.11.exe`。
+
+## 31. 官网加回蓝奏云产品安装包入口（2026-10-31 深夜）
+
+- 用户提供 v1.0.11 的蓝奏云分享：`https://wwatu.lanzouv.com/iyNBv4e677ed`（密码 `95kq`）。
+- 官网下载区恢复第三张卡片「蓝奏云（手动）」，密码 95kq；线上已验证。
+- `product.config.json` 的 `update.mirrorPage` / `mirrorPageNote` 填回该链接与密码，
+  **下一次打包**起，App 内更新失败会显示「国内网盘下载（手动）· 密码 95kq」。
+- 注意：已经发布的 v1.0.11 安装包里配置是空的（发布时清掉了旧蓝奏云），
+  所以现有客户的 App 内还看不到这个入口；要全员生效需再发一版（或手动改客户本机配置）。
