@@ -1033,3 +1033,18 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
   主题背景 #ff0000 → body 变 `pa-t-custom`、计算背景 `rgb(255,0,0)`，自定义主题 JSON 正确；
   expired（免费）时两组取色器均 disabled。
 - 未发版：这些改动要等 **1.0.11** 才能到客户机器。
+
+## 30. v1.0.11 发布（首个公开版，2026-10-31 深夜，用户批准）
+
+- 版本号 1.0.11；GitHub Release `v1.0.11`（`/releases/latest`），asset `PhoneAccess-Setup-v1.0.11.exe`
+  **52,829,458 B**，SHA256 `D8C3B1C0A5E7288D05B74F3218A150DA921AE117254B2F88E288FD398155FB26`。
+- Gitee 发行版 `v1.0.11` 同文件；直链实测 200、**2.1 MB/s / 24.9 秒**、哈希一致。
+- 用户要求「其他所有版本全部撤下来」：
+  - GitHub：删除 v1.0.6/1.0.7/1.0.8/1.0.9/1.0.10 的 Release **和 tag**，现在只剩 v1.0.11 一个 release。
+  - Gitee：删除旧产品发行版（v1.0.9 中文 tag、v1.0.10），只保留 `v1.0.11` 和 Tailscale 安卓镜像 `tailscale-android-1.104.4`。
+  - 官网：移除蓝奏云「产品安装包」卡片（那个分享里是旧版）；`update.mirrorPage` 清空，
+    等卖家把 1.0.11 传到蓝奏云后再填回。
+- 官网下载区已更新为 v1.0.11 / 新 SHA；线上验证通过。
+- 镜像链路验证：用 dist 的 1.0.11 代码起临时服务、配置 version 改成 1.0.10 模拟老客户 →
+  `/update-check` 返回 `latest=1.0.11`、`downloadUrl=Gitee`、`fallbackUrl=GitHub`。
+- 本机安装目录仍是 1.0.10，需要手动装一次 `dist\【点这里安装】手机远程-v1.0.11.exe`。
