@@ -1103,3 +1103,19 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 本机安装目录 `screen-server.mjs` 已替换为新版（备份 `screen-server.mjs.bak-before-20261031-auth`），
   但**运行中的进程仍是旧代码**（PID 46280，权限不足无法结束），要重启程序/电脑才生效。
 - **未发版**；建议发 1.0.12 带这些安全修复，仍需用户明确同意。
+
+## 34. v1.0.12 发布（安全修复，2026-11-01 00:1x，用户批准）
+
+- 版本号 1.0.12；GitHub Release `v1.0.12`（唯一 release，`/releases/latest`），
+  asset `PhoneAccess-Setup-v1.0.12.exe` **52,829,608 B**，
+  SHA256 `8A282A56A145A5CB8E4AC4D27C041FC7E0A754A059EBB140DDFADEAD8FBC92B2`。
+- Gitee 发行版 `v1.0.12` 同文件；直链实测 200、25.0 秒、哈希一致。
+- 旧版本：GitHub v1.0.11 的 release+tag、Gitee v1.0.11 发行版已删除；只剩 v1.0.12
+  （Gitee 另有 Tailscale 安卓镜像）。
+- 官网已更新 v1.0.12 / 新 SHA；蓝奏云「产品安装包」入口再次撤下（分享里是 1.0.11），
+  `update.mirrorPage` 在 1.0.12 配置里为空。等用户把 1.0.12 传蓝奏云后再加。
+- 镜像链路验证（模拟 1.0.11 客户端）：`/update-check` 返回 latest=1.0.12、downloadUrl=Gitee、
+  fallback=GitHub、sha256=8a28…；镜像命中。
+- 1.0.12 含本轮全部安全修复：默认必须密钥+公开白名单、WS 来源闸门、限流按身份、
+  更新包 SHA256 校验、镜像版本校验、绑定只允许回环/Tailscale。
+- 本机安装目录仍运行旧进程（权限不足未重启）；需要手动装一次 1.0.12 才会用上新鉴权。
