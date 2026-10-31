@@ -973,3 +973,16 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 注意：老客户的 `screen-url-lan.txt` / 旧二维码在升级后会失效，需重新扫 tailnet 入口。
 - Tailscale 安卓官方 APK 约 **100.8 MB**，超过蓝奏云免费单文件 100 MB 上限，没法直接放蓝奏云；
   需要换 123 云盘/奶牛快传/OSS 等支持更大文件的地方（或蓝奏云会员）。
+
+## 27. 安卓 Tailscale 国内镜像（Gitee，2026-10-31 晚）
+
+- 官方安卓 APK（1.104.4 universal）**105,698,535 字节**，超过 Gitee 单文件 100 MiB 上限（104,857,600），直接传不上去。
+- 处理：用 7-Zip（7zr.exe）LZMA2 最高压缩，**105.7 MB → 27,996,631 字节（约 27 MB）**，单文件可传。
+  压缩包 SHA256 `343B987BB4AAF7C1DFD19C50A616B9DB233A5A963D8D7CB6F3B139CE0E8EE8A0`；
+  APK 本身 SHA256 `47628CECDE2DE0ED03F4A69424635259023DAF76FB5D9AFEEDDFA62761690984`（与 GitHub 官方 digest 一致）。
+- Gitee 发行版 tag `tailscale-android-1.104.4`，附件 `Tailscale-Android-1.104.4.7z`（27.9 MB）。
+  直链：`https://gitee.com/menhuayuchen/phone-access-download/releases/download/tailscale-android-1.104.4/Tailscale-Android-1.104.4.7z`
+  实测无 cookie 下载 200、2.08 MB/s、13.4 秒，哈希一致。
+- 官网 FAQ 与《使用说明》《客户使用指南》已改成：安卓优先用 Gitee 这个 7z（ZArchiver 解压后安装），Google Play/官方 GitHub 作为备选。
+- Windows 版 Tailscale（114.7 MB）这次传错、也没传；需要的话同样可以 7z 压到 100MB 以内再放 Gitee。
+- 之前误建的空发行版 `tailscale-1.104.4` 已删除。
