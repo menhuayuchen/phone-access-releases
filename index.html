@@ -85,7 +85,7 @@
   .step h3{margin:0 0 5px;font-size:15.5px}
   .step p{margin:0;color:var(--muted);font-size:14px;line-height:1.7}
   /* pricing */
-  .plans{display:grid;grid-template-columns:repeat(3,1fr);gap:16px}
+  .plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(224px,1fr));gap:16px}
   .plan{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;position:relative}
   .plan.hot{border-color:#3f7a4a;background:rgba(47,107,58,.13)}
   .plan h3{margin:0;font-size:17px}
@@ -146,7 +146,7 @@
           <span style="color:#8d95a3">（电脑要开着并联网，它不会替你开机。）</span>
         </p>
         <div class="cta">
-          <a class="btn btn-main" href="https://github.com/menhuayuchen/phone-access-releases/releases/latest">下载 Windows 版</a>
+          <a class="btn btn-main" href="#download">下载 Windows 版</a>
           <a class="btn btn-ghost" href="#pricing">看看价格</a>
         </div>
         <div class="fine">Windows 10 / 11 · 安装包约 50 MB · 手机端不用装 App（浏览器打开，可添加到主屏幕）</div>
@@ -227,7 +227,7 @@
   <section id="pricing">
     <div class="wrap">
       <h2>价格</h2>
-      <p class="sub">免费版永久可用，不是试用到期就不能用。专业版一次买断，不订阅。</p>
+      <p class="sub">免费版永久可用，不是试用到期就不能用。想先试全功能可以买「体验版」¥10 用 1 个月；确定长期用就上专业版，一次买断不订阅。</p>
       <div class="plans">
         <div class="plan">
           <h3>免费版</h3>
@@ -240,6 +240,19 @@
             <li>最多 3 台设备同时看</li>
             <li>7 天全功能试用</li>
           </ul>
+        </div>
+        <div class="plan">
+          <h3>体验版 <span style="font-size:11px;color:var(--blue);border:1px solid currentColor;border-radius:20px;padding:1px 8px;vertical-align:2px">先试试</span></h3>
+          <div class="tagline">全功能一个月</div>
+          <div class="price">¥10<span>1 个月</span></div>
+          <div style="color:var(--blue);font-size:12.5px;margin-top:2px">不自动续费 · 到期自动回免费版</div>
+          <ul>
+            <li>1 个月内按专业版用</li>
+            <li>超清 2560 不限时长</li>
+            <li>个性化全开、同时观看不限台数</li>
+            <li>想继续用可升级专业版（¥68 一次买断）</li>
+          </ul>
+          <div style="margin-top:8px;color:#6b7078;font-size:11.5px;line-height:1.6">每台电脑最多买 3 次（按机器码核对）；到期自动回免费版。</div>
         </div>
         <div class="plan hot">
           <h3>专业版 <span style="font-size:11px;color:var(--green);border:1px solid currentColor;border-radius:20px;padding:1px 8px;vertical-align:2px">推荐</span></h3>
@@ -310,11 +323,12 @@
       <h2>下载试试，不花钱</h2>
       <p class="sub">装好就能用，免费版没有时间限制。</p>
       <div class="cta" style="justify-content:center">
-        <a class="btn btn-main" href="https://github.com/menhuayuchen/phone-access-releases/releases/latest">下载最新版</a>
+        <a class="btn btn-main" href="https://gitee.com/menhuayuchen/phone-access-download/releases">国内下载（推荐）</a>
+        <a class="btn btn-ghost" href="https://github.com/menhuayuchen/phone-access-releases/releases/latest">GitHub 下载</a>
         <a class="btn btn-ghost" href="mailto:ccc475235@gmail.com?subject=手机远程%20安装与购买">遇到问题，发邮件</a>
       </div>
       <p class="fine">Windows 10 / 11 · 邮箱 ccc475235@gmail.com</p>
-      <p class="fine" style="margin-top:6px;color:#8d95a3">GitHub 下载慢或打不开？发邮件到 ccc475235@gmail.com，我给你国内网盘链接（安装包约 50 MB）。</p>
+      <p class="fine" style="margin-top:6px;color:#8d95a3">国内用户优先点「国内下载（Gitee）」，比 GitHub 快很多；两个都是同一份安装包。遇到问题发邮件到 ccc475235@gmail.com。</p>
     </div>
   </section>
 </main>
