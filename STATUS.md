@@ -906,3 +906,36 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
   统计该机器 `edition=trial` 的签发次数并提示剩余可卖次数（实测：VM 机器码 1 次，陌生机器码 0 次）。
 - 签发流程写进 `docs/完整流程-卖家与客户.md` §4.4：`-Days 30 -Edition trial`，发 `.code.txt` 一行短码。
 - 本轮仍未 bump 版本/发布（遵守规则）；等 1.0.10 一起收口。
+
+## 25. v1.0.10 正式发布 + 体验版上线 + 国内镜像打通（2026-10-31 下午，用户批准后发布）
+
+### 25.1 发布物
+
+- GitHub Release：`v1.0.10`（正式版，`/releases/latest` 已指向它），
+  asset `PhoneAccess-Setup-v1.0.10.exe`，52,827,911 B，
+  SHA256 `3DDE44752554D95D3E751588BE5BA1B37266EF92FABB0183CEB76E032A75E4B2`。
+- Gitee 发行版：tag `v1.0.10`（ASCII），同文件同哈希；
+  直链 `https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.10/PhoneAccess-Setup-v1.0.10.exe`。
+- 官网已更新：价格 4 档（免费/体验/专业/定制），下载按钮改为「国内下载（Gitee）」「GitHub 下载」两个。
+- 本机安装包：`dist\【点这里安装】手机远程-v1.0.10.exe`（用户本机还是 1.0.7，需要手动装一次）。
+
+### 25.2 镜像端到端验证（真实服务，非桩）
+
+在临时目录用 dist 里的 **1.0.10 代码** 起了一个服务，把配置 version 改成 `1.0.9` 模拟老客户：
+
+| 检查 | 结果 |
+|---|---|
+| `/update-check` | `current=1.0.9`、`latest=1.0.10`、`hasUpdate=true` |
+| `downloadUrl` | **Gitee 直链**（mirror 优先） |
+| `fallbackUrl` | GitHub asset（备选） |
+| `/update-install`（走 Gitee） | 进度 0→100%，**约 2.0 MB/s，26.7 秒** 下完 52,827,911 B |
+| 下载文件 SHA256 | `3DDE44…E4B2`，与发布包一致 |
+| 结论 | 国内自动更新链路打通（测试时把 `spawn` 换成空实现，避免真的启动安装程序） |
+
+### 25.3 体验版签发工具
+
+- `seller-keys\签发体验版.cmd`（双击）：输入机器码/客户名 → 先跑 `tools\count-trial-licences.ps1`
+  显示已购次数 → 确认后签 30 天、`edition=trial` 许可证。
+- 也可以手动：
+  `powershell -File seller-keys\make-licence.ps1 -Machine "..." -Name "..." -Days 30 -Edition trial`
+- 签发记录留在 `seller-keys\licence-*.json`，作为限购 3 次的台账（该目录 gitignore，不能丢）。
