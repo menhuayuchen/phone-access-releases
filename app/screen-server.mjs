@@ -15,7 +15,7 @@ import { PAGE } from './page.mjs';
 
 import { createServer } from 'node:http';
 import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync } from 'node:fs';
-import { randomBytes, createPublicKey, createVerify, createHmac, timingSafeEqual } from 'node:crypto';
+import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
 import { join, dirname } from 'node:path';
@@ -55,16 +55,12 @@ const [hostsArg = '127.0.0.1', portArg = String(Number(cfgPorts.screen) || 8660)
 const hostsArgRaw = hostsArg;
 const port = Number(portArg);
 
-// ---- 绑定地址白名单（独立审查 U3）--------------------------------------------
-// 加这一层的理由：hosts 是启动脚本按"网卡枚举"生成的，而枚举只排除了 127/169.254/几个
-// 虚拟网卡，**没有排除公网地址**。如果某台机器的网卡上直接带公网 IPv4（云主机、某些 VPN），
-// 或者将来有人手改成 0.0.0.0，这个服务就会挂到公网上——防火墙只是第二层保险，
-// 不该是唯一一层。同理拒绝一切 IPv6：防火墙规则只写了 IPv4 网段，绑 IPv6 等于绕过它。
+// ---- 绑定地址白名单（独立审查 U3；2026-10-31 再收紧）--------------------------
+// 只允许回环 + Tailscale 的 100.64.0.0/10。用户明确要求「不管是否同一 Wi-Fi 都必须走 Tailscale」，
+// 所以这里**连 RFC1918 局域网地址也不再允许绑定**，杜绝以后有人把 LAN 加回监听。
+// 拒绝一切 IPv6：防火墙规则只写了 IPv4 网段，绑 IPv6 等于绕过它。
 const PRIVATE_V4 = [
   /^127\./,                                     // 回环
-  /^10\./,                                      // RFC1918
-  /^192\.168\./,                                // RFC1918
-  /^172\.(1[6-9]|2\d|3[01])\./,                 // RFC1918
   /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./    // Tailscale / CGNAT（100.64.0.0/10）
 ];
 const badHosts = [];
@@ -72,12 +68,12 @@ const hosts = hostsArg.split(',').map((h) => h.trim()).filter(Boolean).filter((h
   const isV4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
   if (!isV4) { badHosts.push(h + '(非 IPv4)'); return false; }
   if (h === '0.0.0.0') { badHosts.push(h + '(通配全部网卡)'); return false; }
-  if (!PRIVATE_V4.some((re) => re.test(h))) { badHosts.push(h + '(公网/非私有)'); return false; }
+  if (!PRIVATE_V4.some((re) => re.test(h))) { badHosts.push(h + '(非回环/非 Tailscale)'); return false; }
   return true;
 });
 if (badHosts.length) {
   console.error('screen-server: [安全] 拒绝绑定这些地址：' + badHosts.join('、'));
-  console.error('screen-server: 只允许回环、RFC1918、和 Tailscale 的 100.64.0.0/10 网段。');
+  console.error('screen-server: 只允许回环 127.0.0.1 和 Tailscale 的 100.64.0.0/10 网段；局域网地址不再允许。');
 }
 if (hosts.length === 0) {
   console.error('screen-server: [安全] 没有可绑定的地址了（原始入参：' + hostsArgRaw + '），退出。');
@@ -204,6 +200,11 @@ function attachAudioWs(server, key) {
     // /rtc 的鉴权失败由 rtc.mjs 自己处理（写 401 + destroy），这里绝不能碰它。
     if (url.pathname !== '/ws-audio') {
       if (url.pathname !== '/rtc') { try { socket.destroy(); } catch { } }
+      return;
+    }
+    if (!sourceAllowed(req)) {
+      try { socket.write('HTTP/1.1 403 Forbidden\\r\\nContent-Length: 0\\r\\nConnection: close\\r\\n\\r\\n'); } catch { }
+      socket.destroy();
       return;
     }
     if (url.searchParams.get('k') !== key) {
@@ -630,6 +631,12 @@ setInterval(() => {
 setInterval(() => { if (!pipeOk) loadFrame(); }, 100);
 
 
+function sourceAllowed(req) {
+  const ra = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+  if (ra === '127.0.0.1' || ra === '::1') return true;
+  return /^100\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\./.test(ra);
+}
+
 function authorized(req, url) {
   if (url.searchParams.get('k') === KEY) return true;
   const cookie = req.headers.cookie || '';
@@ -671,9 +678,22 @@ const AUTH_WINDOW_MS = 10 * 60 * 1000;
 const AUTH_LIMIT = 8;
 
 function noteAuthFail(ip, req, url) {
+  // 2026-10-31：tailscale serve 会把所有请求的来源变成 127.0.0.1，按 IP 计数会把整个 tailnet
+  // 一起锁死（一台拿旧书签的手机错 8 次，别人全被 429）。优先用 serve 带的身份头；
+  // 拿不到身份且来源是回环时，只记日志、不锁定。
+  const who = String(req.headers['tailscale-user-login'] || '').trim();
+  const key = who || ip;
+  const loopback = ip === '127.0.0.1' || ip === '::1';
+  if (loopback && !who) {
+    try {
+      appendFileSync(join(dirname(fileURLToPath(import.meta.url)), 'screen-auth.log'),
+        `${new Date().toISOString()} 401 serve path=${url.pathname} ua=${String(req.headers['user-agent'] || '').slice(0, 80)}\n`);
+    } catch { /* 日志失败不影响门 */ }
+    return false;
+  }
   const now = Date.now();
-  let rec = authFails.get(ip);
-  if (!rec || now - rec.first > AUTH_WINDOW_MS) { rec = { count: 0, first: now, until: 0 }; authFails.set(ip, rec); }
+  let rec = authFails.get(key);
+  if (!rec || now - rec.first > AUTH_WINDOW_MS) { rec = { count: 0, first: now, until: 0 }; authFails.set(key, rec); }
   rec.count += 1;
   if (rec.count >= AUTH_LIMIT) rec.until = now + AUTH_WINDOW_MS;
   // 改动（独立审查 L3）：这张表原来只增不减，长期运行会被大量来源 IP 撑大。
@@ -686,7 +706,7 @@ function noteAuthFail(ip, req, url) {
   }
   try {
     appendFileSync(join(dirname(fileURLToPath(import.meta.url)), 'screen-auth.log'),
-      `${new Date().toISOString()} 401 ip=${ip} path=${url.pathname} ua=${String(req.headers['user-agent'] || '').slice(0, 80)}\n`);
+      `${new Date().toISOString()} 401 ip=${ip}${who ? ' user=' + who : ''} path=${url.pathname} ua=${String(req.headers['user-agent'] || '').slice(0, 80)}\n`);
   } catch { /* 日志失败不影响门 */ }
   return rec.until > now;
 }
@@ -1073,13 +1093,12 @@ function updatePublicState() {
 function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
 
-  // ---- 统一鉴权闸门 --------------------------------------------------------
-  // 以前 /input、/mode、/unblock、/rtc-*、/sources、/cursor、/manifest.json、/health
-  // 都写在 authorized() 检查**之前**，等于局域网里任何一台设备不拿密钥就能控制这台电脑
-  // （/manifest.json 还会把密钥本身发出去）。现在除了"本机自连"（本机脚本读 /health）
-  // 之外，所有路由都先过这道门。
+  // ---- 统一鉴权（2026-10-31 重写：默认必须密钥 + 显式公开白名单）--------------
+  // 旧模型是「本机自连就免鉴权 + 危险路径黑名单」。问题：
+  //   tailscale serve 把请求转成 127.0.0.1，任何 tailnet 设备都成了「本机自连」，
+  //   黑名单每加一条新路由都可能漏（/licence、/frame.jpg、/stream 都曾漏掉）。
+  // 新模型：除了下面明确列出的公开资源，所有请求都必须带密钥（?k= 或 cookie）。
   const ra = String(req.socket.remoteAddress || '').replace(/^::ffff:/, '');
-  const la = String(req.socket.localAddress || '').replace(/^::ffff:/, '');
   // 2026-10-31 安全收紧（用户要求）：只接受 Tailscale 网络内的访问。
   // 允许来源：本机 127.0.0.1 / ::1（tailscale serve 的转发也走这里），或 tailnet 100.64.0.0/10。
   // 这样即使以后误把局域网地址加回监听，同一 Wi-Fi 的其它设备也进不来；同一 Wi-Fi 下想更快，
@@ -1092,56 +1111,20 @@ function handler(req, res) {
     } catch { }
     return;
   }
-  const isLocalConn = ra === '127.0.0.1' || ra === '::1' || (ra && ra === la);
-  if (!isLocalConn && !authorized(req, url)) {
+
+  // 收款码等品牌图片：未授权客户要靠它找到购买方式，必须公开
+  const isBrandingAsset = url.pathname.startsWith('/branding/') && /\.(png|jpe?g)$/i.test(url.pathname);
+  // 明确公开的少量资源（不含任何画面/控制/许可证数据）
+  const PUBLIC_PATHS = new Set(['/health', '/sw.js', '/icon-192.png', '/icon-512.png']);
+  // 浏览器取 manifest 时不发 cookie，页面里现签一个短时 token 例外
+  const manifestOk = url.pathname === '/manifest.json' && manifestTokenOk(url);
+  if (!PUBLIC_PATHS.has(url.pathname) && !isBrandingAsset && !manifestOk && !authorized(req, url)) {
     rejectAuth(req, res, url, ra);
     return;
   }
 
-  // ---- 第二道鉴权：危险接口不吃"本机自连"豁免 --------------------------------
-  // 事故背景（独立审查 H1 + 本机实测确认）：
-  //   Tailscale serve 把 https://<机器名>.ts.net/ 转发到 127.0.0.1:8660，
-  //   于是**从手机/外网来的请求，在服务端看起来就是本机连接**（remoteAddress=127.0.0.1），
-  //   上面那道 isLocalConn 豁免直接把闸门让开了。
-  //   实测不带任何密钥就能：列窗口（/sources）、读光标（/cursor）、
-  //   **注入鼠标键盘（/input）**、切换抓屏源（/mode）——等于盲控这台电脑。
-  //   （/exec 当初单独加了防护，所以它反而是安全的；/frame.jpg 与 / 走下面的第二道
-  //     严格鉴权，所以看不到屏幕。攻击者能"盲打"，不能"看"。）
-  //
-  //   修法：下面这些接口一律要求密钥，与来源地址无关。
-  //   /health 仍然享受豁免——守护进程每 8 秒用它探活，改掉会引发重启风暴；
-  //   它只读、不改状态（后续再单独收紧）。
-  const STRICT_AUTH_PATHS = new Set([
-    '/input', '/mode', '/unblock', '/showdesktop',
-    '/rtc-on', '/rtc-off', '/rtc-quality', '/sources', '/cursor',
-    // 改动（第二轮 P0-1 / H1-r1）：manifest 原来不在这个集合里，而它的响应体里原样带着
-    // start_url='/?k=<密钥>'，还给 max-age=86400。于是任何 tailnet 对端 GET 一次
-    // /manifest.json 就白拿完整访问密钥（实测复现：不带 k、不带 cookie → 200 + 密钥）。
-    // 光把响应体里的密钥去掉还不够——这条路径本身就是"凭据数据"的出口，
-    // 一旦以后又往里加字段就会重犯，所以一并要求密钥。
-    '/manifest.json',
-    // 改动（第二轮 P1-1 / H1-r2）：这两个接口原来位于"两道鉴权闸门"之后、"许可证闸门"之前，
-    // 所以在已授权机器上**不带密钥也能调**：
-    //   /set-quality 会重写 product.config.json 的 maxCaptureWidth（钳制 800–3840），
-    //     反复改写 + 重启可造成降质/大图抓屏的 DoS，而且是整文件重写；
-    //   /update-check 会免密钥触发本机出站请求，并把更新服务器返回的 notes/downloadUrl 读走。
-    '/set-quality', '/update-check',
-    // 2026-10-30：下载并启动安装包属于"能执行代码"的接口，必须和 /exec 同级对待
-    '/update-install',
-  ]);
-  if (STRICT_AUTH_PATHS.has(url.pathname)) {
-    // /manifest.json 额外认"页面里现签的短时 token"：浏览器取清单时不带 cookie，
-    // 只靠密钥会把"添加到主屏幕"打掉（详见 manifestHref 上面的说明）。裸 GET 仍然 401。
-    const manifestOk = url.pathname === '/manifest.json' && manifestTokenOk(url);
-    if (!manifestOk && !authorized(req, url)) {
-      rejectAuth(req, res, url, ra);
-      return;
-    }
-    // 第二层（独立审查 M4）：跨站请求一律拒绝。
-    // 密钥本身已经挡住了恶意网页的 <form>（表单带不了查询参数/自定义头），
-    // 这里再加一道同源校验，防止有人用 fetch 的 no-cors 之类绕过预期路径。
-    // 只校验"带了 Origin 且与 Host 不一致"的情况：命令行工具通常不发 Origin，
-    // 那样的情况继续允许（它们已经带了密钥）。
+  // 跨站写请求一律拒绝（Origin 与 Host 不一致）。读请求不强制，兼容命令行/本地脚本。
+  if (req.method !== 'GET' && req.method !== 'HEAD' && req.method !== 'OPTIONS') {
     const originHdr = String(req.headers.origin || '');
     if (originHdr) {
       let sameHost = false;
@@ -1163,8 +1146,7 @@ function handler(req, res) {
   // 许可证只影响两件事：
   //   · 超清画质配额（见上面 ultraStatus/deliverCapW，强制点在 /frame.jpg 与 /stream 发帧处）
   //   · 个性化功能（页面按 /licence 的 usable 锁定，属外观类功能，客户端强制即可）
-  // /branding/ 下的收款码图片仍然无条件放行：未授权客户要靠它找到购买方式。
-  const isBrandingAsset = url.pathname.startsWith('/branding/') && /\.(png|jpe?g)$/i.test(url.pathname);
+  // /branding/ 下的收款码图片仍然无条件放行：未授权客户要靠它找到购买方式（前面已判定并放行）。
 
   // 收款码等品牌图片（客户自己放进 branding\ 目录）
   if (isBrandingAsset) {
@@ -1396,7 +1378,7 @@ function handler(req, res) {
     // 国内镜像（2026-10-30）：GitHub 直连不稳时，卖家在 update.mirror 填一个能直连的 exe 地址
     // （例如国内 OSS/COS 直链）。只认 https + .exe；页面把它当首选、GitHub 当备选。
     const mirror = String(upd.mirror || '').trim();
-    const mirrorOk = /^https:\/\/\S+\.exe(\?\S*)?$/i.test(mirror);
+    let mirrorOk = /^https:\/\/\S+\.exe(\?\S*)?$/i.test(mirror);
     // 手动下载页（2026-10-31）：蓝奏云/网盘这类没有稳定直链的，只能给一个"页面"，让客户自己点下载
     const mirrorPageRaw = String(upd.mirrorPage || '').trim();
     const mirrorPage = /^https:\/\/\S+/i.test(mirrorPageRaw) ? mirrorPageRaw : '';
@@ -1445,6 +1427,8 @@ function handler(req, res) {
             version: String((rel && rel.tag_name) || '').replace(/^v/i, ''),
             notes: body.length > 900 ? (body.slice(0, 900) + '…') : body,
             url: String((exe && exe.browser_download_url) || ''),
+            // GitHub 现在会给 asset 带 sha256 digest；有它就能在下载后校验，防止镜像给错版本
+            sha256: String((exe && exe.digest) || '').replace(/^sha256:/i, '').toLowerCase(),
             page: String((rel && rel.html_url) || '')
           };
         } else {
@@ -1465,6 +1449,10 @@ function handler(req, res) {
           return 0;
         };
         const hasUpdate = !!(latest && current && cmp(latest, current) > 0);
+        // 镜像里如果写死了版本号，必须和 latest 一致；否则会「提示新版本、却下到旧包」
+        const mirrorVer = (mirror.match(/v?(\d+\.\d+\.\d+)/i) || [])[1] || '';
+        const mirrorStale = !!(mirrorVer && latest && mirrorVer !== latest);
+        if (mirrorStale) mirrorOk = false;
         reply(200, {
           configured: true,
           current: current,
@@ -1477,6 +1465,7 @@ function handler(req, res) {
           mirror: mirrorOk ? mirror : '',
           mirrorPage: mirrorPage,
           mirrorPageNote: mirrorPageNote,
+          sha256: String((j && j.sha256) || ''),
           pageUrl: String((j && j.page) || '')
         });
       } catch (e) {
@@ -1502,8 +1491,11 @@ function handler(req, res) {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 8192) req.destroy(); });
     req.on('end', () => {
-      let target = '';
-      try { target = String((JSON.parse(body || '{}') || {}).url || '').trim(); } catch { }
+      let reqObj = {};
+      try { reqObj = JSON.parse(body || '{}') || {}; } catch { }
+      let target = String(reqObj.url || '').trim();
+      // 页面在 /update-check 时拿到 GitHub asset 的 sha256；下载完必须校验，防止镜像给旧包
+      let expectedSha = String(reqObj.sha256 || '').trim().replace(/^sha256:/i, '').toLowerCase();
       if (!/^https:\/\//i.test(target)) return reply(400, { ok: false, message: '下载地址必须是 https' });
       if (!/\.exe(\?|$)/i.test(target)) return reply(400, { ok: false, message: '下载地址不是 exe 安装包' });
       // 允许的域名 = GitHub 下载域名 + 配置里的国内镜像域名（只由卖家在配置里指定）
@@ -1511,6 +1503,9 @@ function handler(req, res) {
       try {
         const mcfg = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
         mirror = String((mcfg.update && mcfg.update.mirror) || '').trim();
+        if (!/^[0-9a-f]{64}$/.test(expectedSha)) {
+          expectedSha = String((mcfg.update && mcfg.update.sha256) || '').trim().replace(/^sha256:/i, '').toLowerCase();
+        }
       } catch { }
       const allowedHosts = ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com'];
       try {
@@ -1596,6 +1591,12 @@ function handler(req, res) {
           if (aborted) throw new Error(updateState.error || '已中止');
           const buf = Buffer.concat(parts);
           if (!buf.length) throw new Error('下载到的文件是空的');
+          if (/^[0-9a-f]{64}$/.test(expectedSha)) {
+            const actualSha = createHash('sha256').update(buf).digest('hex');
+            if (actualSha !== expectedSha) {
+              throw new Error('安装包校验失败：SHA256 不一致（可能下到了旧版本或文件损坏），已停止，没有运行安装程序。');
+            }
+          }
           writeFileSync(part, buf);
           try { renameSync(part, dest); } catch { writeFileSync(dest, buf); try { unlinkSync(part); } catch { } }
           updateState.phase = 'done';
@@ -1604,7 +1605,7 @@ function handler(req, res) {
           // detached：页面请求结束时安装包继续跑，不用等它结束
           const p = spawn('cmd.exe', ['/c', 'start', '', dest], { detached: true, stdio: 'ignore', windowsHide: true });
           p.unref();
-          reply(200, { ok: true, path: dest, bytes: buf.length, message: '已下载完（' + Math.round(buf.length / 1024 / 1024) + ' MB），正在打开安装程序。如果弹出管理员授权请点「是」。' });
+          reply(200, { ok: true, path: dest, bytes: buf.length, sha256: createHash('sha256').update(buf).digest('hex'), message: '已下载完（' + Math.round(buf.length / 1024 / 1024) + ' MB），正在打开安装程序。如果弹出管理员授权请点「是」。' });
         } catch (e) {
           // 网络层错误（DNS/TCP 被挡、连接被重置）对客户来说就是"连不上 GitHub"，
           // 不要直接把 undici 的 "fetch failed" 抛给用户，要给出下一步怎么办。
@@ -2087,6 +2088,7 @@ let started = 0;
 for (const host of hosts) {
   const s = createServer(handler);
   rtc.attach(s, (req, url) => {
+    if (!sourceAllowed(req)) return false;
     if (!authorized(req, url)) return false;
     // 免费版并发上限同样管流畅模式（RTC）：超限返回一句状态行，页面会提示"设备数已满"。
     if (!isFullFunction()) {

@@ -2596,7 +2596,7 @@ bindImg(img);
               r = await fetch('/update-install', {
                 method: 'POST',
                 headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ url })
+                body: JSON.stringify({ url: url, sha256: j.sha256 || '' })
               }).then((x) => x.json());
             } catch (e) { r = null; }
             stopPoll();

@@ -66,17 +66,7 @@ if ($enableDsh) {
   }
 }
 
-function Get-LanIp {
-  $candidates = @()
-  $candidates += Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object { $_.InterfaceAlias -match 'WLAN|Wi-Fi' -and $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' }
-  $candidates += Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
-    Where-Object {
-      $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' -and
-      $_.InterfaceAlias -notmatch 'VMware|Loopback|vEthernet|Bluetooth'
-    }
-  ($candidates | Select-Object -First 1).IPAddress
-}
+# （Get-LanIp 已移除：产品只走 Tailscale，不再需要局域网地址）
 
 function Test-Listen([string]$addr, [int]$port) {
   Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
@@ -204,8 +194,7 @@ if ($enableDsh) {
 # supervisor), not a process-name scan — that scan can race and start a second copy.
 $beat = Join-Path $here 'supervisor.heartbeat'
 $lockPath = Join-Path $here 'supervisor.lock'
-$beatAge = if (Test-Path $beat) { ((Get-Date) - (Get-Item $beat).LastWriteTime).TotalMinutes } else { 999 }
-$lockFree = $false
+$beatAge = if (Test-Path $beat) { ((Get-Date) - (Get-Item $beat).LastWriteTime).TotalMinutes } else { 999 }$lockFree = $false
 try {
   $h = [IO.File]::Open($lockPath, 'OpenOrCreate', 'ReadWrite', 'None')
   $h.Close()
@@ -215,6 +204,8 @@ try {
 $sup = @(Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
   Where-Object { $_.Name -match 'powershell' -and $_.CommandLine -match '-File\s+\S+supervise\.ps1' })
 
+# 注意：$beatAge 的单位是**分钟**（TotalMinutes）。这里 3 表示 3 分钟，不是 3 秒。
+# 锁本身由存活进程持有，进程死了锁会自动释放；这条只处理"活着但卡死"的情况，别调太小。
 if (-not $lockFree -and $beatAge -gt 3) {
   Write-Host '[!] supervisor holds the lock but its heartbeat is stale; replacing it'
   $sup | ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }

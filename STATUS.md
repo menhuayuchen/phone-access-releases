@@ -1069,3 +1069,37 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
   `tailscale serve` 只在 tailnet 内，不是公网 Funnel。
 - App 侧改动（`update.mirrorPage` = 蓝奏云新分享 + 密码 95kq）已写进配置，**等下次打包**一起带上；
   本次不另发版本。
+
+## 33. 第二轮独立审查：鉴权模型重写 + 更新校验（2026-10-31 23:3x，未发版）
+
+第二轮会话审查交接文档，抓到一个 P0：`tailscale serve` 把请求变成 127.0.0.1，旧模型「本机自连免鉴权 + 危险路径黑名单」
+让 `/licence` 可无密钥读写。**追加核实发现更严重**：`/frame.jpg`、`/stream` 也不在严格名单里，
+同 tailnet 任何人不用密钥即可看屏幕；`/update-progress`、`/health` 也可读。
+
+### 33.1 修复（都在仓库，未发版）
+
+- **鉴权反转**：默认必须密钥（`?k=` 或 `screen-key` cookie）+ 显式公开白名单
+  （`/health`、`/sw.js`、两个 icon、`/branding/*.png|jpg`、`/manifest.json` 的短时 token）。
+  删除 `STRICT_AUTH_PATHS` 黑名单和 `isLocalConn` 豁免；跨站写请求仍拒。
+- **WS upgrade 来源闸门**：抽出 `sourceAllowed()`；`/ws-audio` 加 403；`/rtc` 的 isAllowed 先过它。
+- **限流**：优先用 `Tailscale-User-Login`；回环且无身份时只记日志不锁定（避免一台设备锁死整个 tailnet）。
+- **下载校验**：`/update-check` 返回 GitHub asset digest（sha256）；页面随 `/update-install` 提交；
+  服务端下载后算哈希，不一致报错、删文件、不启动安装程序；配置 `update.sha256` 可兜底。
+- **镜像防旧包**：mirror URL 里写死的版本号与 latest 不一致时，忽略镜像、回退 GitHub。
+- **绑定白名单**：只允许 `127.0.0.0/8` + `100.64.0.0/10`，LAN IP 直接拒绝绑定。
+- 清理：`Get-LanIp` 死代码、启动提示旧文案、心跳阈值注释。
+
+### 33.2 实测
+
+- 无密钥：`/` 401、`/frame.jpg` 401、`/stream` 401、`/licence` 401、`/update-progress` 401、
+  `/manifest.json` 401；`/health` 200。带 `?k=` 打开 `/` 得 cookie 后，以上均 200（浏览器页面正常）。
+- LAN 地址进绑定白名单：被拒绝，只绑回环。
+- 错误 sha256：下载 25.1s 后返回「安装包校验失败…已停止」，临时目录无 exe。
+- 把 mirror 改成 v1.0.10 而 latest=1.0.11：返回 `mirror=false`、downloadUrl 回 GitHub。
+- 注意：1.0.11 页面还没有 sha256 字段，这套校验只在 **1.0.12+** 生效。
+
+### 33.3 状态与热补
+
+- 本机安装目录 `screen-server.mjs` 已替换为新版（备份 `screen-server.mjs.bak-before-20261031-auth`），
+  但**运行中的进程仍是旧代码**（PID 46280，权限不足无法结束），要重启程序/电脑才生效。
+- **未发版**；建议发 1.0.12 带这些安全修复，仍需用户明确同意。
