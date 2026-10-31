@@ -986,3 +986,7 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 官网 FAQ 与《使用说明》《客户使用指南》已改成：安卓优先用 Gitee 这个 7z（ZArchiver 解压后安装），Google Play/官方 GitHub 作为备选。
 - Windows 版 Tailscale（114.7 MB）这次传错、也没传；需要的话同样可以 7z 压到 100MB 以内再放 Gitee。
 - 之前误建的空发行版 `tailscale-1.104.4` 已删除。
+
+- 补充（同日）：用户把 27.9 MB 的 `Tailscale-Android-1.104.4.7z` 上传到蓝奏云文件夹
+  `https://wwatu.lanzouv.com/b01i5yx5ng`（密码 `dcvr`）；官网 FAQ、使用说明、客户指南已同时列出
+  「Gitee 镜像」和「蓝奏云」两个国内下载点（二者是同一个 7z，APK 哈希一致）。
