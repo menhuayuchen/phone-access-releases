@@ -1123,3 +1123,21 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 补充（2026-11-01 00:3x）：用户提供 1.0.12 的蓝奏云分享
   `https://wwatu.lanzouv.com/irVYv4e6e1id`（密码 `4pp2`）；官网已加回第三张卡片并线上验证。
   仓库配置的 `update.mirrorPage`/`mirrorPageNote` 已指向它（**1.0.12 安装包内仍为空**，下次打包生效）。
+
+## 35. 官网新增视频教程（2026-11-01 傍晚）
+
+- 用户提供三个本地视频：`D:\视频稿\前言.mp4`（25.5s/30.9MB）、`下载安装教程.mp4`（847s/620.6MB）、
+  `使用教程.mp4`（418s/490.8MB）。
+- 用 `D:\download\办共\pipeline\bin\ffmpeg.exe` 压成网页版：1440 宽、H.264 CRF30、maxrate 1400k、
+  AAC 96k、faststart：
+  - `intro.mp4` 2.25MB
+  - `install.mp4` 34.2MB
+  - `usage.mp4` 23.8MB
+  - 封面 `intro.jpg` / `install.jpg` / `usage.jpg`
+- 托管：**GitHub Pages 的 `gh-pages` 分支 `videos/` 目录**（不是 Gitee 发行版——实测 Gitee 附件的
+  `Content-Disposition: attachment` 且不支持 Range，不能做视频流）。线上验证：
+  `Content-Type: video/mp4`、`Accept-Ranges: bytes`、Range 返回 206；页面三个 `<video>` readyState=4。
+- 官网（master `site/index.html` + gh-pages）新增 `#videos` 区块 + 导航「视频教程」：
+  前言 / 下载安装教程 / 使用教程 三张卡片，带简单描述、封面、直接播放；下方有直接下载链接。
+- 视频只存在 gh-pages（不塞进 master git，避免仓库重复膨胀）；以后换视频 = 更新 gh-pages 的 videos/ 并重新构建。
+- 本机保留了压好的源文件在 `D:\视频稿\web\`，方便以后重传。
