@@ -89,7 +89,9 @@
   /* videos */
   .vidgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:26px}
   .vidcard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;text-align:left}
-  .vidcard video{width:100%;aspect-ratio:16/10;background:#000;border-radius:10px;display:block}
+  .vidcard video,.vidcard iframe{width:100%;aspect-ratio:16/9;background:#000;border:0;border-radius:10px;display:block}
+  .vidlink{margin:6px 0 0!important}
+  .vidlink a{color:#8fb6ff;font-size:12.5px}
   .vidcard h3{font-size:15px;margin:10px 0 4px}
   .vidcard p{color:var(--dim);font-size:13px;line-height:1.7;margin:0}
   .plan{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:22px;position:relative}
@@ -250,34 +252,28 @@
   <section id="videos">
     <div class="wrap">
       <h2>视频教程</h2>
-      <p class="sub">三个短视频，按「前言 → 下载安装 → 使用」的顺序看即可。视频建议在 Wi-Fi 下观看。</p>
+      <p class="sub">三个短视频，按「前言 → 下载安装 → 使用」的顺序看即可。视频放在 B 站，国内加载更快。</p>
       <div class="vidgrid">
         <article class="vidcard">
-          <video controls preload="metadata" playsinline poster="videos/intro.jpg">
-            <source src="videos/intro.mp4" type="video/mp4">
-            您的浏览器不支持视频播放。
-          </video>
+          <iframe src="https://player.bilibili.com/player.html?bvid=BV1ppxx6CEZW&amp;page=1&amp;high_quality=1&amp;danmaku=0&amp;autoplay=0" scrolling="no" frameborder="0" allowfullscreen="true" title="前言：这是什么"></iframe>
           <h3>① 前言：这是什么</h3>
-          <p>25 秒讲清它能做什么、需要准备什么（电脑 + 手机 + Tailscale），以及免费版怎么用。</p>
+          <p>35 秒讲清它能做什么、需要准备什么（电脑 + 手机 + Tailscale），以及免费版怎么用。</p>
+          <p class="vidlink"><a href="https://www.bilibili.com/video/BV1ppxx6CEZW/" target="_blank" rel="noreferrer">在 B 站打开</a></p>
         </article>
         <article class="vidcard">
-          <video controls preload="metadata" playsinline poster="videos/install.jpg">
-            <source src="videos/install.mp4" type="video/mp4">
-            您的浏览器不支持视频播放。
-          </video>
+          <iframe src="https://player.bilibili.com/player.html?bvid=BV1WHxx65Eqm&amp;page=1&amp;high_quality=1&amp;danmaku=0&amp;autoplay=0" scrolling="no" frameborder="0" allowfullscreen="true" title="下载安装教程"></iframe>
           <h3>② 下载安装教程</h3>
           <p>从官网下载安装包，到手机能打开画面：含 Tailscale 安装/登录、扫码入口、添加到主屏幕。第一次装建议完整看一遍。</p>
+          <p class="vidlink"><a href="https://www.bilibili.com/video/BV1WHxx65Eqm/" target="_blank" rel="noreferrer">在 B 站打开</a></p>
         </article>
         <article class="vidcard">
-          <video controls preload="metadata" playsinline poster="videos/usage.jpg">
-            <source src="videos/usage.mp4" type="video/mp4">
-            您的浏览器不支持视频播放。
-          </video>
+          <iframe src="https://player.bilibili.com/player.html?bvid=BV1LBxx6YESB&amp;page=1&amp;high_quality=1&amp;danmaku=0&amp;autoplay=0" scrolling="no" frameborder="0" allowfullscreen="true" title="使用教程"></iframe>
           <h3>③ 使用教程</h3>
           <p>日常怎么用：看画面、点鼠标、拖拽、打字、切画质、开声音，以及常见操作。</p>
+          <p class="vidlink"><a href="https://www.bilibili.com/video/BV1LBxx6YESB/" target="_blank" rel="noreferrer">在 B 站打开</a></p>
         </article>
       </div>
-      <p class="fine" style="text-align:center;margin-top:14px">视频加载不出来时，可直接下载：<a href="videos/intro.mp4">前言</a> · <a href="videos/install.mp4">下载安装</a> · <a href="videos/usage.mp4">使用</a>（约 60 MB 合计）</p>
+      <p class="fine" style="text-align:center;margin-top:14px">视频放在 B 站（国内更流畅）；加载不出来时点视频下方「在 B 站打开」。也可以直接下载离线看：<a href="videos/intro.mp4">前言</a> · <a href="videos/install.mp4">下载安装</a> · <a href="videos/usage.mp4">使用</a></p>
     </div>
   </section>
 
