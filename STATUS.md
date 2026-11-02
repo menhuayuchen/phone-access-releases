@@ -1165,3 +1165,10 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 缩放改为 **三指及以上**：所有触点质心=手心；先 move 到质心，再 Ctrl down + wheel（张开=放大，捏合=缩小），每 10% 走一格；touchend/touchcancel/失焦/切后台/pagehide 都补 Ctrl up。
 - 合成 Touch 验证：双指事件为 `move(起点) → wheel`（移动后没有再次 move）；三指序列为 `move→Ctrl down→move→wheel d=6→Ctrl up`。
 - 使用说明/README 已同步；iPad 三指/五指可能与系统多任务手势冲突，需真机复测。
+
+## 38. 双缩放模式 + 画面缩放恢复按钮（2026-11-02，未发版）
+
+- 设置新增「缩放方式」：`系统缩放`（默认，三指及以上发 Ctrl+滚轮）/ `画面缩放`（只对 #img/#vid 做 CSS transform，电脑端零输入），偏好存 localStorage.zoomMode。
+- 画面缩放：以手心为不动点，scale 1~5；左侧新增 `#viewReset`（恢复原大小），仅 scale>1 显示，点击归位并隐藏。
+- 坐标换算：`toScreen()` 在 view.scale≠1 时先反算回未缩放坐标，`toPage()` 再正向变换；实测 zoom=2 时 `toPage(1000,500)→toScreen` 仍回到 (1000,500)。
+- 验证：view 模式三指张开→ `#img` transform scale 2、`#viewReset` 显示、无任何 /input 事件；点恢复→ transform 清空、按钮隐藏；system 模式仍为 move→Ctrl down→wheel→Ctrl up。
