@@ -132,7 +132,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
     <pre id="cmdout"></pre>
   </div>
 </div>
-<div id="hint">点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮</div>
+<div id="hint">点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮（光标居中） · 五指捏合=缩放</div>
 <script>
 const KEY = "__KEY__";
   const SID = Math.random().toString(36).slice(2, 10);   // 本页会话 id：服务端按它统计丢帧，互不干扰
@@ -735,7 +735,7 @@ function setControl(on) {
   btnCtl.classList.toggle('on', on);
   overlay.classList.toggle('off', !on);
   hint.textContent = on
-    ? '点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮'
+    ? '点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮（光标居中） · 五指捏合=缩放'
     : '控制已关闭（只读）';
 }
 
@@ -1128,7 +1128,7 @@ if (kbundo) {
 }
 
 // ---- 手势：Pointer Events（Chrome/Safari 都支持）--------------------------
-let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, lastTapAt = 0;
+let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoom5 = null, zoomCtrl = false, lastTapAt = 0;
 
 overlay.addEventListener('pointerdown', (e) => {
   if (!state.control) return;
@@ -1202,36 +1202,146 @@ overlay.addEventListener('pointercancel', () => {
   ptr = null; dragBtn = -1; moved = false;
 });
 
-// 双指滑动 = 滚轮
+// 双指滑动 = 滚轮；五指捏合 = 缩放（Ctrl+滚轮）
+// 两个细节都是为"手感"：
+//   ① 双指一落下就把光标挪到两指正中，滚动永远发生在两指中间，不会偏向先按下的那根手指；
+//   ② 五指的中心 = 手心（五个触点的质心），缩放前先把光标挪到那里，Ctrl+滚轮就落在手心。
+function touchPoints(e) {
+  const out = [];
+  for (let i = 0; i < e.touches.length; i++) {
+    const t = e.touches[i];
+    out.push(layoutPoint(t.clientX, t.clientY));
+  }
+  return out;
+}
+function pointsCenter(pts) {
+  let x = 0, y = 0;
+  for (let i = 0; i < pts.length; i++) { x += pts[i].x; y += pts[i].y; }
+  return { x: x / pts.length, y: y / pts.length };
+}
+function pointsSpread(pts, c) {
+  let d = 0;
+  for (let i = 0; i < pts.length; i++) d += Math.hypot(pts[i].x - c.x, pts[i].y - c.y);
+  return d / pts.length;
+}
+// 双指/五指开始时，把单指那套状态收干净：不能留下按着的左键或长按计时器
+function cancelSinglePointer() {
+  if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+  if (ptr && !ptr.up && dragBtn >= 0) queue({ t: 'up', b: dragBtn });
+  ptr = null; dragBtn = -1; moved = true;
+}
+function releaseZoomCtrl() {
+  if (!zoomCtrl) return;
+  zoomCtrl = false;
+  queueKey(0x11, 0);       // Ctrl up
+  flushQueue();            // 失焦/抬手后立刻发，别等 25ms 定时器被后台节流
+}
+
 overlay.addEventListener('touchstart', (e) => {
   if (!state.control) return;
   if (e.touches.length === 2) {
-    const q1 = layoutPoint(e.touches[0].clientX, e.touches[0].clientY);
-    const q2 = layoutPoint(e.touches[1].clientX, e.touches[1].clientY);
-    pinch = { y: (q1.y + q2.y) / 2, acc: 0 };
-    if (longTimer) { clearTimeout(longTimer); longTimer = null; }
-    if (ptr && !ptr.up) { ptr.up = true; ptr = null; }
-    moved = true;
+    const pts = touchPoints(e);
+    const c = pointsCenter(pts);
+    cancelSinglePointer();
+    releaseZoomCtrl();
+    zoom5 = null;
+    pinch = { x: c.x, y: c.y, acc: 0, lastMove: 0 };
+    // 关键：两指落下先移动光标到正中，再开始滚
+    const p = toScreen(c.x, c.y);
+    queue({ t: 'move', x: p.x, y: p.y });
+    showDot(c.x, c.y);
+    return;
+  }
+  if (e.touches.length === 5) {
+    const pts = touchPoints(e);
+    const c = pointsCenter(pts);
+    const d = pointsSpread(pts, c);
+    cancelSinglePointer();
+    pinch = null;
+    zoom5 = { x: c.x, y: c.y, dist: d, acc: 0, lastMove: 0 };
+    const p = toScreen(c.x, c.y);
+    queue({ t: 'move', x: p.x, y: p.y });
+    showDot(c.x, c.y);
+    if (!zoomCtrl) {
+      zoomCtrl = true;
+      queueKey(0x11, 1);    // Ctrl down，随后的滚轮就是缩放
+      flushQueue();
+    }
+    setNote('五指缩放：以手心为中心，张开放大 / 捏合缩小', 2500);
   }
 }, { passive: true });
 
 overlay.addEventListener('touchmove', (e) => {
-  if (!state.control || !pinch || e.touches.length !== 2) return;
-  const qa = layoutPoint(e.touches[0].clientX, e.touches[0].clientY);
-  const qb = layoutPoint(e.touches[1].clientX, e.touches[1].clientY);
-  const y = (qa.y + qb.y) / 2;
-  pinch.acc += (pinch.y - y);
-  pinch.y = y;
-  const steps = Math.trunc(pinch.acc / 18);
-  if (steps) {
-    pinch.acc -= steps * 18;
-    queue({ t: 'wheel', d: steps });
+  if (!state.control) return;
+
+  // 五指：质心=手心；看五指平均张开距离，按比例换算成 Ctrl+滚轮格数
+  if (zoom5 && e.touches.length === 5) {
+    const pts = touchPoints(e);
+    const c = pointsCenter(pts);
+    const d = pointsSpread(pts, c);
+    const now = Date.now();
+    if (now - zoom5.lastMove > 30) {
+      zoom5.lastMove = now;
+      const p = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p.x, y: p.y });
+      showDot(c.x, c.y);
+    }
+    if (d > 1 && zoom5.dist > 1) zoom5.acc += Math.log(d / zoom5.dist);
+    zoom5.dist = d;
+    const STEP = 0.10;      // 每累积 10% 的张开/捏合，走一格滚轮
+    if (Math.abs(zoom5.acc) >= STEP) {
+      const steps = Math.trunc(zoom5.acc / STEP);
+      zoom5.acc -= steps * STEP;
+      const p = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p.x, y: p.y });   // 先移到手心，再滚
+      queue({ t: 'wheel', d: steps });        // 张开=正=放大；捏合=负=缩小
+    }
+    return;
+  }
+
+  // 双指：光标跟到两指正中，再滚
+  if (pinch && e.touches.length === 2) {
+    const pts = touchPoints(e);
+    const c = pointsCenter(pts);
+    const now = Date.now();
+    const midMoved = Math.hypot(c.x - pinch.x, c.y - pinch.y) > 2;
+    if (midMoved && now - pinch.lastMove > 30) {
+      pinch.lastMove = now;
+      const p = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p.x, y: p.y });
+      showDot(c.x, c.y);
+    }
+    pinch.acc += (pinch.y - c.y);
+    pinch.x = c.x; pinch.y = c.y;
+    const steps = Math.trunc(pinch.acc / 18);
+    if (steps) {
+      pinch.acc -= steps * 18;
+      // 滚之前再钉一次光标到两指正中：滚动必须发生在两指之间
+      const p = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p.x, y: p.y });
+      queue({ t: 'wheel', d: steps });
+    }
   }
 }, { passive: true });
 
 overlay.addEventListener('touchend', (e) => {
+  if (e.touches.length < 5 && zoom5) {
+    zoom5 = null;
+    releaseZoomCtrl();
+  }
   if (e.touches.length < 2) pinch = null;
 }, { passive: true });
+
+overlay.addEventListener('touchcancel', () => {
+  pinch = null;
+  zoom5 = null;
+  releaseZoomCtrl();
+}, { passive: true });
+
+// 切后台/失焦/关页面时一定要把 Ctrl 补起来，否则电脑上会卡着 Ctrl
+window.addEventListener('blur', releaseZoomCtrl);
+addEventListener('pagehide', releaseZoomCtrl);
+document.addEventListener('visibilitychange', () => { if (document.hidden) releaseZoomCtrl(); });
 
 // 改动（滚轮修复）：原来只有"双指滑动"能滚，页面从未监听 wheel 事件 ——
 // 所以接物理鼠标时滚动滚轮完全没反应（用户实测反馈）。这里补上。
@@ -2407,7 +2517,7 @@ bindImg(img);
       + '切换后立即生效，不用重启。抓屏始终按电脑原分辨率，三档只是「发到手机上的宽度」：<br>'
       + '数字小的更省流量；数字大的文字边缘更清楚（帧率三档一样）。<br>'
       + '手机屏会把画面压到屏幕宽，正常看差别不大，差别主要在文字密集的界面和流量。<br>'
-      + '想看更细：选超清档；或者用手机系统的放大功能（设置 → 无障碍 → 放大手势），网页本身没有缩放。<br>'
+      + '想看更细：选超清档；或五指捏合放大电脑端窗口（等于 Ctrl+滚轮，以手心为中心）；或手机系统的放大功能（设置 → 无障碍 → 放大手势）。<br>'
       + '高清/标准免费不限时；超清未授权每天免费 1 小时，许可证不限时长。</div>'
       + '<div id="setQMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>';
     // 2026-10-30 画质修复：抓屏宽度不再随档位变（详情见 screen-server.mjs 顶部注释），
