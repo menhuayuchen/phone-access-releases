@@ -1226,6 +1226,22 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 52,837,091 B，SHA256 `B7D6A2CCF46B4A155D5861C3BED3D5097AC8AAF1D1465B9A63F6E782D245BE47`
 （staged 目录 `dist\PhoneAccess-Basic-v1.0.14`，359 文件 / 129.4 MB，自检全过）。
 
+### 41.1 已发布（2026-11-02 22:0x，用户批准）
+
+- **v1.0.14 已发布**：`dist\PhoneAccess-Setup-v1.0.14.exe` 52,837,091 B，
+  SHA256 `B7D6A2CCF46B4A155D5861C3BED3D5097AC8AAF1D1465B9A63F6E782D245BE47`。
+- Gitee 发行版 `v1.0.14`（id 1267223）附件上传并验证：HTTP 200、52,837,091 B。
+- GitHub release `v1.0.14`（id 431533529）asset 上传成功，digest 与本地一致；`/releases/latest` = v1.0.14。
+- 官网（gh-pages，commit e19ae2a）更新：版本/文件名/SHA256、下载区加第三张「蓝奏云（国内网盘，密码 d0o2）」卡、
+  更新记录加 v1.0.14（v1.0.13 标旧版归档）；线上实测 `v1.0.14`/`d0o2`/`iC6Kk4ef83bg` 都能取到。
+- 端到端验证：把测试服务配置版本改成 **1.0.13**（模拟老客户）→ `/update-check` 返回
+  `latest=1.0.14`、`source=gitee`、`downloadUrl=Gitee v1.0.14`、`fallbackUrl=GitHub v1.0.14`、`sha256=b7d6a2cc…e47`、`mirrorPage` 带密码。
+- 遗留：
+  1. 蓝奏云分享 `iC6Kk4ef83bg` 里目前还是 **v1.0.13**，用户传 1.0.14 后要换新链接（官网卡片 + `update.mirrorPage` + 下次打包）；
+  2. 本机安装目录仍是 **1.0.12**，需要手动跑一次 `dist\PhoneAccess-Setup-v1.0.14.exe`；
+  3. 1.0.13 及更早的客户点「检查更新」仍会走 GitHub（旧代码里没有 Gitee 逻辑），
+     首次升级建议直接发官网/网盘链接。
+
 另：`docs\机械码与试用-审计-2026-11-02.md` 记录本轮审计结论——机械码 = CPU+主板（重装系统不变，
 许可证不受影响），但 7 天试用是**本机四处锚点**，重装/重置系统会重新发 7 天、可反复；
 同型号 DIY 台式机有撞码风险（ProcessorId 不唯一 + 主板无有效序列号）。

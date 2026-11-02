@@ -404,8 +404,8 @@
         <p>网页本身没有做双指缩放（双指手势用来滚动页面内容）。想看细节建议选「超清」档；部分手机可以用系统的放大功能（iOS 辅助功能 → 缩放 / 安卓无障碍 → 放大手势）。</p>
       </details>
       <details>
-        <summary>下载有两个地址（Gitee / GitHub），该用哪个？</summary>
-        <p>两个地址是<b>同一份安装包</b>（版本、大小、SHA256 都一样），只是存放的服务器不同：国内网络优先用 <b>Gitee</b>（快，实测 1.3 MB/s）；海外或 GitHub 能正常访问时用 <b>GitHub</b>（官方发布页，版本记录完整）。哪个打不开就换另一个；都不行就发邮件要网盘链接。</p>
+        <summary>下载有三个地址（Gitee / GitHub / 蓝奏云），该用哪个？</summary>
+        <p>三个地址是<b>同一份安装包</b>（版本、大小、SHA256 都一样），只是存放的服务器不同：国内网络优先用 <b>Gitee</b>（快，实测 1~2 MB/s）；海外或 GitHub 能正常访问时用 <b>GitHub</b>（官方发布页，版本记录完整）；前两个都打不开时用 <b>蓝奏云</b>（国内网盘，密码 <code>d0o2</code>，手动下载）。</p>
       </details>
       <details>
         <summary>需要公网 IP 或者路由器端口映射吗？</summary>
@@ -433,14 +433,14 @@
   <section id="download">
     <div class="wrap">
       <h2 style="text-align:center">下载试试，不花钱</h2>
-      <p class="sub" style="text-align:center">装好就能用，免费版没有时间限制。两个下载途径是<b>同一份安装包</b>，按你的网络选一个即可。</p>
+      <p class="sub" style="text-align:center">装好就能用，免费版没有时间限制。三个下载途径是<b>同一份安装包</b>，按你的网络选一个即可。</p>
 
       <div class="dlchan">
         <div class="dltile">
           <div class="dltilehead"><h3>Gitee 下载</h3><span class="dlbadge">国内推荐</span></div>
-          <p>国内服务器直连，实测约 <b>1.3 MB/s</b>，50 MB 大约 30~40 秒。国内网络、校园网优先用这个。</p>
+          <p>国内服务器直连，实测约 <b>1~2 MB/s</b>，50 MB 大约 30 秒。国内网络、校园网优先用这个。</p>
           <a class="btn btn-main" href="https://gitee.com/menhuayuchen/phone-access-download/releases">去 Gitee 下载</a>
-          <div class="dlnote">打不开 / 提示登录时，换 GitHub。</div>
+          <div class="dlnote">打不开 / 提示登录时，换 GitHub 或蓝奏云。</div>
         </div>
         <div class="dltile">
           <div class="dltilehead"><h3>GitHub 下载</h3><span class="dlbadge alt">官方发布页</span></div>
@@ -448,17 +448,23 @@
           <a class="btn btn-ghost" href="https://github.com/menhuayuchen/phone-access-releases/releases/latest">去 GitHub 下载</a>
           <div class="dlnote">GitHub 慢或打不开时，用 Gitee。</div>
         </div>
+        <div class="dltile">
+          <div class="dltilehead"><h3>蓝奏云（国内网盘）</h3><span class="dlbadge alt">手动下载</span></div>
+          <p>国内网盘直连，不用注册、不用翻墙。打开分享页 → 输入密码 <code>d0o2</code> → 点下载。</p>
+          <a class="btn btn-ghost" href="https://wwatu.lanzouv.com/iC6Kk4ef83bg" target="_blank" rel="noreferrer">打开蓝奏云分享</a>
+          <div class="dlnote">上面两个都打不开时的兜底；<b>密码 d0o2</b>。</div>
+        </div>
       </div>
 
       <div class="dlmeta">
-        <div><span>当前版本</span><b>v1.0.13</b></div>
-        <div><span>文件名</span><b>PhoneAccess-Setup-v1.0.13.exe</b></div>
+        <div><span>当前版本</span><b>v1.0.14</b></div>
+        <div><span>文件名</span><b>PhoneAccess-Setup-v1.0.14.exe</b></div>
         <div><span>大小</span><b>50.4 MB</b></div>
         <div><span>系统</span><b>Windows 10 / 11</b></div>
       </div>
       <div class="dlsha">
-        <span>SHA256（两个源同一文件，下载后可核对）：</span>
-        <code id="dlshaVal">6E6DD9E0450BAB31766C12D3348EF2551E5C19E1400F36C2BA2EFD5F732EE5AB</code>
+        <span>SHA256（三个源同一文件，下载后可核对）：</span>
+        <code id="dlshaVal">B7D6A2CCF46B4A155D5861C3BED3D5097AC8AAF1D1465B9A63F6E782D245BE47</code>
       </div>
 
       <p class="fine" style="text-align:center;margin-top:14px">安装包约 50 MB · 邮箱 ccc475235@gmail.com · 遇到问题发邮件。</p>
@@ -470,7 +476,12 @@
       <p class="sub" style="text-align:center">旧版本保留在 GitHub / Gitee 供追溯；新装请用最新版。旧版不推荐继续使用。</p>
       <div class="loglist">
         <article class="logcard">
-          <div class="loghead"><b>v1.0.13</b><span>2026-11-02 · 当前版本</span></div>
+          <div class="loghead"><b>v1.0.14</b><span>2026-11-02 · 当前版本</span></div>
+          <p>应用内「检查更新」改为<b>国内优先</b>：默认从 Gitee 下载，GitHub 只做备选（修掉老客户因本地镜像版本过期、被强制走 GitHub 的问题）；设置 →「版本与更新」新增常驻的「安装备选」（蓝奏云网盘 / Gitee / GitHub 手动下载，含网盘密码）；Gitee 下载包会按发行版里写的 SHA256 校验。</p>
+          <div class="loglinks"><a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.14" target="_blank" rel="noreferrer">Gitee 存档</a><a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.14" target="_blank" rel="noreferrer">GitHub 存档</a></div>
+        </article>
+        <article class="logcard archive">
+          <div class="loghead"><b>v1.0.13</b><span>2026-11-02 · 旧版归档</span></div>
           <p>三指及以上捏合缩放；顶部「缩放」折叠窗切换「系统缩放 / 画面缩放」；画面缩放以手心为中心、松手保持大小、左侧「恢复原大小」；双指滚轮光标只在落下时居中后固定；多指结束复位触屏状态。</p>
           <div class="loglinks"><a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.13" target="_blank" rel="noreferrer">Gitee 存档</a><a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.13" target="_blank" rel="noreferrer">GitHub 存档</a></div>
         </article>
@@ -481,7 +492,7 @@
         </article>
         <article class="logcard archive">
           <div class="loghead"><b>v1.0.11</b><span>2026-10-31 · 首个公开版 · 已停止提供下载</span></div>
-          <p>首个公开版：强制所有连接走 Tailscale（移除局域网直连）、主题/光标自定义取色器、开机自启加快、应用内更新显示蓝奏云说明。该版存在 v1.0.12 已修复的鉴权问题，不再提供下载，请直接使用 1.0.13。</p>
+          <p>首个公开版：强制所有连接走 Tailscale（移除局域网直连）、主题/光标自定义取色器、开机自启加快、应用内更新显示蓝奏云说明。该版存在 v1.0.12 已修复的鉴权问题，不再提供下载，请直接使用最新版。</p>
         </article>
       </div>
     </div>
