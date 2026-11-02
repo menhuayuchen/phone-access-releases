@@ -19,6 +19,17 @@ body { margin:0; background:#0b0b0d; color:#c9ccd1; font:14px/1.4 system-ui,-app
        display:flex; flex-direction:column; height:100dvh; overflow:hidden; overscroll-behavior:none; }
 header { display:flex; gap:6px; align-items:center; padding:6px 8px; background:#15161a; flex-wrap:wrap;
          border-bottom:1px solid #24262b; }
+#zoomPop { position:fixed; right:8px; z-index:40; display:none; width:min(330px,calc(100vw - 16px));
+           background:#1b1d23; border:1px solid #3a3e4a; border-radius:12px; padding:10px;
+           box-shadow:0 10px 30px rgba(0,0,0,.55); }
+#zoomPop.on { display:block; }
+#zoomPop .zpTitle { font-size:13px; font-weight:600; color:#e8eaee; margin:0 0 8px; }
+#zoomPop .zpOpt { display:block; width:100%; text-align:left; margin-top:7px; background:#242730;
+                  color:#c9ccd1; border:1px solid #343842; border-radius:9px; padding:8px 10px;
+                  font-size:13px; line-height:1.4; cursor:pointer; }
+#zoomPop .zpOpt.on { background:rgba(47,111,235,.22); color:#8fb6ff; border-color:#3f6fd0; }
+#zoomPop .zpOpt small { display:block; color:#868c96; font-size:11px; margin-top:2px; }
+#zoomPop .zpNote { color:#6b7078; font-size:11.5px; line-height:1.6; margin-top:8px; }
 button { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-radius:8px; padding:6px 9px;
          font:inherit; cursor:pointer; }
 button.on { background:#2f6f3f; border-color:#3f8f53; color:#e8ffe9; }
@@ -91,11 +102,18 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   <button id="ctl">控制</button>
   <button id="kbBtn">输入</button>
   <button id="lowbw">省流量</button>
+  <button id="zoomBtn" title="三指及以上手势的缩放方式">缩放</button>
   <button id="cmdBtn">命令</button>
   <span id="spacer"></span>
   <span id="stat">连接中…</span>
   <span id="hud"></span>
 </header>
+<div id="zoomPop" role="dialog" aria-label="缩放方式">
+  <div class="zpTitle">三指及以上缩放</div>
+  <button class="zpOpt" data-m="system">系统缩放<small>Ctrl+滚轮，电脑里的软件自己放大</small></button>
+  <button class="zpOpt" data-m="view">画面缩放<small>只放大手机画面，电脑不变</small></button>
+  <div class="zpNote">画面放大后，左侧会出现「恢复原大小」；回到原始大小自动消失。</div>
+</div>
 <!-- tabindex="-1"：画面区作为「焦点回收站」，点完特殊键按钮把焦点收回到这里，
      否则焦点留在按钮上，物理键盘按空格/回车会再次触发那个按钮 -->
 <div id="stage" tabindex="-1">
@@ -175,6 +193,49 @@ function setZoomMode(m) {
   if (zoomMode === 'system') { /* 画面缩放保留，用户可继续看大图；要复原点左侧按钮 */ }
 }
 if (viewReset) viewReset.addEventListener('click', (e) => { e.stopPropagation(); resetView(); });
+
+// ---- 顶部「缩放」折叠窗 -----------------------------------------------------
+const zoomBtn = document.getElementById('zoomBtn');
+const zoomPop = document.getElementById('zoomPop');
+const headerEl = document.querySelector('header');
+function paintZoomPop() {
+  if (!zoomPop) return;
+  [...zoomPop.querySelectorAll('.zpOpt')].forEach((b) => {
+    b.classList.toggle('on', b.dataset.m === zoomMode);
+  });
+}
+function setZoomPop(open) {
+  if (!zoomPop || !zoomBtn) return;
+  if (open && headerEl) {
+    const r = headerEl.getBoundingClientRect();
+    zoomPop.style.top = (r.bottom + 6) + 'px';
+  }
+  zoomPop.classList.toggle('on', open);
+  zoomBtn.classList.toggle('on', open);
+  if (open) paintZoomPop();
+}
+if (zoomBtn) {
+  zoomBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    setZoomPop(!zoomPop.classList.contains('on'));
+  });
+}
+if (zoomPop) {
+  zoomPop.addEventListener('click', (e) => e.stopPropagation());
+  [...zoomPop.querySelectorAll('.zpOpt')].forEach((b) => {
+    b.addEventListener('click', () => {
+      setZoomMode(b.dataset.m);
+      paintZoomPop();
+      setZoomPop(false);
+      setNote(zoomMode === 'view' ? '已切换：画面缩放（只放大手机画面）' : '已切换：系统缩放（Ctrl+滚轮）', 2200);
+    });
+  });
+}
+document.addEventListener('click', () => { if (zoomPop && zoomPop.classList.contains('on')) setZoomPop(false); });
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape' && zoomPop && zoomPop.classList.contains('on')) setZoomPop(false);
+});
+addEventListener('resize', () => setZoomPop(false));
 // 流畅模式的真实帧率只能在客户端数：视频元素每解出一帧就回调一次
 let vfcCount = 0, vfcLast = 0, vfcAt = 0, vfcFps = 0;
 if (vid.requestVideoFrameCallback) {
@@ -2573,26 +2634,6 @@ bindImg(img);
     } catch (e) { }
     body += setSection('连接与画面', connInner);
 
-    // 缩放方式：系统缩放 vs 画面缩放（三指及以上手势共用）
-    const zmBtn = (m, label, desc) => {
-      const on = zoomMode === m;
-      return '<button class="paZM" data-m="' + m + '" style="flex:1;min-width:130px;text-align:left;'
-        + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';'
-        + 'color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
-        + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 10px;'
-        + 'font-size:13px;cursor:pointer;line-height:1.4">' + label
-        + '<br><span style="font-size:11px;color:#868c96">' + desc + '</span></button>';
-    };
-    body += setSection('缩放方式',
-      '<div style="color:#868c96;font-size:12.5px;line-height:1.7;margin-bottom:9px">'
-      + '三指及以上捏合时用哪种缩放。系统缩放会把 Ctrl+滚轮发给电脑；画面缩放只放大手机上的画面。</div>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
-      + zmBtn('system', '系统缩放', 'Ctrl+滚轮，电脑里的软件自己放大')
-      + zmBtn('view', '画面缩放', '只放大手机画面，电脑不变')
-      + '</div>'
-      + '<div style="color:#6b7078;font-size:11.5px;line-height:1.6;margin-top:7px">'
-      + '画面放大后，画面左侧会出现「恢复原大小」按钮；回到原始大小后按钮自动消失。</div>');
-
     // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
     // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
@@ -2659,21 +2700,6 @@ bindImg(img);
       + '</div>';
 
     const box = openSheet('设置', body, 'setClose');
-
-    // 缩放方式切换：按钮高亮 + 记住选择
-    const zmBtns = [...box.querySelectorAll('.paZM')];
-    const paintZm = () => zmBtns.forEach((b) => {
-      const on = b.dataset.m === zoomMode;
-      b.style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
-      b.style.color = on ? '#8fb6ff' : '#c9ccd1';
-      b.style.borderColor = on ? '#3f6fd0' : '#343842';
-    });
-    paintZm();
-    zmBtns.forEach((b) => b.addEventListener('click', () => {
-      setZoomMode(b.dataset.m);
-      paintZm();
-      setNote(zoomMode === 'view' ? '已切换：画面缩放（只放大手机画面）' : '已切换：系统缩放（Ctrl+滚轮）', 2200);
-    }));
 
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
