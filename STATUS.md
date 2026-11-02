@@ -1172,3 +1172,13 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 画面缩放：以手心为不动点，scale 1~5；左侧新增 `#viewReset`（恢复原大小），仅 scale>1 显示，点击归位并隐藏。
 - 坐标换算：`toScreen()` 在 view.scale≠1 时先反算回未缩放坐标，`toPage()` 再正向变换；实测 zoom=2 时 `toPage(1000,500)→toScreen` 仍回到 (1000,500)。
 - 验证：view 模式三指张开→ `#img` transform scale 2、`#viewReset` 显示、无任何 /input 事件；点恢复→ transform 清空、按钮隐藏；system 模式仍为 move→Ctrl down→wheel→Ctrl up。- 修复：画面缩放后 contentBox() 不能用 el.getBoundingClientRect()（会返回放大后的框，导致二次缩放、点哪都偏），改用 stage.getBoundingClientRect()；多指手势结束/取消时复位 ptr/dragBtn/longTimer，保证下一次单指正常。
+
+## 39. v1.0.13 发布（2026-11-02 21:1x，用户批准）
+
+- 版本 1.0.13，GitHub 唯一 release v1.0.13；asset `PhoneAccess-Setup-v1.0.13.exe` 52,833,674 B，
+  SHA256 `6E6DD9E0450BAB31766C12D3348EF2551E5C19E1400F36C2BA2EFD5F732EE5AB`。
+- Gitee v1.0.13 同文件；直链实测 200、25.7 秒、哈希一致。
+- 旧版本：GitHub/Gitee 的 v1.0.12 release+tag 已删除，只剩 v1.0.13（Gitee 另有 Tailscale 安卓镜像）。
+- 官网更新 v1.0.13/SHA；蓝奏云产品入口撤下（分享仍是 1.0.12），配置 mirrorPage 置空；蓝奏云新分享等用户上传后再加。
+- `/update-check` 模拟 1.0.12 客户端：latest=1.0.13、downloadUrl=Gitee、sha256 正确。
+- 内容：三指及以上缩放（顶部「缩放」折叠窗切换系统/画面；画面缩放光标跟手心、松手保持、左侧恢复）、双指光标固定、多指结束复位、画面缩放坐标反算。
