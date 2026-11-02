@@ -87,6 +87,15 @@
   /* pricing */
   .plans{display:grid;grid-template-columns:repeat(auto-fit,minmax(224px,1fr));gap:16px}
   /* videos */
+  /* changelog */
+  .loglist{display:grid;gap:14px;margin-top:22px}
+  .logcard{background:var(--card);border:1px solid var(--line);border-radius:14px;padding:16px 18px}
+  .loghead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;margin-bottom:6px}
+  .loghead b{font-size:16px;color:#fff}
+  .loghead span{color:var(--dim);font-size:12px}
+  .logcard p{color:var(--dim);font-size:13.5px;line-height:1.75;margin:0 0 8px}
+  .loglinks a{color:#8fb6ff;font-size:12.5px;margin-right:12px}
+  .logcard.archive{opacity:.9}
   .vidgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:18px;margin-top:26px}
   .vidcard{background:var(--card);border:1px solid var(--line);border-radius:16px;padding:14px;text-align:left}
   .vidcover{position:relative;display:block;border-radius:10px;overflow:hidden;background:#000;line-height:0}
@@ -152,6 +161,7 @@
       <a href="#features">功能</a>
       <a href="#how">怎么用</a>
       <a href="#videos">视频教程</a>
+      <a href="#changelog">更新记录</a>
       <a href="#pricing">价格</a>
       <a href="#faq">常见问题</a>
     </nav>
@@ -454,7 +464,28 @@
       <p class="fine" style="text-align:center;margin-top:14px">安装包约 50 MB · 邮箱 ccc475235@gmail.com · 遇到问题发邮件。</p>
     </div>
   </section>
-</main>
+  <section id="changelog">
+    <div class="wrap">
+      <h2>更新记录</h2>
+      <p class="sub" style="text-align:center">旧版本保留在 GitHub / Gitee 供追溯；新装请用最新版。旧版不推荐继续使用。</p>
+      <div class="loglist">
+        <article class="logcard">
+          <div class="loghead"><b>v1.0.13</b><span>2026-11-02 · 当前版本</span></div>
+          <p>三指及以上捏合缩放；顶部「缩放」折叠窗切换「系统缩放 / 画面缩放」；画面缩放以手心为中心、松手保持大小、左侧「恢复原大小」；双指滚轮光标只在落下时居中后固定；多指结束复位触屏状态。</p>
+          <div class="loglinks"><a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.13" target="_blank" rel="noreferrer">Gitee 存档</a><a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.13" target="_blank" rel="noreferrer">GitHub 存档</a></div>
+        </article>
+        <article class="logcard archive">
+          <div class="loghead"><b>v1.0.12</b><span>2026-11-01 · 旧版归档</span></div>
+          <p>安全修复：鉴权改为默认必须密钥 + 公开白名单，堵住 serve 场景下 /licence、/frame.jpg、/stream 免密钥访问；/rtc、/ws-audio 加来源闸门；限流按 Tailscale 身份；更新包下载后校验 SHA256；绑定只允许回环与 Tailscale。</p>
+          <div class="loglinks"><a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.12" target="_blank" rel="noreferrer">Gitee 存档</a><a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.12" target="_blank" rel="noreferrer">GitHub 存档</a></div>
+        </article>
+        <article class="logcard archive">
+          <div class="loghead"><b>v1.0.11</b><span>2026-10-31 · 首个公开版 · 已停止提供下载</span></div>
+          <p>首个公开版：强制所有连接走 Tailscale（移除局域网直连）、主题/光标自定义取色器、开机自启加快、应用内更新显示蓝奏云说明。该版存在 v1.0.12 已修复的鉴权问题，不再提供下载，请直接使用 1.0.13。</p>
+        </article>
+      </div>
+    </div>
+  </section></main>
 
 <footer>
   <div class="wrap">
