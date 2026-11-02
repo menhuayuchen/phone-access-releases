@@ -894,8 +894,10 @@ cmdtext.addEventListener('keydown', (e) => {
 const media = () => (state.mode === 'raw' ? vid : img);
 
 function contentBox() {
-  const el = media();
-  const r = el.getBoundingClientRect();
+  // 用 stage 的矩形，而不是 el.getBoundingClientRect()：
+  // 画面缩放时 el 带着 CSS transform，getBoundingClientRect() 会返回放大后的框，
+  // 再把指针坐标反算回未缩放坐标就会二次缩放，点哪都偏。stage 不受 transform 影响。
+  const r = stage.getBoundingClientRect();
   const nw = state.mode === 'raw' ? (vid.videoWidth || 16) : (img.naturalWidth || 16);
   const nh = state.mode === 'raw' ? (vid.videoHeight || 9) : (img.naturalHeight || 9);
   if (!nw || !nh || !r.width || !r.height) return r;
@@ -1409,12 +1411,19 @@ overlay.addEventListener('touchend', (e) => {
     releaseZoomCtrl();
   }
   if (e.touches.length < 2) pinch = null;
+  // 多指手势结束后把单指状态彻底复位：否则偶尔残留 ptr/dragBtn，下一次单指会"没反应"
+  if (e.touches.length === 0) {
+    if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+    ptr = null; dragBtn = -1; moved = false;
+  }
 }, { passive: true });
 
 overlay.addEventListener('touchcancel', () => {
+  if (longTimer) { clearTimeout(longTimer); longTimer = null; }
   pinch = null;
   zoomG = null;
   viewG = null;
+  ptr = null; dragBtn = -1; moved = false;
   releaseZoomCtrl();
 }, { passive: true });
 // 切后台/失焦/关页面时一定要把 Ctrl 补起来，否则电脑上会卡着 Ctrl

@@ -532,7 +532,7 @@ Remove-NetFirewallRule -DisplayName "DSH Web (phone access) 8642"
 - `system`（默认）：发「`Ctrl` down → 若干 `wheel` → `Ctrl` up」，质心（手心）先 `move` 过去再滚；
 - `view`：只对 `#img/#vid` 做 `translate(...) scale(...)`，电脑端零输入；`toScreen()` 先按
   `view.scale/tx/ty` 反算回未缩放坐标，`toPage()` 再正向变换，所以放大后点击/滚轮/光标仍然对准。
-  画面左侧的 `#viewReset` 只在 `scale>1` 时显示，点击归位到 1 并隐藏。
+  画面左侧的 `#viewReset` 只在 `scale>1` 时显示，点击归位到 1 并隐藏。\n  `contentBox()` 改为用 `stage.getBoundingClientRect()`（不受 transform 影响），否则放大后\n  `getBoundingClientRect()` 返回放大框会二次缩放、点哪都偏。
 
 `touchend` / `touchcancel` / 页面失焦 / 切后台 / `pagehide` 都会补 `Ctrl up`，
 否则电脑上会卡住 Ctrl（表现为快捷键全乱）。双指滚动只在落下时定位一次，之后光标固定不动。
