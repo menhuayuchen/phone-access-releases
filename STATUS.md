@@ -1158,3 +1158,10 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 清理：Gitee 仓库里测试用的 `videos/*`、`tmp/test-*.bin` 已删除（Gitee raw 超过约 10MB 会要求登录，
   本来就不能当视频源；B 站发行版/附件同样不适合）。
 - 线上验证：页面 `vidcover` 三张封面图片自然宽 960、链接 BV 正确；B 站 embed 的坑记录在此。
+
+## 37. 触摸手势改进（2026-11-02，未发版）
+
+- 双指滚轮：两指落下先 move 到两指正中，每次 wheel 前再钉一次中点；解决光标偏向先按下手指、滚错页面。
+- 新增五指缩放：五触点质心=手心；先 move 到质心，再 Ctrl down + wheel（张开=放大，捏合=缩小），每 10% 走一格；touchend/touchcancel/失焦/切后台/pagehide 都补 Ctrl up。
+- 合成 Touch 验证：双指起点 move 从单指 x=451 变为中点 x=797；五指序列 move→key vk=17 down→move→wheel d=6→key vk=17 up。
+- 使用说明/README 已同步；iPad 五指可能与系统多任务冲突，需真机复测。
