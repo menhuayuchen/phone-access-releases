@@ -2135,6 +2135,42 @@ bindImg(img);
       + '<div style="color:#868c96;font-size:13px;min-width:74px;flex-shrink:0">' + escHtml(k) + '</div>'
       + '<div style="flex:1;font-size:13px;word-break:break-all">' + v + '</div></div>';
   }
+  // 手动下载入口（2026-11-02）：国内网盘 / Gitee / GitHub。
+  // 数据来自 /licence 的 download（服务端读 product.config.json 的 update.*），改网盘只改配置、不用改代码。
+  function dlLinksHtml(o, withTitle) {
+    if (!o) return '';
+    const links = [];
+    if (o.mirrorPage) {
+      links.push('<a href="' + escHtml(o.mirrorPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">国内网盘（蓝奏云）</a>'
+        + (o.mirrorPageNote ? '<span style="color:#6b7078">（' + escHtml(o.mirrorPageNote) + '）</span>' : ''));
+    }
+    if (o.giteePage) links.push('<a href="' + escHtml(o.giteePage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">Gitee 发行版</a>');
+    if (o.githubPage) links.push('<a href="' + escHtml(o.githubPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">GitHub 发行版</a>');
+    if (!links.length) return '';
+    if (withTitle) {
+      return '<div style="margin-top:9px;color:#868c96;font-size:11.5px;line-height:1.95">'
+        + '<div style="color:#aeb3bb">下载不动？用备选：</div>' + links.join('<br>') + '</div>';
+    }
+    return '<div style="margin-top:8px;color:#868c96;font-size:11.5px;line-height:1.9">下载不动？用备选：' + links.join(' · ') + '</div>';
+  }
+  // 「安装备选」常驻卡片：不点检查更新、或 GitHub 连不上时，也能自己拿到安装包。
+  function installAltHtml(lic) {
+    const d = (lic && lic.download) || null;
+    if (!d) return '';
+    const links = [];
+    if (d.mirrorPage) {
+      links.push('<a href="' + escHtml(d.mirrorPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">国内网盘（蓝奏云）</a>'
+        + (d.mirrorPageNote ? '<span style="color:#6b7078">（' + escHtml(d.mirrorPageNote) + '）</span>' : ''));
+    }
+    if (d.giteePage) links.push('<a href="' + escHtml(d.giteePage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">Gitee 发行版</a>');
+    if (d.githubPage) links.push('<a href="' + escHtml(d.githubPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">GitHub 发行版</a>');
+    if (!links.length) return '';
+    return '<div style="margin-top:12px;padding:10px 12px;border:1px solid #262932;border-radius:9px;background:#0f1014">'
+      + '<div style="color:#aeb3bb;font-size:12.5px;margin-bottom:6px">安装备选（检查更新用不了时，手动下最新版）</div>'
+      + '<div style="color:#c9ccd1;font-size:12.5px;line-height:1.95">' + links.join('<br>') + '</div>'
+      + '<div style="color:#6b7078;font-size:11.5px;margin-top:7px;line-height:1.6">'
+      + '下载 .exe 安装包（约 50 MB）后双击安装即可；配置和许可证都会保留。</div></div>';
+  }
   function setPill(ok, textOk, textBad) {
     const c = ok ? '#8CE68C' : '#ffb454';
     const bg = ok ? 'rgba(140,230,140,.13)' : 'rgba(255,180,84,.13)';
@@ -2699,7 +2735,8 @@ bindImg(img);
       + '<span id="setUpdMsg" style="font-size:12.5px;color:#868c96;flex:1;min-width:120px"></span>'
       + '</div>'
       + '<div id="setUpdBox" style="display:none;margin-top:10px;padding:10px 12px;border-radius:9px;'
-      + 'background:#0f1014;border:1px solid #262932;font-size:12.5px;color:#c9ccd1"></div>');
+      + 'background:#0f1014;border:1px solid #262932;font-size:12.5px;color:#c9ccd1"></div>'
+      + installAltHtml(lic));
 
     // 底部操作
     body += '<div style="display:flex;gap:10px;margin-top:18px;flex-wrap:wrap">'
@@ -2790,13 +2827,24 @@ bindImg(img);
       ck.style.opacity = '1';
       ck.textContent = '检查更新';
       if (!j) { setMsg('检查没成功，稍后再试', '#ff6b6b'); return; }
-      if (j.error) { setMsg(j.error, '#ff6b6b'); return; }
+      if (j.error) {
+        setMsg('检查更新失败', '#ff6b6b');
+        if (ubox) {
+          const alt = (j.mirrorPage || j.giteePage || j.githubPage) ? j : (lic.download || null);
+          ubox.style.display = 'block';
+          ubox.innerHTML = '<div style="color:#ff6b6b">' + escHtml(j.error) + '</div>'
+            + '<div style="color:#868c96;margin-top:8px">不影响使用：当前版本照常能用。想装新版就走下面这些手动下载。</div>'
+            + dlLinksHtml(alt, true);
+        }
+        return;
+      }
       if (!j.configured) {
         setMsg('还没配置更新源', '#ffb454');
         if (ubox) {
           ubox.style.display = 'block';
           ubox.innerHTML = '当前版本 <b style="color:#e8eaee">' + escHtml(j.current || ver) + '</b>。<br>'
-            + '需要新版时联系卖家拿安装包，双击安装即可——<b style="color:#8CE68C">配置和许可证都会保留</b>。';
+            + '需要新版时联系卖家拿安装包，双击安装即可——<b style="color:#8CE68C">配置和许可证都会保留</b>。'
+            + dlLinksHtml(lic.download || null, true);
         }
         return;
       }
@@ -2814,17 +2862,17 @@ bindImg(img);
                   + '<div style="height:6px;background:#0f1014;border:1px solid #262932;border-radius:5px;overflow:hidden">'
                   + '<div id="updBar" style="height:100%;width:0;background:#8CE68C;transition:width .25s"></div></div>'
                   + '<div id="updProg" style="color:#868c96;margin-top:6px;font-size:12px"></div></div>'
-                + '<button id="updGo" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:9px;padding:9px 16px;font-size:13px;cursor:pointer">'
-                + (j.mirror ? '用国内镜像下载' : '下载并安装') + '</button>'
-                + (j.fallbackUrl ? ' <button id="updGo2" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:9px 14px;font-size:13px;cursor:pointer">改用 GitHub 下载</button>' : '')
+                + '<button id="updGo" data-label="' + escHtml(j.downloadLabel || (j.mirror ? '国内镜像下载' : '下载并安装')) + '" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:9px;padding:9px 16px;font-size:13px;cursor:pointer">'
+                + escHtml(j.downloadLabel || (j.mirror ? '国内镜像下载' : '下载并安装')) + '</button>'
+                + (j.fallbackUrl ? ' <button id="updGo2" data-label="' + escHtml(j.fallbackLabel || '改用 GitHub 下载') + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:9px 14px;font-size:13px;cursor:pointer">'
+                  + escHtml(j.fallbackLabel || '改用 GitHub 下载') + '</button>' : '')
                 + '<div id="updGoMsg" style="color:#868c96;margin-top:8px;font-size:12px"></div>'
                 + '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">'
-                + '下载不动多半是网络到 GitHub 不通。可以点「打开发布页」用浏览器/下载工具下，或者让卖家发国内网盘链接。<br>'
+                + '默认走国内源（Gitee），下不动再换 GitHub 或网盘。<br>'
                 + '<a href="' + escHtml(j.pageUrl || '#') + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">打开发布页</a>'
                 + ' · <a id="updCopy" href="#" style="color:#8fb6ff">复制下载地址</a>'
-                + (j.mirrorPage ? ' · <a href="' + escHtml(j.mirrorPage) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">国内网盘下载（手动）</a>'
-                  + (j.mirrorPageNote ? '<span style="color:#6b7078">（' + escHtml(j.mirrorPageNote) + '）</span>' : '') : '')
                 + '</div>'
+                + dlLinksHtml(j, true)
               : '<div style="color:#868c96">这次发布没有附安装包，去发布页手动下载：'
                 + escHtml(j.pageUrl || '') + '</div>');
           const go = ubox.querySelector('#updGo');
@@ -2874,10 +2922,10 @@ bindImg(img);
             stopPoll();
             poll();
             [go, go2].forEach((b) => { if (b) { b.disabled = false; b.style.opacity = '1'; } });
-            if (btn) btn.textContent = (j.mirror && url === j.mirror) ? '用国内镜像下载' : '下载并安装';
+            if (btn) btn.textContent = btn.dataset.label || '下载并安装';
             if (m) {
               m.style.color = (r && r.ok) ? '#8CE58C' : '#ff6b6b';
-              m.textContent = (r && r.message) || '下载没成功：网络可能到不了 GitHub，可以重试、改用另一个源，或让卖家发国内网盘链接。';
+              m.textContent = (r && r.message) || '下载没成功：可以重试、改用另一个源，或用上方的网盘手动下载。';
             }
             if (r && r.ok && bar) bar.style.width = '100%';
           };
@@ -2894,7 +2942,12 @@ bindImg(img);
         }
       } else {
         setMsg('已是最新版本', '#8CE68C');
-        if (ubox) { ubox.style.display = 'block'; ubox.innerHTML = '当前 ' + escHtml(j.current) + '，没有更新的版本。'; }
+        if (ubox) {
+          ubox.style.display = 'block';
+          ubox.innerHTML = '当前 ' + escHtml(j.current) + '，没有更新的版本。'
+            + '<div style="color:#6b7078;margin-top:6px;font-size:11.5px">想重装、或给另一台电脑装，用下面的安装备选。</div>'
+            + dlLinksHtml((j.mirrorPage || j.giteePage || j.githubPage) ? j : (lic.download || null), true);
+        }
       }
     });
   }

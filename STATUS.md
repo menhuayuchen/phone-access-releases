@@ -1189,3 +1189,43 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 - 已把 v1.0.12 补回 GitHub/Gitee（标题「v1.0.12（旧版归档）」，不设为 latest）；v1.0.11 因存在 1.0.12 已修复的鉴权漏洞，官网标注「已停止提供下载」。
 - 官网新增「更新记录」区块：v1.0.13 / v1.0.12 / v1.0.11 的改动与存档链接；导航加「更新记录」。
 - 发布流程文档 docs/发布与更新.md 增加第 5 条铁律。
+
+## 41. 更新源改「Gitee 优先」+ 设置常驻「安装备选」+ 蓝奏云新分享（2026-11-02 晚，v1.0.14）
+
+用户要求：①检查更新默认走 Gitee，GitHub 只做备选（客户大多在国内）；②蓝奏云新分享
+`https://wwatu.lanzouv.com/iC6Kk4ef83bg`（密码 `d0o2`，里面是 1.0.13 安装包）放进官网 + App 设置里的「安装备选」。
+
+代码（commit 见 0d078d7 之后）：
+
+- `app/screen-server.mjs` `/update-check` 重写下载源选择：
+  - 新增 `update.gitee = { owner, repo }`：拉 Gitee 发行版**列表**，在 tag 形如 `vX.Y.Z` 里挑版本号最大的
+    （**不能用 Gitee 的 `/releases/latest`**：它返回"最近创建的发行版"，补传 v1.0.12 归档后指向旧版）；
+    用它的 exe 直链当默认下载源，`source: 'gitee'`。
+  - GitHub 只做备选：`fallbackUrl` 按 release 约定拼 `.../releases/download/v<ver>/PhoneAccess-Setup-v<ver>.exe`，
+    不额外请求 GitHub API（省 8 秒超时）。
+  - **修掉老客户被迫走 GitHub 的根因**：配置里的 `update.mirror` 是打包时的版本，老机器上永远指向老版本，
+    原先一旦与 latest 不一致就被判 stale 丢掉 → 全部回退 GitHub。现在 Gitee 动态直链优先，mirror 只作兼容。
+  - Gitee 发行版正文里的 `SHA256：<64hex>` 会被抓出来做下载后校验（Gitee API 不给 asset digest）。
+  - 失败兜底：Gitee 拉不到 → GitHub API；都没有 → 返回 `error` + 三个手动下载页。
+  - `/update-install` 白名单加 `gitee.com` / `gitee.io`。
+- `app/page.mjs`：主按钮文案改「国内下载（Gitee）」，次按钮「改用 GitHub 下载」；
+  设置「版本与更新」新增**常驻**「安装备选（国内网盘 / Gitee / GitHub）」，错误/已是最新/未配置三种状态也能看到；
+  `/licence` 新增 `download` 字段（mirrorPage/giteePage/githubPage）供设置面板渲染。
+- `app/product.config.json`：`version=1.0.14`；新增 `update.gitee`；
+  `mirrorPage=https://wwatu.lanzouv.com/iC6Kk4ef83bg`、`mirrorPageNote=密码 d0o2`；`mirror` 改 v1.0.14 直链。
+
+验证（本机隔离起服务，配置版本改成 1.0.12 模拟老客户）：
+
+- `/update-check` → `latest=1.0.13`、`hasUpdate=true`、`source=gitee`、
+  `downloadUrl=Gitee v1.0.13 直链`、`fallbackUrl=GitHub v1.0.13 直链`、`sha256=6e6dd9…e5ab`、`mirrorPage` 带密码；
+- 两个下载地址 HEAD 实测 200、52,833,674 B；
+- 页面（tools/ui-test-server.mjs 打桩）实测：「国内下载（Gitee）」「改用 GitHub 下载」按钮、
+  安装备选卡片、网盘链接与密码都正常渲染。
+
+候选包（**待用户批准后才发布**）：`dist\PhoneAccess-Setup-v1.0.14.exe`，
+52,837,091 B，SHA256 `B7D6A2CCF46B4A155D5861C3BED3D5097AC8AAF1D1465B9A63F6E782D245BE47`
+（staged 目录 `dist\PhoneAccess-Basic-v1.0.14`，359 文件 / 129.4 MB，自检全过）。
+
+另：`docs\机械码与试用-审计-2026-11-02.md` 记录本轮审计结论——机械码 = CPU+主板（重装系统不变，
+许可证不受影响），但 7 天试用是**本机四处锚点**，重装/重置系统会重新发 7 天、可反复；
+同型号 DIY 台式机有撞码风险（ProcessorId 不唯一 + 主板无有效序列号）。

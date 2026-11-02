@@ -1239,6 +1239,24 @@ function handler(req, res) {
       captureWidth: (function () { try { const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\\uFEFF/, '')); return Number((c.screen && c.screen.maxCaptureWidth) || 0) || 0; } catch { return 0; } })(),
       // 版本号给手机「设置」显示；来源是 product.config.json 的 version
       version: (function () { try { const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\\uFEFF/, '')); return String(c.version || ''); } catch { return ''; } })(),
+      // 安装备选（2026-11-02）：设置面板里**常驻**显示「国内网盘 / Gitee / GitHub」三个手动下载入口。
+      // 不依赖 /update-check —— 客户不点检查更新、或 GitHub 那边连不上时，也能自己拿到安装包。
+      download: (function () {
+        try {
+          const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
+          const u = c.update || {};
+          const g = u.gitee || {};
+          const h = u.github || {};
+          const mp = String(u.mirrorPage || '').trim();
+          return {
+            version: String(c.version || ''),
+            mirrorPage: /^https:\/\/\S+/i.test(mp) ? mp : '',
+            mirrorPageNote: String(u.mirrorPageNote || '').slice(0, 80),
+            giteePage: (g.owner && g.repo) ? ('https://gitee.com/' + String(g.owner) + '/' + String(g.repo) + '/releases') : '',
+            githubPage: (h.owner && h.repo) ? ('https://github.com/' + String(h.owner) + '/' + String(h.repo) + '/releases/latest') : ''
+          };
+        } catch { return null; }
+      })(),
       // branding 由 licence-state.ps1 扫描 branding\ 目录得出（收款码、联系方式），
       // 必须一起返回，否则页面拿不到二维码和联系方式的路径。
       branding: lic.branding || null,
@@ -1390,7 +1408,21 @@ function handler(req, res) {
     const gh = (upd.github && upd.github.owner && upd.github.repo)
       ? (String(upd.github.owner).replace(/[^A-Za-z0-9_.-]/g, '') + '/' + String(upd.github.repo).replace(/[^A-Za-z0-9_.-]/g, ''))
       : '';
-    if (!src && !gh) {
+    // 国内主源（2026-11-02 用户要求）：**默认走 Gitee，GitHub 只做备选**。
+    // 客户大多在国内，直连 GitHub 实测有时只有 ~25KB/s 甚至打不开。
+    //
+    // 为什么不直接用 Gitee 的 /releases/latest：那个接口返回"最近创建的发行版"，
+    // 我们补传旧版归档（v1.0.12）之后它就指向旧版了；所以改成拉发行版列表，
+    // 在 tag 形如 vX.Y.Z 的里面挑版本号最大的一个（排除 tailscale-android-* 之类的镜像 tag）。
+    const gt = (upd.gitee && upd.gitee.owner && upd.gitee.repo)
+      ? {
+        owner: String(upd.gitee.owner).replace(/[^A-Za-z0-9_.-]/g, ''),
+        repo: String(upd.gitee.repo).replace(/[^A-Za-z0-9_.-]/g, '')
+      }
+      : null;
+    const giteePage = gt ? ('https://gitee.com/' + gt.owner + '/' + gt.repo + '/releases') : '';
+    const githubPage = gh ? ('https://github.com/' + gh + '/releases/latest') : '';
+    if (!src && !gh && !gt) {
       // 没配更新源也不装作能更新：老实说清楚当前版本，让客户联系卖家
       reply(200, { configured: false, current: current, hasUpdate: false });
       return;
@@ -1402,10 +1434,64 @@ function handler(req, res) {
     const timeoutMs = Math.max(2000, Math.min(20000, Number(upd.timeoutMs) || 8000));
     const ac = new AbortController();
     const timer = setTimeout(() => ac.abort(), timeoutMs);
+    // 版本比较：按数字段逐段比，非数字按字符串兜底（够用，不引第三方库）
+    const cmp = (a, b) => {
+      const pa = String(a).split(/[.\-+]/), pb = String(b).split(/[.\-+]/);
+      for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+        const x = pa[i] || '0', y = pb[i] || '0';
+        const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
+        if (nx && ny) { const d = Number(x) - Number(y); if (d) return d < 0 ? -1 : 1; }
+        else { if (x !== y) return x < y ? -1 : 1; }
+      }
+      return 0;
+    };
+    // 从一组发行版附件里挑"安装包"：优先看起来像 setup/install 的 exe，其次任意 exe
+    const pickExeAsset = (assets) => {
+      const list = Array.isArray(assets) ? assets : [];
+      return list.find((a) => /\.exe$/i.test(String((a && a.name) || '')) && /setup|install|安装|手机远程/i.test(String((a && a.name) || '')))
+        || list.find((a) => /\.exe$/i.test(String((a && a.name) || '')))
+        || null;
+    };
     (async () => {
       try {
         let j = null;
-        if (gh) {
+        let srcTag = '';
+        let giteeErr = '';
+        if (gt) {
+          // Gitee 发行版列表：一次 GET（最多 100 条），挑产品版本里最高的那个
+          try {
+            const gApi = 'https://gitee.com/api/v5/repos/' + gt.owner + '/' + gt.repo + '/releases?per_page=100';
+            const gr = await fetch(gApi, {
+              signal: ac.signal,
+              headers: { 'user-agent': 'PhoneAccess-UpdateCheck', 'cache-control': 'no-cache' }
+            });
+            if (!gr.ok) throw new Error('返回 ' + gr.status);
+            const gList = await gr.json();
+            let best = null;
+            (Array.isArray(gList) ? gList : []).forEach((rel) => {
+              const v = String((rel && rel.tag_name) || '').replace(/^v/i, '').trim();
+              if (!/^\d+\.\d+(\.\d+)?$/.test(v)) return;          // 排除 tailscale-android-* 之类的非产品 tag
+              if (!best || cmp(v, best.version) > 0) best = { version: v, rel: rel };
+            });
+            if (!best) throw new Error('没有产品发行版');
+            const gExe = pickExeAsset(best.rel && best.rel.assets);
+            if (!gExe) throw new Error('最新发行版里没有安装包');
+            const gBody = String((best.rel && best.rel.body) || '');
+            // 发版约定：发行版正文里写 SHA256：xxxx；有它就能在下载后校验（Gitee API 不给 asset digest）
+            const gSha = (gBody.match(/SHA256[^\r\n]{0,12}?([0-9a-fA-F]{64})/i) || [])[1] || '';
+            j = {
+              version: best.version,
+              notes: gBody.length > 900 ? (gBody.slice(0, 900) + '…') : gBody,
+              url: String((gExe && gExe.browser_download_url) || ''),
+              sha256: gSha.toLowerCase(),
+              page: 'https://gitee.com/' + gt.owner + '/' + gt.repo + '/releases/tag/v' + best.version
+            };
+            srcTag = 'gitee';
+          } catch (e) {
+            giteeErr = 'Gitee：' + ((e && e.message) || '检查失败');
+          }
+        }
+        if (!j && gh) {
           // GitHub 的 tag 通常带 v 前缀（v1.0.6），配置里的 version 不带（1.0.6），比较前先剥掉
           const api = 'https://api.github.com/repos/' + gh + '/releases/latest';
           const r = await fetch(api, {
@@ -1431,42 +1517,86 @@ function handler(req, res) {
             sha256: String((exe && exe.digest) || '').replace(/^sha256:/i, '').toLowerCase(),
             page: String((rel && rel.html_url) || '')
           };
-        } else {
+        } else if (!j && src) {
           const r = await fetch(src, { signal: ac.signal, headers: { 'cache-control': 'no-cache' } });
           if (!r.ok) { reply(200, { configured: true, current: current, hasUpdate: false, error: '更新服务返回 ' + r.status }); return; }
           j = await r.json();
+          srcTag = 'url';
+        }
+        if (!j) {
+          // 一个源都没拿到版本：把原因说清楚（Gitee 的错因放在最前面，客户大多在国内）
+          reply(200, {
+            configured: true,
+            current: current,
+            hasUpdate: false,
+            error: (giteeErr ? (giteeErr + '；') : '') + '检查更新失败：更新源没有返回版本信息',
+            mirrorPage: mirrorPage,
+            mirrorPageNote: mirrorPageNote,
+            giteePage: giteePage,
+            githubPage: githubPage
+          });
+          return;
         }
         const latest = String((j && j.version) || '');
-        // 版本比较：按数字段逐段比，非数字按字符串兜底（够用，不引第三方库）
-        const cmp = (a, b) => {
-          const pa = a.split(/[.\-+]/), pb = b.split(/[.\-+]/);
-          for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
-            const x = pa[i] || '0', y = pb[i] || '0';
-            const nx = /^\d+$/.test(x), ny = /^\d+$/.test(y);
-            if (nx && ny) { const d = Number(x) - Number(y); if (d) return d < 0 ? -1 : 1; }
-            else { if (x !== y) return x < y ? -1 : 1; }
-          }
-          return 0;
-        };
         const hasUpdate = !!(latest && current && cmp(latest, current) > 0);
         // 镜像里如果写死了版本号，必须和 latest 一致；否则会「提示新版本、却下到旧包」
         const mirrorVer = (mirror.match(/v?(\d+\.\d+\.\d+)/i) || [])[1] || '';
         const mirrorStale = !!(mirrorVer && latest && mirrorVer !== latest);
         if (mirrorStale) mirrorOk = false;
+
+        // 下载源优先级（2026-11-02 用户要求：国内默认 Gitee，GitHub 只做备选）：
+        //   ① Gitee 发行版里「最新版本」的 exe 直链。
+        //      注意不能用本地配置里的 update.mirror：那是**打包时**的版本，老客户机器上永远指向老版本，
+        //      一有新版本就被下面的 stale 判定丢掉，结果所有人都被迫走 GitHub（国内基本下不动）。
+        //   ② 配置里的国内镜像 update.mirror（版本号与本机配置一致时才用；老客户/旧配置兜底）
+        //   ③ GitHub asset
+        const jUrl = String((j && j.url) || '');
+        let downloadUrl = jUrl;
+        let fallbackUrl = '';
+        let sourceTag = srcTag || (jUrl ? 'github' : '');
+        if (srcTag === 'gitee' && jUrl) {
+          downloadUrl = jUrl;
+          // GitHub 只做备选：按 release 约定拼资产直链（不额外请求 GitHub API，国内那个接口又慢又常被墙）
+          fallbackUrl = (gh && latest)
+            ? ('https://github.com/' + gh + '/releases/download/v' + latest + '/PhoneAccess-Setup-v' + latest + '.exe')
+            : '';
+        } else if (mirrorOk) {
+          downloadUrl = mirror;
+          sourceTag = 'mirror';
+          fallbackUrl = jUrl;
+        } else if (jUrl) {
+          downloadUrl = jUrl;
+          sourceTag = 'github';
+          fallbackUrl = mirrorOk ? mirror : '';
+        }
+        const downloadLabel = (sourceTag === 'gitee') ? '国内下载（Gitee）'
+          : (sourceTag === 'mirror' ? '国内镜像下载' : '下载并安装');
+        const fallbackLabel = (sourceTag === 'gitee' || sourceTag === 'github') ? '改用 GitHub 下载'
+          : (mirrorOk ? '改用国内镜像下载' : '改用 GitHub 下载');
+        // 下载后校验用：Gitee 的 SHA256 来自发行版正文的发版约定；拿不到就空着（不瞎填配置里的 hash，
+        // 那是**当前版本**的 hash，拿它校验新版本必然失败）
+        let sha256 = String((j && j.sha256) || '').toLowerCase();
+        if (!/^[0-9a-f]{64}$/.test(sha256)) sha256 = '';
         reply(200, {
           configured: true,
           current: current,
           latest: latest,
           hasUpdate: hasUpdate,
           notes: String((j && j.notes) || ''),
-          // 有国内镜像就优先用它（客户在没代理的环境下 GitHub 基本下不动）；GitHub 作为备选
-          downloadUrl: mirrorOk ? mirror : String((j && j.url) || ''),
-          fallbackUrl: mirrorOk ? String((j && j.url) || '') : '',
+          downloadUrl: downloadUrl,
+          downloadLabel: downloadLabel,
+          fallbackUrl: fallbackUrl,
+          fallbackLabel: fallbackLabel,
+          // source: gitee=国内主源；mirror=配置里的国内镜像；github=只有 GitHub 能用；url=自定义 JSON 源
+          source: sourceTag,
           mirror: mirrorOk ? mirror : '',
           mirrorPage: mirrorPage,
           mirrorPageNote: mirrorPageNote,
-          sha256: String((j && j.sha256) || ''),
-          pageUrl: String((j && j.page) || '')
+          sha256: sha256,
+          pageUrl: String((j && j.page) || giteePage || githubPage),
+          giteePage: giteePage,
+          githubPage: githubPage,
+          error: ''
         });
       } catch (e) {
         const msg = (e && e.name === 'AbortError') ? '检查超时' : ('检查失败：' + ((e && e.message) || '未知错误'));
@@ -1507,7 +1637,8 @@ function handler(req, res) {
           expectedSha = String((mcfg.update && mcfg.update.sha256) || '').trim().replace(/^sha256:/i, '').toLowerCase();
         }
       } catch { }
-      const allowedHosts = ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com'];
+      // 允许的域名 = GitHub 下载域名 + Gitee（国内主源）+ 配置里的国内镜像域名（只由卖家在配置里指定）
+      const allowedHosts = ['github.com', 'objects.githubusercontent.com', 'github-releases.githubusercontent.com', 'release-assets.githubusercontent.com', 'gitee.com', 'gitee.io'];
       try {
         if (/^https:\/\//i.test(mirror)) {
           const mh = new URL(mirror).hostname.toLowerCase();

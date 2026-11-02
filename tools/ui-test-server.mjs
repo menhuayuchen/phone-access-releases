@@ -43,6 +43,14 @@ const base = (over = {}) => Object.assign({
     link: 'https://example.com/pa-demo',
     text: '我在用「手机远程」：手机就能看电脑屏幕，还能点、能打字。\n下载试用：{link}'
   },
+  // 设置面板「安装备选」（2026-11-02）：服务端 /licence 的 download 字段
+  download: {
+    version: '1.0.14',
+    mirrorPage: 'https://wwatu.lanzouv.com/iC6Kk4ef83bg',
+    mirrorPageNote: '密码 d0o2',
+    giteePage: 'https://gitee.com/menhuayuchen/phone-access-download/releases',
+    githubPage: 'https://github.com/menhuayuchen/phone-access-releases/releases/latest'
+  },
   ultraQuota: { ultra: true, remainingSec: 3600, limitSec: 3600, exhausted: false }
 }, over);
 
@@ -112,10 +120,18 @@ http.createServer((req, res) => {
   if (url.pathname === '/manifest.json') return json({ name: '手机远程', short_name: '手机远程', start_url: '/?k=TESTKEY', display: 'standalone' });
   if (url.pathname === '/update-check') {
     return json({
-      configured: true, current: '1.0.7', latest: '1.0.8', hasUpdate: true,
-      notes: '测试台：模拟一个 1.0.8 更新，用来检查进度/失败提示。',
-      downloadUrl: 'https://example.com/PhoneAccess-Setup-v1.0.8.exe',
-      fallbackUrl: '', mirror: '', mirrorPage: 'https://example.com/lanzou-demo', pageUrl: 'https://example.com/releases'
+      configured: true, current: '1.0.13', latest: '1.0.14', hasUpdate: true,
+      notes: '测试台：模拟一个 1.0.14 更新（默认国内 Gitee、GitHub 备选），用来检查按钮文案/进度/失败提示。',
+      downloadUrl: 'https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.14/PhoneAccess-Setup-v1.0.14.exe',
+      downloadLabel: '国内下载（Gitee）',
+      fallbackUrl: 'https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.14/PhoneAccess-Setup-v1.0.14.exe',
+      fallbackLabel: '改用 GitHub 下载',
+      source: 'gitee', mirror: '', sha256: '',
+      mirrorPage: 'https://wwatu.lanzouv.com/iC6Kk4ef83bg',
+      mirrorPageNote: '密码 d0o2',
+      giteePage: 'https://gitee.com/menhuayuchen/phone-access-download/releases',
+      githubPage: 'https://github.com/menhuayuchen/phone-access-releases/releases/latest',
+      pageUrl: 'https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.14'
     });
   }
   if (url.pathname === '/update-progress') return json(mockProgress());
