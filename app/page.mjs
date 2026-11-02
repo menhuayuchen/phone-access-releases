@@ -38,6 +38,10 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
 #img, #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
 #img.show, #vid.show { display:block; }
 #overlay { position:absolute; inset:0; z-index:5; touch-action:none; }
+#viewReset { position:absolute; left:8px; top:50%; transform:translateY(-50%); z-index:8; display:none;
+             background:rgba(18,20,25,.92); color:#e8eaee; border:1px solid #4a4f5c; border-radius:18px;
+             padding:7px 10px; font-size:12px; line-height:1.2; cursor:pointer; touch-action:manipulation;
+             box-shadow:0 3px 12px rgba(0,0,0,.45); }
 #overlay.off { pointer-events:none; }
 #note { position:absolute; left:50%; top:50%; transform:translate(-50%,-50%); color:#8b9099; font-size:13px;
         text-align:center; pointer-events:none; z-index:6; }
@@ -99,6 +103,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   <video id="vid" playsinline autoplay muted></video>
   <div id="blk"></div>
   <div id="overlay"></div>
+  <button id="viewReset" title="恢复画面原始大小">恢复原大小</button>
   <div class="cursorDot" id="dot"></div>
   <div id="note"></div>
   <div id="kbbar">
@@ -139,6 +144,37 @@ const KEY = "__KEY__";
 const stage = document.getElementById('stage');
 let img = document.getElementById('img');
 const vid = document.getElementById('vid');
+
+// ---- 画面缩放（只放大手机上的显示，不动电脑）--------------------------------
+// 系统缩放 = 三指及以上发 Ctrl+滚轮，由电脑里的软件自己缩放；
+// 画面缩放 = 只对 #img/#vid 做 CSS transform，电脑端完全不知道。
+// 两种模式用设置里的按钮切换，偏好存 localStorage（默认系统缩放，保持老手感）。
+const viewReset = document.getElementById('viewReset');
+const ZOOM_MODE_KEY = 'zoomMode';
+let zoomMode = 'system';
+try { if (localStorage.getItem(ZOOM_MODE_KEY) === 'view') zoomMode = 'view'; } catch (e) {}
+const view = { scale: 1, tx: 0, ty: 0 };
+function applyView() {
+  const on = view.scale > 1.0001;
+  const tf = on ? 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')' : '';
+  try {
+    img.style.transformOrigin = '0 0';
+    img.style.transform = tf;
+    vid.style.transformOrigin = '0 0';
+    vid.style.transform = tf;
+  } catch (e) {}
+  if (viewReset) viewReset.style.display = on ? 'block' : 'none';
+}
+function resetView() {
+  view.scale = 1; view.tx = 0; view.ty = 0;
+  applyView();
+}
+function setZoomMode(m) {
+  zoomMode = (m === 'view') ? 'view' : 'system';
+  try { localStorage.setItem(ZOOM_MODE_KEY, zoomMode); } catch (e) {}
+  if (zoomMode === 'system') { /* 画面缩放保留，用户可继续看大图；要复原点左侧按钮 */ }
+}
+if (viewReset) viewReset.addEventListener('click', (e) => { e.stopPropagation(); resetView(); });
 // 流畅模式的真实帧率只能在客户端数：视频元素每解出一帧就回调一次
 let vfcCount = 0, vfcLast = 0, vfcAt = 0, vfcFps = 0;
 if (vid.requestVideoFrameCallback) {
@@ -409,6 +445,7 @@ function showStream() {
     done = true;
     ni.style.opacity = '';
     img = ni;
+    applyView();   // 换流后画面缩放状态要接着生效
     try { old.removeAttribute('src'); } catch (e) {}   // 关掉旧流，别让服务端挂着两条连接
     old.remove();
   };
@@ -877,6 +914,13 @@ function layoutPoint(cx, cy) {
 }
 
 function toScreen(cx, cy) {
+  // 画面被 transform 放大后，先反算回未缩放的 stage 坐标，再走原来的映射；
+  // 否则放大后点哪都偏。
+  if (view.scale !== 1) {
+    const r = stage.getBoundingClientRect();
+    cx = r.left + (cx - r.left - view.tx) / view.scale;
+    cy = r.top + (cy - r.top - view.ty) / view.scale;
+  }
   const box = contentBox();
   const src = state.rect;
   const nw = state.mode === 'raw' ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
@@ -896,7 +940,14 @@ function toPage(sx, sy) {
   let fx, fy;
   if (src && src.w > 0 && src.h > 0) { fx = (sx - src.x) / src.w; fy = (sy - src.y) / src.h; }
   else { fx = sx / nw; fy = sy / nh; }
-  return { x: box.left + fx * box.width, y: box.top + fy * box.height };
+  let x = box.left + fx * box.width, y = box.top + fy * box.height;
+  // 画面缩放后，远程光标/黄点落在放大后的显示位置
+  if (view.scale !== 1) {
+    const r = stage.getBoundingClientRect();
+    x = r.left + view.tx + (x - r.left) * view.scale;
+    y = r.top + view.ty + (y - r.top) * view.scale;
+  }
+  return { x: x, y: y };
 }
 
 
@@ -1128,7 +1179,7 @@ if (kbundo) {
 }
 
 // ---- 手势：Pointer Events（Chrome/Safari 都支持）--------------------------
-let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoomG = null, zoomCtrl = false, lastTapAt = 0;
+let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoomG = null, viewG = null, zoomCtrl = false, lastTapAt = 0;
 
 overlay.addEventListener('pointerdown', (e) => {
   if (!state.control) return;
@@ -1259,6 +1310,15 @@ overlay.addEventListener('touchstart', (e) => {
     const d = pointsSpread(pts, c);
     cancelSinglePointer();
     pinch = null;
+    if (zoomMode === 'view') {
+      // 画面缩放：只改 #img/#vid 的 CSS transform，绝不往电脑发 Ctrl/滚轮
+      releaseZoomCtrl();
+      zoomG = null;
+      viewG = { dist: d, lastMove: 0 };
+      setNote('画面缩放：以手心为中心，张开放大 / 捏合缩小 · 左侧可恢复', 2600);
+      return;
+    }
+    viewG = null;
     zoomG = { x: c.x, y: c.y, dist: d, acc: 0, lastMove: 0 };
     const p = toScreen(c.x, c.y);
     queue({ t: 'move', x: p.x, y: p.y });
@@ -1268,14 +1328,42 @@ overlay.addEventListener('touchstart', (e) => {
       queueKey(0x11, 1);    // Ctrl down，随后的滚轮就是缩放
       flushQueue();
     }
-    setNote('三指及以上缩放：以手心为中心，张开放大 / 捏合缩小', 2500);
+    setNote('系统缩放：以手心为中心，张开放大 / 捏合缩小', 2500);
   }
 }, { passive: true });
 
 overlay.addEventListener('touchmove', (e) => {
   if (!state.control) return;
 
-  // 三指及以上：质心=手心；跟随质心移动并换算成 Ctrl+滚轮格数
+  // 画面缩放：只 transform 本机画面，电脑端完全不知道
+  if (viewG && e.touches.length >= 3) {
+    const pts = touchPoints(e);
+    const c = pointsCenter(pts);
+    const d = pointsSpread(pts, c);
+    if (d > 1 && viewG.dist > 1) {
+      const ratio = d / viewG.dist;
+      viewG.dist = d;
+      const r = stage.getBoundingClientRect();
+      const p = { x: c.x - r.left, y: c.y - r.top };
+      let s = Math.max(1, Math.min(5, view.scale * ratio));
+      if (s <= 1.0001) {
+        view.scale = 1; view.tx = 0; view.ty = 0;
+      } else {
+        const k = s / view.scale;
+        // 以手心为不动点缩放：手心下的那一点始终留在手指下面
+        view.tx = p.x - (p.x - view.tx) * k;
+        view.ty = p.y - (p.y - view.ty) * k;
+        view.scale = s;
+        const w = r.width, h = r.height;
+        view.tx = Math.min(0, Math.max(w * (1 - s), view.tx));
+        view.ty = Math.min(0, Math.max(h * (1 - s), view.ty));
+      }
+      applyView();
+    }
+    return;
+  }
+
+  // 系统缩放：质心=手心；跟随质心移动并换算成 Ctrl+滚轮格数
   if (zoomG && e.touches.length >= 3) {
     const pts = touchPoints(e);
     const c = pointsCenter(pts);
@@ -1315,6 +1403,7 @@ overlay.addEventListener('touchmove', (e) => {
 }, { passive: true });
 
 overlay.addEventListener('touchend', (e) => {
+  if (e.touches.length < 3 && viewG) viewG = null;
   if (e.touches.length < 3 && zoomG) {
     zoomG = null;
     releaseZoomCtrl();
@@ -1325,6 +1414,7 @@ overlay.addEventListener('touchend', (e) => {
 overlay.addEventListener('touchcancel', () => {
   pinch = null;
   zoomG = null;
+  viewG = null;
   releaseZoomCtrl();
 }, { passive: true });
 // 切后台/失焦/关页面时一定要把 Ctrl 补起来，否则电脑上会卡着 Ctrl
@@ -2474,6 +2564,26 @@ bindImg(img);
     } catch (e) { }
     body += setSection('连接与画面', connInner);
 
+    // 缩放方式：系统缩放 vs 画面缩放（三指及以上手势共用）
+    const zmBtn = (m, label, desc) => {
+      const on = zoomMode === m;
+      return '<button class="paZM" data-m="' + m + '" style="flex:1;min-width:130px;text-align:left;'
+        + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';'
+        + 'color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
+        + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 10px;'
+        + 'font-size:13px;cursor:pointer;line-height:1.4">' + label
+        + '<br><span style="font-size:11px;color:#868c96">' + desc + '</span></button>';
+    };
+    body += setSection('缩放方式',
+      '<div style="color:#868c96;font-size:12.5px;line-height:1.7;margin-bottom:9px">'
+      + '三指及以上捏合时用哪种缩放。系统缩放会把 Ctrl+滚轮发给电脑；画面缩放只放大手机上的画面。</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap">'
+      + zmBtn('system', '系统缩放', 'Ctrl+滚轮，电脑里的软件自己放大')
+      + zmBtn('view', '画面缩放', '只放大手机画面，电脑不变')
+      + '</div>'
+      + '<div style="color:#6b7078;font-size:11.5px;line-height:1.6;margin-top:7px">'
+      + '画面放大后，画面左侧会出现「恢复原大小」按钮；回到原始大小后按钮自动消失。</div>');
+
     // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
     // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
@@ -2540,6 +2650,21 @@ bindImg(img);
       + '</div>';
 
     const box = openSheet('设置', body, 'setClose');
+
+    // 缩放方式切换：按钮高亮 + 记住选择
+    const zmBtns = [...box.querySelectorAll('.paZM')];
+    const paintZm = () => zmBtns.forEach((b) => {
+      const on = b.dataset.m === zoomMode;
+      b.style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
+      b.style.color = on ? '#8fb6ff' : '#c9ccd1';
+      b.style.borderColor = on ? '#3f6fd0' : '#343842';
+    });
+    paintZm();
+    zmBtns.forEach((b) => b.addEventListener('click', () => {
+      setZoomMode(b.dataset.m);
+      paintZm();
+      setNote(zoomMode === 'view' ? '已切换：画面缩放（只放大手机画面）' : '已切换：系统缩放（Ctrl+滚轮）', 2200);
+    }));
 
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
