@@ -111,7 +111,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
 <div id="zoomPop" role="dialog" aria-label="缩放方式">
   <div class="zpTitle">三指及以上缩放</div>
   <button class="zpOpt" data-m="system">系统缩放<small>Ctrl+滚轮，电脑里的软件自己放大</small></button>
-  <button class="zpOpt" data-m="view">画面缩放<small>只放大手机画面，电脑不变</small></button>
+  <button class="zpOpt" data-m="view">画面缩放<small>只放大手机画面，光标跟手心</small></button>
   <div class="zpNote">画面放大后，左侧会出现「恢复原大小」；回到原始大小自动消失。</div>
 </div>
 <!-- tabindex="-1"：画面区作为「焦点回收站」，点完特殊键按钮把焦点收回到这里，
@@ -1374,10 +1374,13 @@ overlay.addEventListener('touchstart', (e) => {
     cancelSinglePointer();
     pinch = null;
     if (zoomMode === 'view') {
-      // 画面缩放：只改 #img/#vid 的 CSS transform，绝不往电脑发 Ctrl/滚轮
+      // 画面缩放：改 #img/#vid 的 CSS transform；光标仍然跟到手心（不向电脑发 Ctrl/滚轮）
       releaseZoomCtrl();
       zoomG = null;
       viewG = { dist: d, lastMove: 0 };
+      const p = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p.x, y: p.y });
+      showDot(c.x, c.y);
       setNote('画面缩放：以手心为中心，张开放大 / 捏合缩小 · 左侧可恢复', 2600);
       return;
     }
@@ -1398,11 +1401,19 @@ overlay.addEventListener('touchstart', (e) => {
 overlay.addEventListener('touchmove', (e) => {
   if (!state.control) return;
 
-  // 画面缩放：只 transform 本机画面，电脑端完全不知道
+  // 画面缩放：transform 本机画面 + 光标跟到手心（不发 Ctrl/滚轮）
   if (viewG && e.touches.length >= 3) {
     const pts = touchPoints(e);
     const c = pointsCenter(pts);
     const d = pointsSpread(pts, c);
+    const now = Date.now();
+    // 光标时刻在手心：缩放前/手心移动时都先发 move
+    if (now - viewG.lastMove > 30) {
+      viewG.lastMove = now;
+      const p = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p.x, y: p.y });
+      showDot(c.x, c.y);
+    }
     if (d > 1 && viewG.dist > 1) {
       const ratio = d / viewG.dist;
       viewG.dist = d;
@@ -1421,6 +1432,8 @@ overlay.addEventListener('touchmove', (e) => {
         view.tx = Math.min(0, Math.max(w * (1 - s), view.tx));
         view.ty = Math.min(0, Math.max(h * (1 - s), view.ty));
       }
+      const p2 = toScreen(c.x, c.y);
+      queue({ t: 'move', x: p2.x, y: p2.y });   // 缩放这一下也先钉在手心
       applyView();
     }
     return;

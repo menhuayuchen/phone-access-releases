@@ -515,7 +515,7 @@ Remove-NetFirewallRule -DisplayName "DSH Web (phone access) 8642"
 | 长按 0.55 s 后抬起 | 右键单击（有震动提示） |
 | 长按 0.55 s 后拖动 | 右键拖拽 |
 | 双指竖直滑动 | 滚轮（**只在落下时移到两指正中，之后光标固定**，滚动都在该点） |
-| 三指及以上捏合 / 张开 | 缩放（**以手心=所有触点质心为中心**；顶部「缩放」折叠窗切换「系统缩放 = 发 `Ctrl+滚轮`」或「画面缩放 = 只放大手机画面」） |
+| 三指及以上捏合 / 张开 | 缩放（**以手心=所有触点质心为中心**；顶部「缩放」折叠窗切换「系统缩放 = 发 `Ctrl+滚轮`」或「画面缩放 = 只放大手机画面，光标跟手心」） |
 | 「输入」按钮 → 文本框 | 文本注入（只在按「输入」时才弹软键盘） |
 
 两个曾踩过的坑（已修）：
@@ -530,7 +530,7 @@ Remove-NetFirewallRule -DisplayName "DSH Web (phone access) 8642"
 
 三指及以上缩放有两种模式（顶部「缩放」折叠窗，偏好存 `localStorage.zoomMode`）：
 - `system`（默认）：发「`Ctrl` down → 若干 `wheel` → `Ctrl` up」，质心（手心）先 `move` 过去再滚；
-- `view`：只对 `#img/#vid` 做 `translate(...) scale(...)`，电脑端零输入；`toScreen()` 先按
+- `view`：只对 `#img/#vid` 做 `translate(...) scale(...)`，并同步把光标 `move` 到手心（不发 Ctrl/滚轮）；`toScreen()` 先按
   `view.scale/tx/ty` 反算回未缩放坐标，`toPage()` 再正向变换，所以放大后点击/滚轮/光标仍然对准。
   画面左侧的 `#viewReset` 只在 `scale>1` 时显示，点击归位到 1 并隐藏。\n  `contentBox()` 改为用 `stage.getBoundingClientRect()`（不受 transform 影响），否则放大后\n  `getBoundingClientRect()` 返回放大框会二次缩放、点哪都偏。
 
