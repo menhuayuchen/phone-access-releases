@@ -514,8 +514,8 @@ Remove-NetFirewallRule -DisplayName "DSH Web (phone access) 8642"
 | 拖动 | 左键拖拽（>8 px 才算拖动，避免点按抖动变成拖拽） |
 | 长按 0.55 s 后抬起 | 右键单击（有震动提示） |
 | 长按 0.55 s 后拖动 | 右键拖拽 |
-| 双指竖直滑动 | 滚轮（**光标先移到两指正中**，滚动发生在两指之间） |
-| 五指捏合 / 张开 | 缩放（**以手心=五触点质心为中心**，发送 `Ctrl+滚轮`；支持该快捷键的窗口有效） |
+| 双指竖直滑动 | 滚轮（**只在落下时移到两指正中，之后光标固定**，滚动都在该点） |
+| 三指及以上捏合 / 张开 | 缩放（**以手心=所有触点质心为中心**，发送 `Ctrl+滚轮`；支持该快捷键的窗口有效） |
 | 「输入」按钮 → 文本框 | 文本注入（只在按「输入」时才弹软键盘） |
 
 两个曾踩过的坑（已修）：
@@ -526,9 +526,9 @@ Remove-NetFirewallRule -DisplayName "DSH Web (phone access) 8642"
   现在没有任何常驻 focus 元素，只有按「输入」才聚焦 `#kbtext`。
 
 手势改用 Pointer Events（`pointerdown/move/up` + `setPointerCapture`），Chrome/Safari 都稳；
-双指滚轮、五指缩放单独用 `touch*`，`touch-action:none` + `overscroll-behavior:none` 保证页面不跟着滚。
+双指滚轮、三指及以上缩放单独用 `touch*`，`touch-action:none` + `overscroll-behavior:none` 保证页面不跟着滚。
 
-五指缩放发的是「`Ctrl` down → 若干 `wheel` → `Ctrl` up」：质心（手心）先 `move` 过去再滚，
+三指及以上缩放发的是「`Ctrl` down → 若干 `wheel` → `Ctrl` up」：质心（手心）先 `move` 过去再滚，
 所以缩放中心落在手心；`touchend` / `touchcancel` / 页面失焦 / 切后台 / `pagehide` 都会补 `Ctrl up`，
 否则电脑上会卡住 Ctrl（表现为快捷键全乱）。双指滚动每次发 wheel 前也会再钉一次光标到两指正中。
 

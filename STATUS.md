@@ -1161,7 +1161,7 @@ git 基线 `5bb3572`（本轮两 commit：`ecaf9b3` 帧率 + `5bb3572` PWA 裁�
 
 ## 37. 触摸手势改进（2026-11-02，未发版）
 
-- 双指滚轮：两指落下先 move 到两指正中，每次 wheel 前再钉一次中点；解决光标偏向先按下手指、滚错页面。
-- 新增五指缩放：五触点质心=手心；先 move 到质心，再 Ctrl down + wheel（张开=放大，捏合=缩小），每 10% 走一格；touchend/touchcancel/失焦/切后台/pagehide 都补 Ctrl up。
-- 合成 Touch 验证：双指起点 move 从单指 x=451 变为中点 x=797；五指序列 move→key vk=17 down→move→wheel d=6→key vk=17 up。
-- 使用说明/README 已同步；iPad 五指可能与系统多任务冲突，需真机复测。
+- 双指滚轮：只在两指落下时 move 到两指正中，之后光标**固定**，直到双指全部抬起；wheel 只按纵向位移发，滚动始终在起始中点。
+- 缩放改为 **三指及以上**：所有触点质心=手心；先 move 到质心，再 Ctrl down + wheel（张开=放大，捏合=缩小），每 10% 走一格；touchend/touchcancel/失焦/切后台/pagehide 都补 Ctrl up。
+- 合成 Touch 验证：双指事件为 `move(起点) → wheel`（移动后没有再次 move）；三指序列为 `move→Ctrl down→move→wheel d=6→Ctrl up`。
+- 使用说明/README 已同步；iPad 三指/五指可能与系统多任务手势冲突，需真机复测。
