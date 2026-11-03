@@ -175,3 +175,30 @@ etstat 只有 127.0.0.1:47984 / 47989 / 47990 / 48010，**没有 0.0.0.0**（in
 **还没做（需要真机/虚拟机 + 客户手机）**：MSI 静默安装与服务/防火墙收紧、真实硬编检测、
 Moonlight 客户端实际串流（fps/延迟/码率/手机发热）、iOS 客户端可得性。
 这两项等许可后在一台可折腾的机器上做（不碰卖家本机运行中的产品）。
+---
+
+## 十、VM 实测：MSI 安装 / 配置 / 凭据 / 配对接口 / 防火墙 / 卸载（2026-11-03 19:3x）
+
+环境：VMware 虚拟机 Win10 22H2（4 vCPU / 4GB，1024×768），用 mrun -gu 1hao -gp *** 在 guest 里执行；
+所有文件通过宿主机共享/复制进去，测完已清理，VM 恢复干净（Sunshine 已卸载、配置残留已删、共享文件夹已移除）。
+
+| 验证项 | 结果 |
+|---|---|
+| 静默安装 | msiexec /i Sunshine-Windows-AMD64-installer.msi /qn /l*v → **exit 0**，自动装出 SunshineService（Automatic，已运行） |
+| 预配置生效 | 写 C:\Program Files\Sunshine\config\sunshine.conf（ind_address=127.0.0.1、port=47989、upnp=disabled、origin_web_ui_allowed=pc、encoder=software）+ 重启服务后，只监听 127.0.0.1:47984 / 47989 / 47990 / 48010，**没有 0.0.0.0** |
+| 启动时延 | 服务重启后约 **15–20 秒** Web UI 才可用（安装脚本必须轮询 /api/config，不能用固定 sleep） |
+| 首次凭据 | 未设凭据时 POST /api/password（无认证）→ {"status":true}；随后带 Basic Auth 的 GET /api/pin → {"pairings":[]}、GET /api/clients/list 正常 |
+| 防火墙 | MSI 默认加 **两条 Inbound Allow 规则**（名字 Sunshine，TCP + UDP，emote=Any，profile=Any）→ **必须收紧**；Set-NetFirewallRule -RemoteAddress 100.64.0.0/10,127.0.0.1 实测生效（回读 100.64.0.0/255.192.0.0,127.0.0.1） |
+| 卸载 | msiexec /x {F4B3C08C-F867-4367-9465-6DAB091E5FB6} /qn → exit 0；服务没了、防火墙规则清空；**但 C:\Program Files\Sunshine\config 会残留**（conf/state/logs/credentials）→ 我们的卸载器必须显式删掉 |
+| 硬件编码 | VM 无 GPU 直通，只有 libx264 [software] → **硬编/60fps/延迟必须到真机验证** |
+
+**结论**：安装、预配置、自动设密码、配对接口、防火墙收紧、卸载清理——**六条路径全部可自动化**。
+集成方案（S2）按上面的顺序写脚本即可；剩下的真实性能与 Moonlight 客户端联通，等有 GPU 的真机 + 手机再验。
+
+**安装器时序（给 S2 的硬要求）**：
+1) msiexec /i ... /qn 等退出码 0；
+2) 写 sunshine.conf → Restart-Service SunshineService；
+3) **轮询** https://127.0.0.1:47990/api/config（跳过证书校验），最多 60 秒；
+4) 连续两次成功后再 POST /api/password 设随机凭据（幂等：已有凭据则跳过）；
+5) Set-NetFirewallRule -DisplayName 'Sunshine' -RemoteAddress 100.64.0.0/10,127.0.0.1（找不到规则就跳过并记日志）；
+6) 卸载时：先 msiexec /x，再删 %ProgramFiles%\Sunshine\config，最后确认服务/规则都消失。
