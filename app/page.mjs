@@ -2362,6 +2362,7 @@ bindImg(img);
         pair.disabled = false;
         setMsg((j && (j.message || j.error)) || '配对失败', (j && j.ok) ? '#8CE58C' : '#ff6b6b');
         if (j && j.ok) { selectedId = ''; setTimeout(poll, 1200); }
+        else { setTimeout(poll, 1500); }
       });
       const unpair = bodyEl.querySelector('#ssUnpair');
       if (unpair) unpair.addEventListener('click', async () => {
@@ -2392,7 +2393,9 @@ bindImg(img);
         h = setPill(false, '', '未授权') + '<div style="margin-top:8px">高性能模式需要许可证或处于试用期内；现在可以继续用网页模式。</div>';
       } else {
         const host = location.hostname || '本机';
-        if (!selectedId && pairings && pairings.length) selectedId = pairings[0].id;
+        if (!selectedId || !(pairings || []).some((p) => p.id === selectedId)) {
+          selectedId = (pairings && pairings.length) ? pairings[0].id : '';
+        }
         h = setPill(true, '已就绪', '')
           + step(1, '手机装 <b>Moonlight</b>（安卓：GitHub 的 moonlight-android releases；iOS：App Store 搜 Moonlight）')
           + step(2, 'Moonlight 里添加电脑：<code style="color:#8fb6ff">' + escHtml((s.sunshine && s.sunshine.name) || host) + '</code>（地址用 <code>' + escHtml(host) + '</code>）')

@@ -1840,19 +1840,36 @@ function handler(req, res) {
       if (!/^[0-9a-f]{32}$/.test(pairingId)) return sreply(400, { ok: false, message: '配对请求 id 不对（应由页面自动带过来）' });
       if (!/^\d{4}$/.test(pin)) return sreply(400, { ok: false, message: 'PIN 是 Moonlight 上显示的 4 位数字' });
       (async () => {
-        const r = await sunshineApi('POST', '/api/pin', {
-          pairing_id: pairingId,
-          pin: pin,
-          name: name || '手机'
-        }, 20000);
+        const tryPin = async (pid) => {
+          const r = await sunshineApi('POST', '/api/pin', {
+            pairing_id: pid,
+            pin: pin,
+            name: name || '手机'
+          }, 20000);
+          let j = null;
+          try { j = JSON.parse(r.body || ''); } catch { }
+          const good = !!(r.ok && j && (j.status === true || j.status === 'true'));
+          return { r, j, good };
+        };
+        let out = await tryPin(pairingId);
+        // 兜底：Moonlight 重新发起配对时 pairing_id 会变，页面带的是旧的 → 自动用最新的重试一次。
+        // （PIN 是客户端自己生成并校验的，换 id 重试不会把不相干的设备配进来。）
+        if (!out.good) {
+          const refresh = await sunshineApi('GET', '/api/pin', null, 8000);
+          let list = [];
+          try {
+            const lj = JSON.parse(refresh.body || '{}');
+            list = Array.isArray(lj && lj.pairings) ? lj.pairings : [];
+          } catch { }
+          const newest = list.length ? String(list[list.length - 1].id || '').toLowerCase() : '';
+          if (newest && newest !== pairingId) out = await tryPin(newest);
+        }
+        const { r, j, good } = out;
         if (!r.ok) return sreply(200, { ok: false, message: 'Sunshine 拒绝了配对（HTTP ' + (r.httpStatus || 0) + '）' });
-        let j = null;
-        try { j = JSON.parse(r.body); } catch { }
-        const good = !!(j && (j.status === true || j.status === 'true'));
         sreply(200, {
           ok: good,
           status: j ? j.status : null,
-          message: good ? '配对成功：回 Moonlight 里选「Desktop」就能开始串流。' : 'PIN 不对或配对超时，让手机重新点一次配对再试。'
+          message: good ? '配对成功：回 Moonlight 里选「Desktop」就能开始串流。' : 'PIN 不对或配对超时：在 Moonlight 里重新点一次配对，拿到新的 4 位 PIN 后立刻回来输。'
         });
       })();
     });
