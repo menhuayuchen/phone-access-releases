@@ -80,15 +80,38 @@ function Get-SunshineInstalled {
     return [pscustomobject]@{ installed = $installed; exe = $sunshineExe; productCode = $productCode }
 }
 
+function Get-SunshineHost {
+    <#
+      Sunshine 实际绑在哪个地址：以 sunshine.conf 的 bind_address 为准（我们写的是 tailnet IP）。
+      为什么不能写死 127.0.0.1：绑定 tailnet IP 后它**不再监听回环**，
+      本地代理必须走同一个 tailnet 地址，否则 /api/* 全部 403/连不上（2026-11-03 真机踩到）。
+    #>
+    try {
+        if (Test-Path -LiteralPath $confFile) {
+            $raw = Get-Content -LiteralPath $confFile -Raw -Encoding UTF8
+            $m = [regex]::Match($raw, '(?m)^\s*bind_address\s*=\s*(\S+)\s*$')
+            if ($m.Success) {
+                $h = $m.Groups[1].Value.Trim()
+                if ($h -match '^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\.\d+\.\d+$') { return $h }
+                if ($h -eq '127.0.0.1' -or $h -eq 'localhost') { return '127.0.0.1' }
+                # 0.0.0.0 / 其他：按本机回环试
+                return '127.0.0.1'
+            }
+        }
+    } catch { }
+    return '127.0.0.1'
+}
+
 function Get-SunshineService {
     try { return Get-Service -Name $svcName -ErrorAction Stop } catch { return $null }
 }
 
 function Test-WebUp {
     # 用 TCP 连 47990 判断 Web UI 是否已起来（比 HTTP 更便宜，且不受欢迎页/证书影响）
+    $h = Get-SunshineHost
     try {
         $client = New-Object System.Net.Sockets.TcpClient
-        $iar = $client.BeginConnect('127.0.0.1', 47990, $null, $null)
+        $iar = $client.BeginConnect($h, 47990, $null, $null)
         if (-not $iar.AsyncWaitHandle.WaitOne(800)) { try { $client.Close() } catch { }; return $false }
         $client.EndConnect($iar)
         $client.Close()
@@ -117,13 +140,12 @@ public class SunshineTrustAll : ICertificatePolicy {
     [System.Net.ServicePointManager]::SecurityProtocol = [System.Net.SecurityProtocolType]::Tls12
 } catch { }
 
-$base = 'https://127.0.0.1:47990'
-
 function Invoke-SunshineApi {
     param([string]$Method = 'GET', [string]$Path = '/api/config', $Body = $null, [string]$User = '', [string]$Pass = '')
     $headers = @{}
     if ($User) { $headers['Authorization'] = 'Basic ' + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes($User + ':' + $Pass)) }
-    $reqArgs = @{ Uri = ($base + $Path); Method = $Method; Headers = $headers; UseBasicParsing = $true; TimeoutSec = 15 }
+    # 目标地址跟着 sunshine.conf 的 bind_address 走（tailnet IP 或回环），见 Get-SunshineHost
+    $reqArgs = @{ Uri = ('https://' + (Get-SunshineHost) + ':47990' + $Path); Method = $Method; Headers = $headers; UseBasicParsing = $true; TimeoutSec = 15 }
     if ($null -ne $Body) {
         $json = ($Body | ConvertTo-Json -Compress)
         $reqArgs['ContentType'] = 'application/json'
@@ -188,7 +210,28 @@ function Set-CredentialsIfNeeded {
     $body = @{ currentUsername = ''; currentPassword = ''; newUsername = $user; newPassword = $pass; confirmNewPassword = $pass }
     $r = Invoke-SunshineApi -Method 'POST' -Path '/api/password' -Body $body
     if (-not $r.ok) {
-        return [pscustomobject]@{ ok = $false; error = ('设置 Sunshine 凭据失败：HTTP ' + $r.status + ' ' + $r.error) }
+        # 兜底：Sunshine 里已经有凭据、但我们的凭据文件丢了（例如重跑验证/清过临时目录）。
+        # 这时无认证改密码会被拒（401）——把 state 文件移走再重启服务，Sunshine 就回到"首次运行"。
+        # 需要管理员（服务操作），安装器/验证脚本本身就是提权跑的。
+        $stateFile = Join-Path $confDir 'sunshine_state.json'
+        $svc = Get-SunshineService
+        if ((Test-Path -LiteralPath $stateFile) -and $svc) {
+            $bak = $stateFile + '.bak-' + (Get-Date -Format 'yyyyMMddHHmmss')
+            # 先停服务再移文件（服务运行时文件可能被占用），移完再启动
+            try { Stop-Service -Name $svcName -Force -ErrorAction SilentlyContinue } catch { }
+            Start-Sleep -Milliseconds 800
+            try { Move-Item -LiteralPath $stateFile -Destination $bak -Force -ErrorAction Stop } catch { }
+            try {
+                Start-Service -Name $svcName -ErrorAction Stop
+                [void](Wait-WebUp 60)
+            } catch { }
+            $r = Invoke-SunshineApi -Method 'POST' -Path '/api/password' -Body $body
+            if (-not $r.ok) {
+                return [pscustomobject]@{ ok = $false; error = ('重置 Sunshine 凭据失败：HTTP ' + $r.status + ' ' + $r.error + '（旧 state 备份：' + $bak + '）') }
+            }
+        } else {
+            return [pscustomobject]@{ ok = $false; error = ('设置 Sunshine 凭据失败：HTTP ' + $r.status + ' ' + $r.error) }
+        }
     }
     if (-not (Save-Creds $user $pass)) { return [pscustomobject]@{ ok = $false; error = '凭据写不进安装目录' } }
     return [pscustomobject]@{ ok = $true; action = 'created'; user = $user }
@@ -217,12 +260,21 @@ function Write-Conf {
         'sunshine_name = ' + $SunshineName
         'bind_address = ' + $ip
         ('port = ' + $Port)
-        'origin_web_ui_allowed = pc'
+        # 绑定 tailnet IP 之后回环不再监听，本地代理走同一个 tailnet 地址；
+        # 所以 Web UI 的origin 必须允许 lan（tailnet），否则 /api/* 全部 403（2026-11-03 真机踩到）。
+        # 安全前提：只绑 tailnet、Web UI 有随机强密码、防火墙只放 tailnet。
+        'origin_web_ui_allowed = lan'
         'upnp = disabled'
         'min_log_level = info'
+        # 只广播 H.264（hevc_mode/av1_mode = 1 = 不广播）：
+        # 真机实测第一次串流协商到 AV1/HEVC，手机端 30 秒后断开、重连证书身份校验失败；
+        # H.264 兼容性最好，办公场景也够用（编码在 GPU 上，CPU 占用低）。
+        'hevc_mode = 1'
+        'av1_mode = 1'
     )
     try {
-        Set-Content -LiteralPath $confFile -Value $lines -Encoding ASCII
+        # UTF-8 无 BOM：写 ASCII 会中文名变 ????-???（真机踩到）
+        [System.IO.File]::WriteAllText($confFile, (($lines -join "`r`n") + "`r`n"), (New-Object System.Text.UTF8Encoding($false)))
         return $true
     } catch { return $false }
 }

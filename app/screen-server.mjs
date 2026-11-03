@@ -984,7 +984,31 @@ function listUploads() {
 //
 // 安全：这三个接口都在默认鉴权之后；凭据文件只允许本进程读；PIN 只转发给本机 Sunshine。
 const SUNSHINE_EXE = 'C:\\Program Files\\Sunshine\\sunshine.exe';
+const SUNSHINE_CONF = 'C:\\Program Files\\Sunshine\\config\\sunshine.conf';
 const SUNSHINE_CRED_FILE = join(HERE, 'sunshine-credentials.json');
+// Sunshine 绑 tailnet IP 时**不监听回环**，本地代理必须跟着 conf 的 bind_address 走；
+// 否则 /sunshine-status 永远「未运行」、配对接口全部连不上（2026-11-03 真机踩到）。
+let sunshineHostCache = { stamp: '', host: '' };
+function sunshineHost() {
+  try {
+    const st = statSync(SUNSHINE_CONF);
+    const stamp = String(st.mtimeMs);
+    if (stamp !== sunshineHostCache.stamp) {
+      let h = '';
+      try {
+        const txt = readFileSync(SUNSHINE_CONF, 'utf8');
+        const m = txt.match(/^\s*bind_address\s*=\s*(\S+)\s*$/m);
+        if (m) h = String(m[1]).trim();
+      } catch { }
+      const tailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\.\d+\.\d+$/.test(h);
+      if (!(tailnet || h === '127.0.0.1' || h === 'localhost')) h = '127.0.0.1';
+      sunshineHostCache = { stamp: stamp, host: h };
+    }
+    return sunshineHostCache.host || '127.0.0.1';
+  } catch {
+    return '127.0.0.1';
+  }
+}
 function readSunshineCreds() {
   const j = readJsonLoose(SUNSHINE_CRED_FILE);
   if (j && j.username && j.password) return { username: String(j.username), password: String(j.password) };
@@ -1000,7 +1024,7 @@ function sunshineApi(method, apiPath, body, timeoutMs = 8000) {
     let req;
     try {
       req = https.request({
-        host: '127.0.0.1',
+        host: sunshineHost(),
         port: 47990,
         path: apiPath,
         method: method,
@@ -1030,7 +1054,7 @@ function sunshineWebUp() {
     let settled = false;
     const done = (v) => { if (!settled) { settled = true; resolve(v); } };
     let sock;
-    try { sock = net.connect(47990, '127.0.0.1'); } catch { return done(false); }
+    try { sock = net.connect(47990, sunshineHost()); } catch { return done(false); }
     sock.setTimeout(900);
     sock.once('connect', () => { try { sock.destroy(); } catch { } done(true); });
     sock.once('timeout', () => { try { sock.destroy(); } catch { } done(false); });
