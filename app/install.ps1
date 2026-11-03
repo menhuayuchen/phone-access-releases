@@ -1797,11 +1797,13 @@ try {
   Write-Section '第 11 步 · 高性能模式（Moonlight，可选）'
 
   $hpMsi = Join-Path $script:InstallRoot 'Sunshine-Windows-AMD64-installer.msi'
+  $hpMsiSrc = Join-Path $script:SourceDirFull 'Sunshine-Windows-AMD64-installer.msi'
   $hpScript = Join-Path $script:InstallRoot 'sunshine-integration.ps1'
+  if (-not (Test-Path -LiteralPath $hpScript)) { $hpScript = Join-Path $script:SourceDirFull 'sunshine-integration.ps1' }
   if ($SkipHighPerformance) {
     Write-Note '按参数跳过高性能模式（网页模式照常可用）'
     $script:HpState = '按参数跳过'
-  } elseif (-not (Test-Path -LiteralPath $hpMsi)) {
+  } elseif ((-not (Test-Path -LiteralPath $hpMsi)) -and (-not (Test-Path -LiteralPath $hpMsiSrc))) {
     Write-Note '这个安装包没带高性能模式组件（没有 Sunshine 安装包），跳过；网页模式照常可用'
     $script:HpState = '未包含（跳过）'
   } elseif (-not (Test-Path -LiteralPath $hpScript)) {
@@ -1811,11 +1813,13 @@ try {
     Write-Note '（干跑）会安装并预配置 Sunshine（只绑 tailnet、自动随机凭据、防火墙收紧、只广播 H.264）'
     $script:HpState = '（干跑未执行）'
   } else {
+    $hpMsiUse = $hpMsi
+    if (-not (Test-Path -LiteralPath $hpMsiUse)) { $hpMsiUse = $hpMsiSrc }
     Write-Note '正在安装/预配置 Sunshine（约 1–2 分钟）。它是独立程序（GPL-3.0），只用来给 Moonlight 提供低延迟通道…'
     $hpOk = $false
     try {
       $psExeHp = Get-PowerShellExe
-      & $psExeHp -NoProfile -ExecutionPolicy Bypass -File $hpScript -Action install -AppDir $script:InstallRoot -MsiPath $hpMsi -Quiet
+      & $psExeHp -NoProfile -ExecutionPolicy Bypass -File $hpScript -Action install -AppDir $script:InstallRoot -MsiPath $hpMsiUse -Quiet
       $hpOk = ($LASTEXITCODE -eq 0)
     } catch {
       Write-WarnLine ('高性能模式安装没能完成：' + [string]$_.Exception.Message)
@@ -1841,7 +1845,7 @@ try {
     Write-Note '（干跑）会打开手机扫码入口'
     Write-Host ''
     Write-Host '干跑完成：没有改动任何东西（没复制文件、没改防火墙、没注册任务、没启动服务、没生成密钥）。' -ForegroundColor Green
-    Write-Host '正式安装会按上面 11 步执行完毕，并在最后运行客户自检。' -ForegroundColor Green
+    Write-Host '正式安装会按上面 12 步执行完毕，并在最后运行客户自检。' -ForegroundColor Green
     if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
     exit 0
   }
