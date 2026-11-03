@@ -118,6 +118,34 @@ http.createServer((req, res) => {
   if (url.pathname === '/sources') return json({ monitors: [{ i: 0, x: 0, y: 0, w: 1920, h: 1080 }], windows: [] });
   if (url.pathname === '/frame.jpg') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(PNG_1x1); }
   if (url.pathname === '/manifest.json') return json({ name: '手机远程', short_name: '手机远程', start_url: '/?k=TESTKEY', display: 'standalone' });
+  if (url.pathname === '/clipboard') {
+    if (req.method === 'POST') {
+      let body = '';
+      req.on('data', (c) => { body += c; });
+      req.on('end', () => {
+        let t = '';
+        try { t = String((JSON.parse(body || '{}') || {}).text || ''); } catch { }
+        json({ ok: true, message: '（测试台）已写入电脑剪贴板', length: t.length });
+      });
+      return;
+    }
+    return json({ ok: true, text: '（测试台）电脑剪贴板内容 PA-TEST', length: 20 });
+  }
+  if (url.pathname === '/files') {
+    return json({
+      ok: true, dir: 'C:\\Users\\test\\Downloads\\PhoneAccess', maxBytes: 33554432,
+      files: [
+        { name: '示例照片.jpg', size: 1234567, at: Date.now() },
+        { name: '会议文档.pdf', size: 45678, at: Date.now() - 3600000 }
+      ]
+    });
+  }
+  if (url.pathname === '/file' && req.method === 'POST') {
+    let n = 0;
+    req.on('data', (c) => { n += c.length; });
+    req.on('end', () => json({ ok: true, name: '上传测试.bin', size: n, message: '（测试台）已收到 ' + n + ' 字节' }));
+    return;
+  }
   if (url.pathname === '/tailscale-status') {
     return json({
       installed: true, ok: true, backendState: 'Running', running: true, online: true,

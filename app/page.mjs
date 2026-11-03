@@ -2241,6 +2241,105 @@ bindImg(img);
     if (btn) btn.addEventListener('click', () => { setMsg(''); load(); });
     load();
   }
+  // ---- 小文件传输（2026-11-03，A5 第二步）--------------------------------------
+  // 上传：XHR 原始字节流 POST /file?name=…（带进度）；列表/下载：GET /files、GET /file?name=…
+  function fileBind(box) {
+    const pick = box.querySelector('#filePick');
+    const sendBtn = box.querySelector('#fileSend');
+    const msg = box.querySelector('#fileMsg');
+    const listEl = box.querySelector('#fileList');
+    const wrap = box.querySelector('#fileProgWrap');
+    const bar = box.querySelector('#fileBar');
+    const prog = box.querySelector('#fileProg');
+    if (!pick || !sendBtn) return;
+    const fmt = (n) => (Number(n) / 1024 / 1024) >= 1
+      ? (Number(n) / 1024 / 1024).toFixed(2) + ' MB'
+      : (Number(n) / 1024).toFixed(0) + ' KB';
+    const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
+    const load = async () => {
+      if (!listEl) return;
+      let j = null;
+      try { j = await fetch('/files?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { j = null; }
+      if (!j || !j.ok) { listEl.innerHTML = '<span style="color:#ff6b6b">读取文件列表失败</span>'; return; }
+      if (!j.files.length) { listEl.innerHTML = '<span style="color:#6b7078">还没有从手机传过文件</span>'; return; }
+      listEl.innerHTML = j.files.map((f) => {
+        const d = new Date(f.at);
+        const t = d.getFullYear() + '-' + ('0' + (d.getMonth() + 1)).slice(-2) + '-' + ('0' + d.getDate()).slice(-2)
+          + ' ' + ('0' + d.getHours()).slice(-2) + ':' + ('0' + d.getMinutes()).slice(-2);
+        return '<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #202228">'
+          + '<a href="/file?name=' + encodeURIComponent(f.name) + '" style="flex:1;min-width:0;color:#8fb6ff;'
+          + 'overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(f.name) + '</a>'
+          + '<span style="color:#6b7078;font-size:11px;white-space:nowrap">' + fmt(f.size) + '</span>'
+          + '<span style="color:#5c6169;font-size:10.5px;white-space:nowrap">' + t + '</span></div>';
+      }).join('');
+    };
+    if (sendBtn) sendBtn.addEventListener('click', () => {
+      const f = pick.files && pick.files[0];
+      if (!f) { setMsg('先选一个文件', '#ffb454'); return; }
+      if (f.size > 32 * 1024 * 1024) { setMsg('文件太大（上限 32MB）', '#ff6b6b'); return; }
+      if (wrap) wrap.style.display = 'block';
+      if (bar) bar.style.width = '1%';
+      sendBtn.disabled = true; setMsg('');
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/file?name=' + encodeURIComponent(f.name));
+      xhr.upload.onprogress = (ev) => {
+        if (!ev.lengthComputable) return;
+        const pct = Math.round(ev.loaded * 100 / ev.total);
+        if (bar) bar.style.width = pct + '%';
+        if (prog) prog.textContent = '已上传 ' + fmt(ev.loaded) + ' / ' + fmt(ev.total) + '（' + pct + '%）';
+      };
+      xhr.onload = () => {
+        sendBtn.disabled = false;
+        let j = null;
+        try { j = JSON.parse(xhr.responseText); } catch (e) { }
+        if (xhr.status === 200 && j && j.ok) {
+          setMsg(j.message || '已上传', '#8CE58C');
+          if (bar) bar.style.width = '100%';
+          pick.value = '';
+          setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 1500);
+          load();
+        } else {
+          setMsg((j && j.message) || ('上传失败（HTTP ' + xhr.status + '）'), '#ff6b6b');
+        }
+      };
+      xhr.onerror = () => { sendBtn.disabled = false; setMsg('上传失败：网络断了', '#ff6b6b'); };
+      xhr.send(f);
+    });
+    load();
+  }
+
+  function clipboardBind(box) {
+    const ta = box.querySelector('#cbText');
+    const msg = box.querySelector('#cbMsg');
+    const readBtn = box.querySelector('#cbRead');
+    const sendBtn = box.querySelector('#cbSend');
+    if (!ta) return;
+    const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
+    if (readBtn) readBtn.addEventListener('click', async () => {
+      readBtn.disabled = true; setMsg('读取中…', '#868c96');
+      let j = null;
+      try { j = await fetch('/clipboard?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { j = null; }
+      readBtn.disabled = false;
+      if (!j || !j.ok) { setMsg((j && j.message) || '读取失败', '#ff6b6b'); return; }
+      ta.value = j.text || '';
+      setMsg('已读取 ' + (j.length || 0) + ' 字', '#8CE58C');
+    });
+    if (sendBtn) sendBtn.addEventListener('click', async () => {
+      const text = String(ta.value || '');
+      if (!text) { setMsg('先输入要发送的文字', '#ffb454'); return; }
+      sendBtn.disabled = true; setMsg('发送中…', '#868c96');
+      let j = null;
+      try {
+        j = await fetch('/clipboard', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ text: text })
+        }).then((r) => r.json());
+      } catch (e) { j = null; }
+      sendBtn.disabled = false;
+      if (!j || !j.ok) { setMsg((j && j.message) || '发送失败', '#ff6b6b'); return; }
+      setMsg('已发送到电脑（' + (j.length || text.length) + ' 字），电脑上 Ctrl+V 即可', '#8CE58C');
+    });
+  }
   function setPill(ok, textOk, textBad) {
     const c = ok ? '#8CE68C' : '#ffb454';
     const bg = ok ? 'rgba(140,230,140,.13)' : 'rgba(255,180,84,.13)';
@@ -2765,6 +2864,37 @@ bindImg(img);
       + '「直连」= 点对点，最快；「中继」= 经 Tailscale 的 DERP 中转，能用在但慢一些。'
       + '手机和电脑必须登录同一个 Tailscale 账号。</div>');
 
+    // 文本剪贴板（2026-11-03，A5 第一步）：手机 ↔ 电脑 传一段文字。
+    body += setSection('文本剪贴板',
+      '<div style="color:#868c96;font-size:12px;margin-bottom:8px">'
+      + '把手机上的文字发到电脑，或在手机上读取电脑剪贴板（验证码、链接、命令最常用）。</div>'
+      + '<textarea id="cbText" placeholder="在这里输入或粘贴文字…" style="width:100%;min-height:86px;box-sizing:border-box;'
+      + 'background:#0f1014;color:#e8eaee;border:1px solid #262932;border-radius:9px;padding:9px 11px;'
+      + 'font:13px/1.5 ui-monospace,Consolas,monospace;resize:vertical"></textarea>'
+      + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
+      + '<button id="cbRead" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:8px 13px;font-size:12.5px;cursor:pointer">读取电脑剪贴板</button>'
+      + '<button id="cbSend" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
+      + 'padding:8px 15px;font-size:12.5px;cursor:pointer">发送到电脑</button>'
+      + '<span id="cbMsg" style="font-size:12px;color:#868c96"></span></div>'
+      + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
+      + '上限 64KB；写入后电脑上 Ctrl+V 就能用。剪贴板内容会经过你自己的 Tailscale 网络，不经过第三方。</div>');
+
+    // 小文件传输（2026-11-03，A5 第二步）：手机 → 电脑 的「下载」文件夹；只开放这个固定目录。
+    body += setSection('文件传输（手机 → 电脑）',
+      '<div style="color:#868c96;font-size:12px;margin-bottom:8px">'
+      + '把手机上的照片/文档发到电脑，存到电脑的「下载」文件夹；单个文件上限 32MB。</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+      + '<input id="filePick" type="file" style="flex:1;min-width:170px;color:#c9ccd1;font-size:12.5px">'
+      + '<button id="fileSend" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
+      + 'padding:8px 15px;font-size:12.5px;cursor:pointer">上传</button>'
+      + '<span id="fileMsg" style="font-size:12px;color:#868c96"></span></div>'
+      + '<div id="fileProgWrap" style="display:none;margin-top:9px">'
+      + '<div style="height:6px;background:#0f1014;border:1px solid #262932;border-radius:5px;overflow:hidden">'
+      + '<div id="fileBar" style="height:100%;width:0;background:#8CE68C;transition:width .2s"></div></div>'
+      + '<div id="fileProg" style="color:#868c96;margin-top:6px;font-size:11.5px"></div></div>'
+      + '<div id="fileList" style="margin-top:10px;color:#868c96;font-size:12px">正在读取…</div>');
+
     // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
     // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
@@ -2838,6 +2968,10 @@ bindImg(img);
     bindLicencePaste(box);
     // 连接体检（Tailscale）：打开设置时自动检测一次，可手动重测/一键拉起安装包
     tsBind(box);
+    // 文本剪贴板：读取/发送
+    clipboardBind(box);
+    // 小文件传输：上传/列表/下载
+    fileBind(box);
 
     // 复制机器码
     const cc = box.querySelector('#setCopyCode');

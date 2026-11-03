@@ -14,7 +14,7 @@ import { PAGE } from './page.mjs';
 // 现在由启动脚本按主显示器物理分辨率算好传进来；没传就读 product.config.json；都没有才用 2560×1600 兜底。
 
 import { createServer } from 'node:http';
-import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream } from 'node:fs';
 import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
@@ -891,6 +891,86 @@ async function tailscaleSummary() {
   return out;
 }
 
+// ---- 文本剪贴板（2026-11-03，A5 第一步）-------------------------------------
+// 手机 ↔ 电脑之间传一段文字（验证码、链接、命令）。走系统剪贴板，所以电脑上的 Ctrl+V 直接可用。
+// 安全/稳定：
+//   · 只走鉴权后的接口（默认就是"必须密钥"），文本长度上限 64KB；
+//   · 写剪贴板时**文本不进命令行**：先落临时文件，PowerShell 从文件读，避免引号/转义/注入；
+//   · PowerShell 超时 5 秒，失败如实返回，不影响画面。
+const CLIP_MAX_BYTES = 64 * 1024;
+function readSystemClipboard() {
+  return new Promise((resolve) => {
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command',
+      '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; Get-Clipboard -Raw'],
+      { timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout) => {
+        if (err) return resolve({ ok: false, error: String((err && err.message) || err) });
+        resolve({ ok: true, text: String(stdout || '') });
+      });
+  });
+}
+function writeSystemClipboard(text) {
+  return new Promise((resolve) => {
+    const tmp = join(process.env.TEMP || '.', 'pa-clip-' + Date.now() + '-' + Math.random().toString(16).slice(2) + '.txt');
+    try { writeFileSync(tmp, text, 'utf8'); } catch (e) { return resolve({ ok: false, error: '写临时文件失败：' + ((e && e.message) || e) }); }
+    const ps = '[Console]::OutputEncoding=[System.Text.Encoding]::UTF8; '
+      + '$t=Get-Content -LiteralPath \'' + tmp.replace(/'/g, "''") + '\' -Raw -Encoding UTF8; Set-Clipboard -Value $t';
+    execFile('powershell.exe', ['-NoProfile', '-NonInteractive', '-Command', ps],
+      { timeout: 5000, windowsHide: true }, (err) => {
+        try { unlinkSync(tmp); } catch { }
+        if (err) return resolve({ ok: false, error: String((err && err.message) || err) });
+        resolve({ ok: true });
+      });
+  });
+}
+
+// ---- 小文件传输（2026-11-03，A5 第二步）--------------------------------------
+// 手机 → 电脑：POST /file?name=<文件名>（原始字节流，≤32MB），存到 用户\Downloads\PhoneAccess\。
+// 查看/回传：GET /files 列表、GET /file?name= 下载。
+// 安全边界：
+//   · **只开放这个固定目录**，不能读电脑上任意文件（不接受路径、只接受相对文件名）；
+//   · 文件名做白名单清洗（去目录/控制字符/保留名/结尾点和空格），长度上限 120；
+//   · 上传大小上限 32MB，超过直接断开；文件名重名自动加 (1)(2)…
+//   · 走默认鉴权（必须密钥/cookie），和画面接口同一套。
+const UPLOAD_DIR = join(process.env.USERPROFILE || HERE, 'Downloads', 'PhoneAccess');
+const UPLOAD_MAX = 32 * 1024 * 1024;
+function safeUploadName(raw) {
+  let n = String(raw || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/[\\/:*?"<>|]/g, '_').trim();
+  n = n.replace(/^\.+/, '').replace(/[. ]+$/, '');
+  if (!n) return '';
+  if (n.length > 120) {
+    const ext = (n.match(/\.[A-Za-z0-9]{1,8}$/) || [''])[0];
+    n = n.slice(0, Math.max(1, 120 - ext.length)) + ext;
+  }
+  if (/^(con|prn|aux|nul|com[1-9]|lpt[1-9])(\..*)?$/i.test(n)) n = '_' + n;
+  return n;
+}
+function uniqueUploadPath(name) {
+  let candidate = join(UPLOAD_DIR, name);
+  let n = 1;
+  const dot = name.lastIndexOf('.');
+  const stem = dot > 0 ? name.slice(0, dot) : name;
+  const ext = dot > 0 ? name.slice(dot) : '';
+  while (true) {
+    try { statSync(candidate); } catch { return candidate; }
+    if (n > 99) return join(UPLOAD_DIR, stem + '-' + Date.now() + ext);
+    candidate = join(UPLOAD_DIR, stem + '(' + n + ')' + ext);
+    n++;
+  }
+}
+function listUploads() {
+  const out = [];
+  try {
+    for (const name of readdirSync(UPLOAD_DIR)) {
+      let st = null;
+      try { st = statSync(join(UPLOAD_DIR, name)); } catch { continue; }
+      if (!st || !st.isFile()) continue;
+      out.push({ name: name, size: st.size, at: Math.round(st.mtimeMs) });
+    }
+  } catch { }
+  out.sort((a, b) => b.at - a.at);
+  return out.slice(0, 50);
+}
+
 // 读"是否授权"。
 //
 // 改动（独立审查 H3）：原来这里直接把 licence.state.json 里的 usable 字段当作结论。
@@ -1450,6 +1530,123 @@ function handler(req, res) {
     }
     console.log('screen-server: 已拉起 Tailscale 安装程序');
     return reply(200, { ok: true, message: '已打开 Tailscale 安装程序（可能会弹管理员授权，点「是」）。装完登录，再点「重新检测」。' });
+  }
+
+  // ---- 文本剪贴板（2026-11-03，A5）--------------------------------------------
+  // GET  /clipboard -> { ok, text }        读电脑剪贴板
+  // POST /clipboard { text } -> { ok }     写电脑剪贴板（≤64KB，文本落临时文件后由 PowerShell 读）
+  if (url.pathname === '/clipboard') {
+    const creply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      } catch { }
+    };
+    if (req.method === 'GET') {
+      (async () => {
+        const r = await readSystemClipboard();
+        if (!r.ok) return creply(500, { ok: false, message: '读取剪贴板失败：' + r.error });
+        // 只发前 64KB（极端情况下有人在剪贴板里放了一本小说）
+        let text = r.text || '';
+        if (Buffer.byteLength(text, 'utf8') > CLIP_MAX_BYTES) text = text.slice(0, CLIP_MAX_BYTES);
+        creply(200, { ok: true, text: text, length: text.length });
+      })();
+      return;
+    }
+    if (req.method === 'POST') {
+      let cbody = '';
+      req.on('data', (c) => { cbody += c; if (cbody.length > 512 * 1024) req.destroy(); });
+      req.on('end', () => {
+        let text = '';
+        try { text = String((JSON.parse(cbody || '{}') || {}).text || ''); } catch { }
+        if (Buffer.byteLength(text, 'utf8') > CLIP_MAX_BYTES) {
+          return creply(400, { ok: false, message: '文本太长（上限 64KB）' });
+        }
+        (async () => {
+          const r = await writeSystemClipboard(text);
+          if (!r.ok) return creply(500, { ok: false, message: '写入剪贴板失败：' + r.error });
+          creply(200, { ok: true, message: '已写入电脑剪贴板（长度 ' + text.length + '）', length: text.length });
+        })();
+      });
+      return;
+    }
+    return creply(405, { ok: false, message: 'method not allowed' });
+  }
+
+  // ---- 小文件传输（2026-11-03，A5 第二步）--------------------------------------
+  // GET  /files             -> { ok, files:[{name,size,at}] }（最近 50 个）
+  // POST /file?name=<文件名> -> 原始字节流，≤32MB，存到 Downloads\PhoneAccess\
+  // GET  /file?name=<文件名> -> 下载（只用相对文件名，不接受路径）
+  if (url.pathname === '/files' && req.method === 'GET') {
+    const freply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      } catch { }
+    };
+    return freply(200, { ok: true, dir: UPLOAD_DIR, maxBytes: UPLOAD_MAX, files: listUploads() });
+  }
+  if (url.pathname === '/file' && req.method === 'POST') {
+    const freply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      } catch { }
+    };
+    const name = safeUploadName(url.searchParams.get('name'));
+    if (!name) return freply(400, { ok: false, message: '文件名不合法（不支持路径，只传文件名）' });
+    try { mkdirSync(UPLOAD_DIR, { recursive: true }); } catch (e) {
+      return freply(500, { ok: false, message: '建下载目录失败：' + ((e && e.message) || e) });
+    }
+    const dest = uniqueUploadPath(name);
+    const chunks = [];
+    let got = 0;
+    let aborted = false;
+    req.on('data', (c) => {
+      if (aborted) return;
+      got += c.length;
+      if (got > UPLOAD_MAX) {
+        aborted = true;
+        return freply(413, { ok: false, message: '文件太大（上限 32MB）' });
+      }
+      chunks.push(c);
+    });
+    req.on('end', () => {
+      if (aborted) return;
+      if (!got) return freply(400, { ok: false, message: '空文件' });
+      try {
+        writeFileSync(dest, Buffer.concat(chunks));
+      } catch (e) {
+        return freply(500, { ok: false, message: '保存失败：' + ((e && e.message) || e) });
+      }
+      const saved = dest.slice(dest.lastIndexOf('\\') + 1);
+      console.log('screen-server: 收到文件 ' + saved + '（' + got + ' B）');
+      freply(200, { ok: true, name: saved, size: got, message: '已收到：' + saved + '（已存到电脑的「下载」文件夹）' });
+    });
+    return;
+  }
+  if (url.pathname === '/file' && req.method === 'GET') {
+    const name = safeUploadName(url.searchParams.get('name'));
+    const target = name ? join(UPLOAD_DIR, name) : '';
+    let st = null;
+    try { st = statSync(target); } catch { }
+    if (!name || !st || !st.isFile()) {
+      res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' });
+      res.end('文件不存在');
+      return;
+    }
+    try {
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-length': String(st.size),
+        'content-disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(name),
+        'cache-control': 'no-store'
+      });
+      createReadStream(target).pipe(res);
+    } catch (e) {
+      try { res.end(); } catch { }
+    }
+    return;
   }
 
   // ---- 画质档位（改"发送宽度"，立即生效，不再需要重启）-------------------------
