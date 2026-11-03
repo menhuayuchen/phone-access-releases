@@ -780,6 +780,117 @@ function readMachineCode() {
   return j ? String(j.machineCode || '') : '';
 }
 
+// ---- Tailscale 体检 / 连接诊断（2026-11-03，下一版候选 A1+A3）------------------
+// 背景（竞品分析）：客户最大的门槛是"要装 Tailscale、要登录、要在线"，ToDesk 那种输入识别码
+// 就能连的体验我们给不了；但可以做到"一眼看到卡在哪，并能一键拉起安装包"。
+//
+// 安全边界：
+//   · 只调用 `tailscale status --json`（纯只读查询，本机实测 92ms），不联网、不改任何配置；
+//   · 返回给页面的只是**摘要**：安装/启动/登录/在线、本机 tailnet 地址、节点列表（主机名/系统/
+//     直连还是中继）、健康告警。不透传原始 JSON（里面有节点公钥、账号 UserID 等没必要给页面的东西）；
+//   · /tailscale-install 只能拉起**安装目录里固定的** bin\tailscale-setup.exe，不接受任何参数。
+const TAILSCALE_CANDIDATES = [
+  'C:\\Program Files\\Tailscale\\tailscale.exe',
+  'C:\\Program Files (x86)\\Tailscale\\tailscale.exe'
+];
+function fileExists(p) {
+  try { return statSync(p).isFile(); } catch { return false; }
+}
+function resolveTailscaleExe() {
+  try {
+    const cfg = readProductConfig();
+    const p = String((cfg.runtime && cfg.runtime.tailscalePath) || '').trim();
+    if (p && fileExists(p)) return p;
+  } catch { }
+  const local = join(HERE, 'tailscale.exe');
+  if (fileExists(local)) return local;
+  for (const p of TAILSCALE_CANDIDATES) { if (fileExists(p)) return p; }
+  // PATH 里找（winget / scoop / 手动装到别处的情况）
+  for (const dir of String(process.env.PATH || '').split(';')) {
+    if (!dir) continue;
+    const p = join(dir, 'tailscale.exe');
+    if (fileExists(p)) return p;
+  }
+  return '';
+}
+function tailscaleStatusRaw() {
+  return new Promise((resolve) => {
+    const exe = resolveTailscaleExe();
+    if (!exe) return resolve({ installed: false, exe: '' });
+    execFile(exe, ['status', '--json'], { timeout: 6000, windowsHide: true, maxBuffer: 8 * 1024 * 1024 }, (err, stdout) => {
+      // 服务没起来时 tailscale.exe 会 exit 1 且没有 stdout —— 这是"没运行"，不是崩了
+      if (!stdout) {
+        return resolve({ installed: true, exe, error: String((err && err.message) || '读取 Tailscale 状态失败') });
+      }
+      let j = null;
+      try { j = JSON.parse(String(stdout)); } catch { }
+      if (!j) return resolve({ installed: true, exe, error: '读取 Tailscale 状态失败（返回的不是 JSON）' });
+      resolve({ installed: true, exe, json: j });
+    });
+  });
+}
+async function tailscaleSummary() {
+  const t = await tailscaleStatusRaw();
+  const out = {
+    installed: !!t.installed,
+    ok: !!(t.json),
+    backendState: '',
+    running: false,       // 服务在跑且已登录
+    online: false,        // 能连上 tailnet 控制面
+    version: '',
+    tun: false,
+    dnsName: '',
+    ips: [],
+    onlinePeers: 0,
+    peerTotal: 0,
+    peers: [],
+    health: [],
+    hint: '',
+    error: String(t.error || '')
+  };
+  if (!t.installed) {
+    out.hint = '这台电脑还没装 Tailscale。点下面的「安装 Tailscale」，装完用手机同一个账号登录。';
+    return out;
+  }
+  if (!t.json) {
+    out.backendState = 'NoService';
+    out.hint = 'Tailscale 服务没在运行。打开开始菜单里的 Tailscale（或重启电脑），登录后状态会变成「已连接」。';
+    return out;
+  }
+  const j = t.json || {};
+  out.backendState = String(j.BackendState || '');
+  out.version = String(j.Version || '').split('-')[0];
+  out.tun = !!j.TUN;
+  const self = j.Self || {};
+  out.dnsName = String(self.DNSName || '').replace(/\.$/, '');
+  out.ips = (Array.isArray(self.TailscaleIPs) ? self.TailscaleIPs : []).map(String).filter((x) => x && x.indexOf(':') < 0);
+  out.online = !!self.Online;
+  out.running = out.backendState === 'Running';
+  const peersObj = (j.Peer && typeof j.Peer === 'object') ? j.Peer : {};
+  const peers = [];
+  for (const k of Object.keys(peersObj)) {
+    const p = peersObj[k] || {};
+    peers.push({
+      host: String(p.HostName || p.DNSName || '未命名'),
+      os: String(p.OS || ''),
+      online: !!p.Online,
+      direct: !!String(p.CurAddr || '').trim(),      // 有 CurAddr = 走直连；没有 = 走 DERP 中继
+      relay: String(p.Relay || ''),
+      tunnel: !!p.ExitNode
+    });
+  }
+  peers.sort((a, b) => (b.online ? 1 : 0) - (a.online ? 1 : 0));
+  out.peerTotal = peers.length;
+  out.onlinePeers = peers.filter((p) => p.online).length;
+  out.peers = peers.slice(0, 8);
+  out.health = (Array.isArray(j.Health) ? j.Health : []).map(String).filter(Boolean).slice(0, 3);
+  if (out.backendState === 'NeedsLogin') out.hint = 'Tailscale 已安装但还没登录。打开 Tailscale 点「Log in」，用手机同一个账号。';
+  else if (out.backendState === 'Stopped') out.hint = 'Tailscale 服务已停止。打开 Tailscale 让它恢复运行。';
+  else if (!out.running) out.hint = 'Tailscale 状态异常（' + (out.backendState || '未知') + '）。打开 Tailscale 看看，或重启一次。';
+  else if (!out.online) out.hint = 'Tailscale 在运行但没连上 tailnet：先检查网络；如果开着代理/VPN，先关掉再试。';
+  return out;
+}
+
 // 读"是否授权"。
 //
 // 改动（独立审查 H3）：原来这里直接把 licence.state.json 里的 usable 字段当作结论。
@@ -1305,6 +1416,40 @@ function handler(req, res) {
         + ' blk=' + st.blocked + ' blkage=' + st.ageMs + ' uq=' + uqField + fgField
         + ' rtc=' + JSON.stringify(rtc.stats()) + ' input=' + JSON.stringify(inForOut));
     return;
+  }
+
+  // ---- Tailscale 体检（2026-11-03，A1/A3）------------------------------------
+  // 只读查询；页面「设置 → 连接体检」用它显示"卡在哪"和节点是直连还是中继。
+  if (url.pathname === '/tailscale-status') {
+    (async () => {
+      let sum = null;
+      try { sum = await tailscaleSummary(); } catch (e) {
+        sum = { installed: false, ok: false, error: String((e && e.message) || e), hint: '体检失败：' + String((e && e.message) || e) };
+      }
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(sum));
+      } catch { }
+    })();
+    return;
+  }
+  // 一键拉起 Tailscale 安装包：只认安装目录里固定的 bin\tailscale-setup.exe，不接受任何参数。
+  // 安装程序会自己请求管理员授权（用户点「是」），服务进程本身不提权。
+  if (url.pathname === '/tailscale-install' && req.method === 'POST') {
+    const reply = (code, obj) => {
+      try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { }
+    };
+    if (resolveTailscaleExe()) return reply(200, { ok: true, already: true, message: '已经装了 Tailscale，不用重复安装。登录后点「重新检测」。' });
+    const setup = join(HERE, 'bin', 'tailscale-setup.exe');
+    if (!fileExists(setup)) return reply(200, { ok: false, message: '这个安装包里没带 Tailscale 安装程序，请到 tailscale.com/download 下载。' });
+    try {
+      const p = spawn('cmd.exe', ['/c', 'start', '', '"' + setup + '"'], { detached: true, stdio: 'ignore', windowsHide: true });
+      p.unref();
+    } catch (e) {
+      return reply(200, { ok: false, message: '没能打开安装程序：' + String((e && e.message) || e) });
+    }
+    console.log('screen-server: 已拉起 Tailscale 安装程序');
+    return reply(200, { ok: true, message: '已打开 Tailscale 安装程序（可能会弹管理员授权，点「是」）。装完登录，再点「重新检测」。' });
   }
 
   // ---- 画质档位（改"发送宽度"，立即生效，不再需要重启）-------------------------

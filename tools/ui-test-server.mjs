@@ -118,6 +118,22 @@ http.createServer((req, res) => {
   if (url.pathname === '/sources') return json({ monitors: [{ i: 0, x: 0, y: 0, w: 1920, h: 1080 }], windows: [] });
   if (url.pathname === '/frame.jpg') { res.writeHead(200, { 'content-type': 'image/png' }); return res.end(PNG_1x1); }
   if (url.pathname === '/manifest.json') return json({ name: '手机远程', short_name: '手机远程', start_url: '/?k=TESTKEY', display: 'standalone' });
+  if (url.pathname === '/tailscale-status') {
+    return json({
+      installed: true, ok: true, backendState: 'Running', running: true, online: true,
+      version: '1.104.2', tun: true, dnsName: 'dsh-laptop.tailb9b4f0.ts.net', ips: ['100.108.92.22'],
+      onlinePeers: 1, peerTotal: 3,
+      peers: [
+        { host: '小新平板11', os: 'android', online: true, direct: false, relay: 'sin', tunnel: false },
+        { host: '真我Neo8', os: 'android', online: false, direct: false, relay: 'tok', tunnel: false },
+        { host: 'USERHOM-KE9H8GG', os: 'windows', online: false, direct: false, relay: 'lax', tunnel: false }
+      ],
+      health: [], hint: '', error: ''
+    });
+  }
+  if (url.pathname === '/tailscale-install' && req.method === 'POST') {
+    return json({ ok: true, already: true, message: '（测试台）已经装了 Tailscale' });
+  }
   if (url.pathname === '/update-check') {
     return json({
       configured: true, current: '1.0.13', latest: '1.0.14', hasUpdate: true,

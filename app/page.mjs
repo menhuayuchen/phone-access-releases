@@ -2171,6 +2171,76 @@ bindImg(img);
       + '<div style="color:#6b7078;font-size:11.5px;margin-top:7px;line-height:1.6">'
       + '下载 .exe 安装包（约 50 MB）后双击安装即可；配置和许可证都会保留。</div></div>';
   }
+  // ---- 连接体检（2026-11-03，A1/A3）--------------------------------------------
+  // 数据来自服务端 /tailscale-status：安装/启动/登录/在线 + 节点是直连还是中继 + 健康告警。
+  function tsRowsHtml(s) {
+    const rows = [];
+    const ok = !!(s.running && s.online);
+    rows.push('<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + setPill(ok, '已连接', s.installed ? '未连接' : '未安装')
+      + '<span style="color:#868c96;font-size:12px">'
+      + escHtml(s.installed ? ((s.version ? 'Tailscale ' + s.version : 'Tailscale') + (s.backendState ? ' · ' + s.backendState : '')) : '这台电脑没装 Tailscale')
+      + '</span></div>');
+    if (s.installed) {
+      const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
+      rows.push(setKv('本机地址', '<span style="color:#aeb3bb">' + escHtml(addr) + (s.dnsName ? ' · ' + escHtml(s.dnsName) : '') + '</span>'));
+      rows.push(setKv('在线节点', '<span style="color:#aeb3bb">' + (s.onlinePeers || 0) + ' / ' + (s.peerTotal || 0) + '</span>'));
+    }
+    if (s.peers && s.peers.length) {
+      rows.push('<div style="margin-top:10px;color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">tailnet 里的设备</div>');
+      s.peers.forEach((p) => {
+        rows.push('<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #202228;font-size:12.5px">'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:' + (p.online ? '#c9ccd1' : '#6b7078') + '">'
+          + escHtml(p.host) + (p.os ? ' <span style="color:#6b7078">(' + escHtml(p.os) + ')</span>' : '') + '</span>'
+          + (p.online
+            ? ('<span style="color:' + (p.direct ? '#8CE58C' : '#ffb454') + '">' + (p.direct ? '直连' : '中继') + '</span>'
+              + (!p.direct && p.relay ? '<span style="color:#6b7078;font-size:11px">' + escHtml(p.relay) + '</span>' : ''))
+            : '<span style="color:#6b7078">离线</span>')
+          + '</div>');
+      });
+    }
+    if (s.health && s.health.length) {
+      rows.push('<div style="margin-top:8px;color:#ffb454;font-size:12px;line-height:1.65">'
+        + s.health.map((h) => escHtml(String(h))).join('<br>') + '</div>');
+    }
+    if (s.hint) {
+      rows.push('<div style="margin-top:9px;padding:9px 11px;background:#1a1c22;border:1px solid #2b3a2f;'
+        + 'border-radius:9px;color:#aeb3bb;font-size:12px;line-height:1.7">' + escHtml(s.hint) + '</div>');
+    }
+    if (!s.installed) {
+      rows.push('<button id="tsInstall" style="margin-top:10px;background:#2f6feb;color:#fff;border:0;border-radius:9px;'
+        + 'padding:9px 15px;font-size:13px;cursor:pointer">安装 Tailscale</button>');
+      if (s.error) rows.push('<div style="color:#6b7078;font-size:11px;margin-top:6px">' + escHtml(s.error) + '</div>');
+    }
+    return rows.join('');
+  }
+  function tsBind(box) {
+    const bodyEl = box.querySelector('#tsBody');
+    const msgEl = box.querySelector('#tsMsg');
+    const btn = box.querySelector('#tsRefresh');
+    if (!bodyEl) return;
+    const setMsg = (t, c) => { if (msgEl) { msgEl.textContent = t; msgEl.style.color = c || '#868c96'; } };
+    const load = async () => {
+      bodyEl.innerHTML = '<span style="color:#868c96">正在检测…</span>';
+      let s = null;
+      try { s = await fetch('/tailscale-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { s = null; }
+      if (!s) { bodyEl.innerHTML = '<span style="color:#ff6b6b">检测失败：读不到 Tailscale 状态。</span>'; return; }
+      bodyEl.innerHTML = tsRowsHtml(s);
+      const ins = bodyEl.querySelector('#tsInstall');
+      if (ins) ins.addEventListener('click', async () => {
+        ins.disabled = true; ins.style.opacity = '.6'; ins.textContent = '正在打开安装程序…';
+        let r = null;
+        try {
+          r = await fetch('/tailscale-install', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' }).then((x) => x.json());
+        } catch (e) { r = null; }
+        setMsg((r && r.message) || '没能打开安装程序', (r && r.ok) ? '#8CE58C' : '#ff6b6b');
+        ins.disabled = false; ins.style.opacity = '1'; ins.textContent = '安装 Tailscale';
+        setTimeout(load, 1500);
+      });
+    };
+    if (btn) btn.addEventListener('click', () => { setMsg(''); load(); });
+    load();
+  }
   function setPill(ok, textOk, textBad) {
     const c = ok ? '#8CE68C' : '#ffb454';
     const bg = ok ? 'rgba(140,230,140,.13)' : 'rgba(255,180,84,.13)';
@@ -2683,6 +2753,18 @@ bindImg(img);
     } catch (e) { }
     body += setSection('连接与画面', connInner);
 
+    // 连接体检（Tailscale）——2026-11-03 A1/A3：装没装、登没登、在不在线、手机是直连还是中继。
+    // 客户最大的门槛就是这一步；数据来自服务端 /tailscale-status（只读，不透传节点公钥）。
+    body += setSection('连接体检（Tailscale）',
+      '<div id="tsBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
+      + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
+      + '<button id="tsRefresh" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:8px 13px;font-size:12.5px;cursor:pointer">重新检测</button>'
+      + '<span id="tsMsg" style="font-size:12px;color:#868c96"></span></div>'
+      + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
+      + '「直连」= 点对点，最快；「中继」= 经 Tailscale 的 DERP 中转，能用在但慢一些。'
+      + '手机和电脑必须登录同一个 Tailscale 账号。</div>');
+
     // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
     // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
@@ -2754,6 +2836,8 @@ bindImg(img);
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
     bindLicencePaste(box);
+    // 连接体检（Tailscale）：打开设置时自动检测一次，可手动重测/一键拉起安装包
+    tsBind(box);
 
     // 复制机器码
     const cc = box.querySelector('#setCopyCode');
