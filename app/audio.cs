@@ -31,6 +31,17 @@
 //   rms and chunks cover the last 30 second window (sent chunks only).
 //   Connection changes and capture errors are logged as they happen.
 //
+// Default output device following (2026-11-03):
+//   The capture is bound to the default render endpoint at start. A watcher
+//   thread re-reads the default endpoint ID every 2 s; when it changes (user
+//   plugs in headphones, switches speakers, USB headset reconnects...), the
+//   capture loop is torn down and recreated on the new device **in the same
+//   process** - the pipe, stats and protocol are untouched. Before this, the
+//   process stayed bound to the old device until a reboot -> "phone shows the
+//   sound button but there is no sound" (real incident 2026-11-02).
+//   Self-test hook: PA_AUDIO_TEST_SWITCH_SEC=<n> forces one device-change
+//   restart after n seconds, for machines where you cannot unplug anything.
+//
 // The process is meant to run windowless (/target:winexe) and be restarted by
 // an external supervisor; no watchdog is built in.
 
@@ -42,6 +53,7 @@ using System.IO.Pipes;
 using System.Reflection;
 using System.Text;
 using System.Threading;
+using NAudio.CoreAudioApi;
 using NAudio.Wave;
 
 internal static class Program
@@ -527,9 +539,28 @@ internal sealed class AudioRunner
     private readonly long _chunkTicks = (long)(Stopwatch.Frequency * ChunkMilliseconds / 1000.0);
     private volatile bool _running = true;
 
+    // 默认输出设备跟随（2026-11-03）：以前 audio.exe 启动时绑死当时的默认输出设备，
+    // 用户换耳机/扬声器后采集的还是老设备，表现为"手机点声音没声音"，要重启电脑才恢复。
+    // 现在每 2 秒查一次默认渲染设备的 ID，一变就让采集循环重建 capture（进程不退出，
+    // 管道和统计线程不受影响），换设备几秒内自动恢复，不用重启任何东西。
+    private volatile string _deviceId = "";
+    private volatile bool _deviceChanged = false;
+    // 自测钩子：设了 PA_AUDIO_TEST_SWITCH_SEC=10 时，10 秒后强制触发一次"设备变化"重启，
+    // 用来在没法真的插拔耳机时验证重启通路（不影响正常使用，默认关闭）。
+    private readonly int _testSwitchSec = 0;
+    private long _testSwitchDone = 0;
+    private readonly Stopwatch _watch = Stopwatch.StartNew();
+
     public AudioRunner(string pipeName)
     {
         _pipeName = pipeName;
+        try
+        {
+            int sec = 0;
+            if (int.TryParse(Environment.GetEnvironmentVariable("PA_AUDIO_TEST_SWITCH_SEC"), out sec) && sec > 0)
+                _testSwitchSec = sec;
+        }
+        catch { }
     }
 
     public static int Run(string[] args)
@@ -560,6 +591,60 @@ internal sealed class AudioRunner
         StartThread(PipeLoop, "audio-pipe");
         StartThread(CaptureLoop, "audio-capture");
         StartThread(StatsLoop, "audio-stats");
+        StartThread(DeviceWatchLoop, "audio-devicewatch");
+    }
+
+    // 默认输出设备变化监听：只比 ID，2 秒一次，COM 调用很便宜（实测 <1ms）。
+    // 设备被拔掉时枚举会抛异常，按"拿不到"处理，下一轮再试，不退出。
+    private void DeviceWatchLoop()
+    {
+        while (_running)
+        {
+            Thread.Sleep(2000);
+            if (!_running) break;
+
+            if (_testSwitchSec > 0 && Interlocked.Read(ref _testSwitchDone) == 0
+                && _watch.Elapsed.TotalSeconds >= _testSwitchSec)
+            {
+                Interlocked.Exchange(ref _testSwitchDone, 1);
+                Logger.Write("device: [test] forced switch after " + _testSwitchSec + "s");
+                _deviceChanged = true;
+                continue;
+            }
+
+            string now = GetDefaultRenderDeviceId();
+            if (now.Length == 0) continue;
+            string cur = _deviceId;
+            if (cur.Length == 0)
+            {
+                // 采集线程还没报上来（启动早期），先记下，不算切换
+                _deviceId = now;
+                continue;
+            }
+            if (!string.Equals(now, cur, StringComparison.OrdinalIgnoreCase))
+            {
+                Logger.Write("device: default output changed " + cur + " -> " + now + ", restart capture");
+                _deviceChanged = true;
+            }
+        }
+    }
+
+    private static string GetDefaultRenderDeviceId()
+    {
+        MMDeviceEnumerator en = null;
+        MMDevice dev = null;
+        try
+        {
+            en = new MMDeviceEnumerator();
+            dev = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+            return dev == null ? "" : (dev.ID ?? "");
+        }
+        catch { return ""; }
+        finally
+        {
+            if (dev != null) { try { dev.Dispose(); } catch { } }
+            if (en != null) { try { en.Dispose(); } catch { } }
+        }
     }
 
     private void StartThread(ThreadStart body, string name)
@@ -692,9 +777,34 @@ internal sealed class AudioRunner
         while (_running)
         {
             WasapiLoopbackCapture capture = null;
+            MMDevice device = null;
+            bool restartForDevice = false;
             try
             {
-                capture = new WasapiLoopbackCapture();
+                // 显式拿默认渲染设备：一是让日志能记下"现在绑的是哪个设备"，
+                // 二是 WasapiLoopbackCapture(device) 能确保我们绑的就是这个设备（默认构造也会取默认设备，
+                // 但拿不到它的 ID，就没法判断用户后来换没换）。
+                MMDeviceEnumerator en = new MMDeviceEnumerator();
+                try
+                {
+                    device = en.GetDefaultAudioEndpoint(DataFlow.Render, Role.Multimedia);
+                }
+                finally
+                {
+                    try { en.Dispose(); } catch { }
+                }
+                _deviceId = (device == null) ? "" : (device.ID ?? "");
+                _deviceChanged = false;
+                if (device != null)
+                {
+                    Logger.Write("capture: device id=" + _deviceId + " name=" + (device.FriendlyName ?? ""));
+                    capture = new WasapiLoopbackCapture(device);
+                }
+                else
+                {
+                    Logger.Write("capture: no default render device, fallback to default constructor");
+                    capture = new WasapiLoopbackCapture();
+                }
                 WaveFormat format = capture.WaveFormat;
                 Logger.Write("capture: source " + format.SampleRate + "Hz/" + format.BitsPerSample
                              + "bit/" + format.Channels + "ch encoding=" + format.Encoding
@@ -735,6 +845,13 @@ internal sealed class AudioRunner
 
                 while (_running && !stopped.WaitOne(500))
                 {
+                    // 默认输出设备变了：跳出循环，重建 capture 绑到新设备（进程和管道都保留）
+                    if (_deviceChanged)
+                    {
+                        restartForDevice = true;
+                        Logger.Write("capture: leaving for device change");
+                        break;
+                    }
                 }
 
                 Logger.Write("capture: capture loop leaving");
@@ -753,8 +870,14 @@ internal sealed class AudioRunner
                     try { capture.Dispose(); }
                     catch { }
                 }
+                if (device != null)
+                {
+                    try { device.Dispose(); }
+                    catch { }
+                }
             }
-            if (_running) Thread.Sleep(3000);
+            // 换设备时立刻重建（不等 3 秒）；异常退出才等 3 秒重试
+            if (_running && !restartForDevice) Thread.Sleep(3000);
         }
     }
 
