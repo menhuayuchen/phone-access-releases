@@ -779,6 +779,11 @@ function readMachineCode() {
   const j = readJsonLoose(LICENCE_STATE_FILE);
   return j ? String(j.machineCode || '') : '';
 }
+// 旧算法机械码（v1，2026-11-03 T2）：老许可证是按它签的，验签时要一起比对。
+function readMachineCodeAlt() {
+  const j = readJsonLoose(LICENCE_STATE_FILE);
+  return j ? String(j.machineCodeAlt || '') : '';
+}
 
 // ---- Tailscale 体检 / 连接诊断（2026-11-03，下一版候选 A1+A3）------------------
 // 背景（竞品分析）：客户最大的门槛是"要装 Tailscale、要登录、要在线"，ToDesk 那种输入识别码
@@ -1008,18 +1013,23 @@ function readLicence() {
   let doc = null;
   doc = readJsonLoose(LICENCE_FILE);
   const machine = readMachineCode();
+  const machineAlt = readMachineCodeAlt();
   let chk;
   if (!doc) {
     chk = { ok: false, state: 'missing', message: '这台电脑还没有许可证。' };
   } else {
-    chk = checkLicenceObject(doc, machine);
+    chk = checkLicenceObject(doc, machine, machineAlt);
   }
 
   const data = {
     usable: !!chk.ok,
     state: chk.state || (chk.ok ? 'ok' : 'error'),
     message: chk.message || '',
-    machineCode: (chk.payload && chk.payload.machine) || machine || String(disp.machineCode || ''),
+    // 页面「本机机器码」一律显示**当前算法**的机器码（v2，含 SMBIOS UUID）。
+    // 2026-11-03 T2 之前这里是优先显示许可证里的 machine——老客户升级后会看到旧码，
+    // 续费时把旧码发回来，又绑回 v1，撞码问题白修了。
+    machineCode: machine || (chk.payload && chk.payload.machine) || String(disp.machineCode || ''),
+
     name: (chk.payload && chk.payload.name) || '',
     issued: (chk.payload && chk.payload.issued) || '',
     // 永久许可证在 payload 里存空字符串，对外统一显示成 never（页面和报告都用这个值）
@@ -1061,7 +1071,7 @@ function licencePayloadText(p) {
     .map((x) => String(x == null ? '' : x)).join('\n');
 }
 
-function checkLicenceObject(doc, machineOverride) {
+function checkLicenceObject(doc, machineOverride, altOverride) {
   // 返回 { ok, state, message, payload }
   // machineOverride 由调用方提供（避免和 readLicence 互相递归）；
   // 不传时才回落到 readMachineCode()。
@@ -1119,13 +1129,17 @@ function checkLicenceObject(doc, machineOverride) {
   // 而且只要守护进程没写过 state 文件（例如没跑守护），这个状态可以一直维持。
   // PowerShell 侧的 Test-Licence 在同样情况下返回 error（不可用），两边必须一致。
   const mine = String(machineOverride == null ? readMachineCode() : machineOverride || '').toUpperCase();
+  const altCode = String(altOverride == null ? readMachineCodeAlt() : altOverride || '').toUpperCase();
   if (!mine) {
     return { ok: false, state: 'no-machine-code', message: '还没读到这台电脑的机器码。请等几秒（程序定期重算）或重启一次「手机远程」后再试。' };
   }
   // 改动（第二轮 P2-3 / H3-d）：机器码比较前 trim —— PowerShell 侧一直是 trim 的，
   // Node 侧原来不 trim，导致"末尾多个空格的许可证"一边过一边不过。方向上是往宽松统一，
   // 但机器码本身就是十六进制+连字符，trim 不会放过错误的机器。
-  if (String(p.machine).trim().toUpperCase() !== mine.trim().toUpperCase()) {
+  // 2026-11-03 T2：双算法兼容——v2（含 SMBIOS UUID）不匹配时再比 v1（老许可证）。
+  const pm = String(p.machine).trim().toUpperCase();
+  const okMachine = (pm === mine.trim()) || (!!altCode && pm === altCode.trim());
+  if (!okMachine) {
     return { ok: false, state: 'machine-mismatch', message: '这是发给另一台电脑的许可证（本机机器码 ' + mine + '）' };
   }
 

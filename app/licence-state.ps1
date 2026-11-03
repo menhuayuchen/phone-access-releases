@@ -86,6 +86,9 @@ $state = [pscustomobject]@{
     trial       = $trial
     state       = [string]$lic.State
     machineCode = [string]$lic.MachineCode
+    # 旧算法机械码（v1，2026-11-03 T2）：screen-server 验许可证时用它兼容老许可证。
+    # 两个字段都是空字符串时屏幕服务会回到"没有机器码"的既有行为。
+    machineCodeAlt = [string]$lic.LegacyMachineCode
     name        = [string]$lic.Name
     issued      = [string]$lic.Issued
     expires     = [string]$lic.Expires

@@ -17,3 +17,6 @@ app/licence.state.json
 app/ultra-usage.json
 # 7 天试用的本机锚点（trial.ps1 在源码目录跑一次就会生成；每台机器不同，绝不进版本库）
 app/trial.json
+# 机械码缓存（机器不同、不进版本库）
+app/machine.id
+app/machine.legacy.id

@@ -321,6 +321,13 @@ function Get-TrialState {
     $days = Get-TrialDaysFromConfig -Dir $Dir
     $machine = ''
     try { $machine = Get-LicenceMachineCode } catch { }
+    # 旧算法机械码（v1）：2026-11-03 之前的试用锚点是用它写的，要平滑迁移到 v2
+    $legacyMachine = ''
+    try {
+        if (Get-Command Get-LicenceLegacyMachineCode -ErrorAction SilentlyContinue) {
+            $legacyMachine = Get-LicenceLegacyMachineCode
+        }
+    } catch { }
 
     $res = [pscustomobject]@{
         active   = $false
@@ -339,6 +346,11 @@ function Get-TrialState {
     }
 
     $cands = @(Read-TrialCandidates -Machine $machine)
+    # 迁移：v2 码一个锚点都没有时，找 v1 码的旧锚点；找到就沿用（下面的 Save-TrialRecord
+    # 会用 v2 码把记录重写成新格式，下次直接命中 v2）。
+    if ($cands.Count -eq 0 -and $legacyMachine -and $legacyMachine -ne $machine) {
+        $cands = @(Read-TrialCandidates -Machine $legacyMachine)
+    }
 
     # 取最早的一条作为锚点：重装时旧记录还在 -> 锚点不变 -> 试用期不刷新
     $anchor = $null

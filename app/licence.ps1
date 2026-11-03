@@ -23,31 +23,17 @@
 # 内嵌公钥（对应 seller-keys\private.xml，改了私钥这里必须同步换）
 $script:LicencePublicKeyXml = '<RSAKeyValue><Modulus>0fXt+uBcg+IKmrycblhXiD5L9nNXF1CoXxfPc9opkNGgzji3FvJL9RyDAipG+lbgugLCkZSSftkOve/HhTzoW9QfEixV4VPwHz5aOMo5+r6H39i1htpRbZnE54Z4d+lftsOjZKO9C5g9QH7TaNNrrmUFlinnPe+5ilebgDsJ013Bc1c5R0/kg3abA8GhLtBMGnUyZ75u3wAddyhTHBa+soGtGOQoL39BrY9vBjAa8DXHxU+EskhdcFViBvOvoDcJlG1y59eInUqO26qpHemc3xpMy1C8y3xED5p18cORRt1uLr83D5ZRJXTiF77Fjg+pU77GnXKkGmMrXccm/ZuMEQ==</Modulus><Exponent>AQAB</Exponent></RSAKeyValue>'
 
-function Get-LicenceMachineCode {
+function Get-LicenceMachineParts {
     <#
-      机器码：CPU ProcessorId + 主板序列号 → SHA256 → 取前 16 位十六进制，按 4 位分组。
-      刻意不含 MachineGuid：那样客户重装系统就得重新发许可证，售后成本高。
-      也刻意不含磁盘序列号：换硬盘不该失效。
-
-      结果缓存到脚本同目录的 machine.id：查 CIM 每次几百毫秒，
-      而守护进程每 8 秒校验一次，不缓存会一直占 CPU。
-
-      改动（独立审查 M1）：原来缓存只校验格式、命中就直接返回，**永不复算**——
-      等于把"绑定这台电脑"降级成"绑定这个文件"，客户复制一份 machine.id 就能把
-      许可证搬到别的机器上。现在支持 -Force 跳过缓存重算；服务启动时用一次 -Force，
-      日常守护仍走缓存（不然每 8 秒查一次 CIM 太贵）。
+      机械码的原料。$WithUuid=$true 是新算法（v2，2026-11-03 T2）：
+        CPU ProcessorId + 主板序列号 + 主板型号 + SMBIOS UUID
+      为什么要加 UUID：ProcessorId 同型号 CPU 完全相同，DIY 主板的序列号又常是
+      "To be filled by O.E.M."（会被过滤掉），结果同配置的两台 DIY 台式机机械码一样，
+      一份许可证能装两台。SMBIOS UUID 是主板级唯一标识，重装系统不变、换主板才变
+      （换主板本来就要重发许可证，不改变既有承诺）。
+      $WithUuid=$false 是旧算法（v1），只用来**兼容已经发出去的老许可证**。
     #>
-    param([switch]$Force)
-    # 先读缓存（-Force 时跳过）
-    $cacheFile = ''
-    try { if ($PSScriptRoot) { $cacheFile = Join-Path $PSScriptRoot 'machine.id' } } catch { }
-    if (-not $Force -and $cacheFile -and (Test-Path -LiteralPath $cacheFile)) {
-        try {
-            $cached = (Get-Content -LiteralPath $cacheFile -Raw).Trim()
-            if ($cached -match '^[0-9A-F]{4}(-[0-9A-F]{4}){3}$') { return $cached }
-        } catch { }
-    }
-
+    param([switch]$WithUuid)
     $parts = @()
     try {
         $cpu = Get-CimInstance Win32_Processor -ErrorAction Stop | Select-Object -First 1
@@ -62,6 +48,17 @@ function Get-LicenceMachineCode {
             if ($bd.Product) { $parts += ([string]$bd.Product).Trim() }
         }
     } catch { }
+    if ($WithUuid) {
+        try {
+            $csp = Get-CimInstance Win32_ComputerSystemProduct -ErrorAction Stop
+            $u = ([string]$csp.UUID).Trim().ToUpperInvariant()
+            # 只接受标准 GUID；过滤 OEM 占位值（全 0 / 全 F / AMI 默认值）
+            if ($u -match '^[0-9A-F]{8}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{4}-[0-9A-F]{12}$') {
+                $placeholder = ($u -match '^(0{8}-0{4}-0{4}-0{4}-0{12}|F{8}-F{4}-F{4}-F{4}-F{12}|03000200-0400-0500-0006-000700080009)$')
+                if (-not $placeholder) { $parts += $u }
+            }
+        } catch { }
+    }
 
     # 硬件信息都拿不到时，退回 MachineGuid（至少还能绑定）
     if ($parts.Count -eq 0) {
@@ -70,17 +67,64 @@ function Get-LicenceMachineCode {
             if ($mg) { $parts += ([string]$mg).Trim() }
         } catch { }
     }
-    if ($parts.Count -eq 0) { return '' }
+    return $parts
+}
 
-    $raw = ($parts -join '|').ToLowerInvariant()
+function Get-LicenceCodeFromParts {
+    param($Parts)
+    if (-not $Parts -or $Parts.Count -eq 0) { return '' }
+    $raw = ($Parts -join '|').ToLowerInvariant()
     $sha = [System.Security.Cryptography.SHA256]::Create()
     try {
         $hash = $sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($raw))
     } finally { $sha.Dispose() }
     $hex = (-join ($hash | ForEach-Object { $_.ToString('x2') })).Substring(0, 16).ToUpperInvariant()
-    $code = ($hex -replace '(.{4})(?=.)', '$1-')
-    # 写缓存（失败不影响返回）
-    if ($cacheFile) {
+    return ($hex -replace '(.{4})(?=.)', '$1-')
+}
+
+function Get-LicenceMachineCode {
+    <#
+      机器码（v2，2026-11-03 起）：CPU ProcessorId + 主板序列号 + 主板型号 + SMBIOS UUID
+      → SHA256 → 取前 16 位十六进制，按 4 位分组。
+      刻意不含 MachineGuid：那样客户重装系统就得重新发许可证，售后成本高。
+      也刻意不含磁盘序列号：换硬盘不该失效。
+
+      结果缓存到脚本同目录的 machine.id：查 CIM 每次几百毫秒，
+      而守护进程每 8 秒校验一次，不缓存会一直占 CPU。
+      服务启动时用一次 -Force 重算（独立审查 M1），日常守护走缓存。
+    #>
+    param([switch]$Force)
+    $cacheFile = ''
+    try { if ($PSScriptRoot) { $cacheFile = Join-Path $PSScriptRoot 'machine.id' } } catch { }
+    if (-not $Force -and $cacheFile -and (Test-Path -LiteralPath $cacheFile)) {
+        try {
+            $cached = (Get-Content -LiteralPath $cacheFile -Raw).Trim()
+            if ($cached -match '^[0-9A-F]{4}(-[0-9A-F]{4}){3}$') { return $cached }
+        } catch { }
+    }
+    $code = Get-LicenceCodeFromParts -Parts (Get-LicenceMachineParts -WithUuid)
+    if ($cacheFile -and $code) {
+        try { Set-Content -LiteralPath $cacheFile -Value $code -Encoding ascii } catch { }
+    }
+    return $code
+}
+
+function Get-LicenceLegacyMachineCode {
+    <#
+      旧算法（v1）机械码：CPU ProcessorId + 主板序列号/型号（不含 UUID）。
+      **只用来兼容已经发出去的老许可证**：新许可证一律用 v2。缓存到 machine.legacy.id。
+    #>
+    param([switch]$Force)
+    $cacheFile = ''
+    try { if ($PSScriptRoot) { $cacheFile = Join-Path $PSScriptRoot 'machine.legacy.id' } } catch { }
+    if (-not $Force -and $cacheFile -and (Test-Path -LiteralPath $cacheFile)) {
+        try {
+            $cached = (Get-Content -LiteralPath $cacheFile -Raw).Trim()
+            if ($cached -match '^[0-9A-F]{4}(-[0-9A-F]{4}){3}$') { return $cached }
+        } catch { }
+    }
+    $code = Get-LicenceCodeFromParts -Parts (Get-LicenceMachineParts)
+    if ($cacheFile -and $code) {
         try { Set-Content -LiteralPath $cacheFile -Value $code -Encoding ascii } catch { }
     }
     return $code
@@ -122,16 +166,20 @@ function Test-Licence {
 
     $machine = ''
     try { $machine = Get-LicenceMachineCode -Force:$ForceMachine } catch { }
+    # 旧算法机械码（v1）：只用来兼容 2026-11-03 之前签发的许可证
+    $legacyMachine = ''
+    try { $legacyMachine = Get-LicenceLegacyMachineCode -Force:$ForceMachine } catch { }
 
     $result = [pscustomobject]@{
-        State       = 'error'
-        Usable      = $false
-        MachineCode = $machine
-        Name        = ''
-        Issued      = ''
-        Expires     = ''
-        Edition     = ''
-        Message     = ''
+        State             = 'error'
+        Usable            = $false
+        MachineCode       = $machine
+        LegacyMachineCode = $legacyMachine
+        Name              = ''
+        Issued            = ''
+        Expires           = ''
+        Edition           = ''
+        Message           = ''
     }
 
     $path = Get-LicencePath -AppDir $AppDir
@@ -192,12 +240,17 @@ function Test-Licence {
     }
 
     # 2) 机器码匹配
+    #    双算法兼容（2026-11-03 T2）：先比 v2（含 SMBIOS UUID），不一致再比 v1。
+    #    老许可证是 v1 签发的，必须继续有效；新许可证一律按 v2 发。
     if (-not $machine) {
         $result.State = 'error'
         $result.Message = '读不到这台电脑的机器码，没法校验。'
         return $result
     }
-    if (([string]$p.machine).Trim().ToUpperInvariant() -ne $machine.ToUpperInvariant()) {
+    $pm = ([string]$p.machine).Trim().ToUpperInvariant()
+    $okMachine = ($pm -eq $machine.ToUpperInvariant())
+    if (-not $okMachine -and $legacyMachine) { $okMachine = ($pm -eq $legacyMachine.ToUpperInvariant()) }
+    if (-not $okMachine) {
         $result.State = 'machine-mismatch'
         $result.Message = '这个许可证是发给另一台电脑的。'
         return $result
