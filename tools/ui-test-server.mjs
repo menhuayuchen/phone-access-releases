@@ -160,6 +160,9 @@ http.createServer((req, res) => {
       ]
     });
   }
+  if (url.pathname === '/sunshine-unpair' && req.method === 'POST') {
+    return json({ ok: true, message: '（测试台）已清空配对' });
+  }
   if (url.pathname === '/sunshine-pin' && req.method === 'POST') {
     let b = '';
     req.on('data', (c) => { b += c; });

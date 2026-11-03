@@ -2363,6 +2363,17 @@ bindImg(img);
         setMsg((j && (j.message || j.error)) || '配对失败', (j && j.ok) ? '#8CE58C' : '#ff6b6b');
         if (j && j.ok) { selectedId = ''; setTimeout(poll, 1200); }
       });
+      const unpair = bodyEl.querySelector('#ssUnpair');
+      if (unpair) unpair.addEventListener('click', async () => {
+        if (!confirm('清空这台电脑上所有 Moonlight 配对？之后要在 Moonlight 里重新添加电脑并输入 PIN。')) return;
+        unpair.disabled = true;
+        setMsg('正在清空配对…', '#868c96');
+        let j = null;
+        try { j = await fetch('/sunshine-unpair', { method: 'POST' }).then((r) => r.json()); } catch (e) { j = null; }
+        unpair.disabled = false;
+        setMsg((j && (j.message || j.error)) || '清空配对失败', (j && j.ok) ? '#8CE58C' : '#ff6b6b');
+        if (j && j.ok) { selectedId = ''; lastSig = ''; setTimeout(poll, 800); }
+      });
     };
     const render = (s, pairings) => {
       lastStatus = s;
@@ -2390,7 +2401,9 @@ bindImg(img);
           + '<div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;align-items:center">'
           + '<input id="ssPin" inputmode="numeric" maxlength="4" placeholder="4 位 PIN" style="width:110px;background:#0f1014;color:#e8eaee;'
           + 'border:1px solid #262932;border-radius:9px;padding:8px 11px;font:14px ui-monospace,Consolas,monospace">'
-          + '<button id="ssPair" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 15px;font-size:12.5px;cursor:pointer">完成配对</button></div>';
+          + '<button id="ssPair" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 15px;font-size:12.5px;cursor:pointer">完成配对</button></div>'
+          + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
+          + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">清空配对（连不上时用）</button></div>';
       }
       bodyEl.innerHTML = h;
       const pinEl = bodyEl.querySelector('#ssPin');

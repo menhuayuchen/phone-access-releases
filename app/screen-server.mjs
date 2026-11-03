@@ -1858,6 +1858,25 @@ function handler(req, res) {
     });
     return;
   }
+  // POST /sunshine-unpair —— 清空已配对设备（Sunshine 的 unpair-all）。
+  // 为什么要它：真机实测反复配对会堆出多条同名记录，之后重连报证书身份错误，
+  // 客户在页面上点一下"清空配对"就能重新配对，不用重装。
+  if (url.pathname === '/sunshine-unpair' && req.method === 'POST') {
+    const sreply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      } catch { }
+    };
+    if (!isFullFunction()) return sreply(200, { ok: false, message: '高性能模式需要许可证或处于试用期内。' });
+    if (!readSunshineCreds()) return sreply(200, { ok: false, message: '高性能模式还没初始化（缺凭据文件）。' });
+    (async () => {
+      const r = await sunshineApi('POST', '/api/clients/unpair-all', null, 15000);
+      if (!r.ok) return sreply(200, { ok: false, message: 'Sunshine 没同意清空配对（HTTP ' + (r.httpStatus || 0) + '）' });
+      sreply(200, { ok: true, message: '已清空配对：在 Moonlight 里删除电脑再加一次，重新输入 PIN。' });
+    })();
+    return;
+  }
 
   // ---- 画质档位（改"发送宽度"，立即生效，不再需要重启）-------------------------
   // 2026-10-30 画质修复：抓屏永远按显示器原生宽度（见顶部 CAPTURE_W 的注释），
