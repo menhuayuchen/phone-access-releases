@@ -137,3 +137,41 @@ CPU 明显低于 MJPEG；不支持/装不了 Moonlight 时网页模式照常可�
 1. **分发方式**：Sunshine 随包静默安装（默认勾选），还是"可选组件/按需下载"？（体积/合规考虑）
 2. **GPL 合规**：接受"独立程序聚合 + GPL 文本 + 源码链接"这套做法吗？（需要一次合规确认）
 3. **收费口径**：高性能模式是否只对已授权/试用用户开放？（我建议是，否则绕过 ¥68）
+
+---
+
+## 九、S1 spike 结果（2026-11-03 19:0x，主机临时目录便携运行，**未改系统**）
+
+做法：下载官方 Sunshine-Windows-AMD64-lite.zip（v2026.914.233613，36.3 MB）解压到 %TEMP%，
+用自定义 sunshine.conf（ind_address=127.0.0.1、port=47989、upnp=disabled、
+origin_web_ui_allowed=pc、encoder=software）直接跑 sunshine.exe，测完即杀、目录删除。
+**没有装 MSI、没有加服务/防火墙规则**——验证 API 与自动化，不碰客户机式改动。
+
+实测结论（全部通过）：
+
+| 验证项 | 结果 |
+|---|---|
+| 只绑回环 | 
+etstat 只有 127.0.0.1:47984 / 47989 / 47990 / 48010，**没有 0.0.0.0**（ind_address 生效） |
+| 首次凭据 | **POST /api/password 在未设置用户名时无需认证**，返回 {"status":true}，生成 sunshine_state.json。→ 安装后可由脚本自动设强密码，客户不用碰 Web UI |
+| 待配对列表 | GET /api/pin → {"pairings":[]}（源码 getPendingPairings，返回 {id,name,address}）→ **配对助手可以自动发现手机请求** |
+| 提交 PIN | POST /api/pin {pairing_id,pin,name}：没有对应请求时返回 {"status":false}（不崩）；id 格式非法 → 400 |
+| 错误凭据 | 401（Basic Auth 有效） |
+| 配置回读 | GET /api/config 回读我们写的 conf（bind_address/encoder/upnp/port 全对） |
+| 编码器 | 本次强制 encoder=software（只测 API），真实机器要再确认 AMF/NVENC 是否可用 |
+
+另外从源码/文档确认的集成细节：
+
+- **MSI 静默安装**会执行 scripts\sunshine-setup.ps1 -Action install -Silent：迁移配置、**加防火墙规则**、
+  装 Windows 服务、设自启。→ 我们装完后必须把防火墙规则收紧到**只允许 tailnet**（和 harden-firewall.ps1 同一口径），
+  否则端口会对 LAN 敞开。
+- Windows 默认配置目录 %ProgramFiles%\Sunshine\config（sunshine.conf + pps.json + sunshine_state.json）。
+- pps.json 需要至少一个「Desktop」应用（无命令，直接串流桌面）；官方 lite 包自带一个模板。
+- 可用 sunshine.exe <conf> --creds user pass 预设凭据，但需要优雅退出才落盘；
+  **更稳的是首次启动后调 POST /api/password**（已验证）。
+- 配对助手流程：手机 Moonlight 添加电脑 → Sunshine 产生待配对请求（GET /api/pin 可查）→
+  我们页面显示设备名/地址 → 客户输入 PIN → 服务端 POST /api/pin → 完成。**全程不用打开 Sunshine 网页**。
+
+**还没做（需要真机/虚拟机 + 客户手机）**：MSI 静默安装与服务/防火墙收紧、真实硬编检测、
+Moonlight 客户端实际串流（fps/延迟/码率/手机发热）、iOS 客户端可得性。
+这两项等许可后在一台可折腾的机器上做（不碰卖家本机运行中的产品）。
