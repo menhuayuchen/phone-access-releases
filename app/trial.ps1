@@ -42,6 +42,152 @@ try { . (Join-Path $here 'licence.ps1') } catch { }
 # 盐值：只防"顺手改文件"，不是密钥。改这里会让老机器的记录全部失效（等于重发试用），别乱改。
 $script:TrialSalt = 'phoneaccess-trial-anchor-2026-10-30'
 
+# 服务端试用台账（2026-11-03，T1）：**可选**。配置 freemium.trialLedgerUrl 指向一个
+# 记录"每台机器第一次领试用时间"的小接口；本地锚点被清掉（重装系统、手动删记录）时，
+# 台账能把这台机器按回原来的起点。连不上/超时就完全退回本地逻辑，绝不锁死客户。
+# 隐私：只上传机械码（SHA256 哈希），不含任何客户信息。
+$script:LedgerFailCacheHours = 6    # 联网失败后 6 小时内不再重试（避免守护进程每 8 秒卡 4 秒）
+$script:LedgerRefreshDays = 7       # 已有台账结果时 7 天后刷新一次
+
+function Get-TrialLedgerUrl {
+    param([string]$Dir)
+    try {
+        $p = Join-Path $Dir 'product.config.json'
+        if (-not (Test-Path -LiteralPath $p)) { return '' }
+        $cfg = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfg -and $cfg.freemium -and $cfg.freemium.trialLedgerUrl) {
+            return ([string]$cfg.freemium.trialLedgerUrl).Trim()
+        }
+    } catch { }
+    return ''
+}
+
+function Get-TrialLedgerToken {
+    # 可选：和台账服务共用的一串口令（只算"防误扫"，不是安全边界——它在客户端配置里）。
+    param([string]$Dir)
+    try {
+        $p = Join-Path $Dir 'product.config.json'
+        if (-not (Test-Path -LiteralPath $p)) { return '' }
+        $cfg = Get-Content -LiteralPath $p -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfg -and $cfg.freemium -and $cfg.freemium.trialLedgerToken) {
+            return ([string]$cfg.freemium.trialLedgerToken).Trim()
+        }
+    } catch { }
+    return ''
+}
+
+function Test-TrialLedgerUrl {
+    # 只允许 https（机械码别走明文）。本机回环地址放行 http，供自测用。
+    param([string]$Url)
+    if ($Url -match '^https://\S+$') { return $true }
+    if ($Url -match '^http://(127\.0\.0\.1|localhost|\[::1\])(:\d+)?(/\S*)?$') { return $true }
+    return $false
+}
+
+function Read-TrialLedgerCache {
+    param([string]$Path)
+    $res = [pscustomobject]@{ start = ''; at = ''; failedAt = '' }
+    try {
+        if (-not (Test-Path -LiteralPath $Path)) { return $res }
+        $j = Get-Content -LiteralPath $Path -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($j) {
+            $res.start = [string]$j.start
+            $res.at = [string]$j.at
+            $res.failedAt = [string]$j.failedAt
+        }
+    } catch { }
+    return $res
+}
+
+function Write-TrialLedgerCache {
+    param([string]$Path, [string]$Start, [string]$At, [string]$FailedAt)
+    try {
+        $body = [pscustomobject]@{ start = $Start; at = $At; failedAt = $FailedAt } | ConvertTo-Json -Compress
+        [System.IO.File]::WriteAllText($Path, $body, (New-Object System.Text.UTF8Encoding($false)))
+    } catch { }
+}
+
+function Get-LedgerStart {
+    <#
+      查台账，返回 @{ start=''; ok; cached; error }。
+      start 为空 = 台账没有可用起点（首次领、或连不上且无缓存）。
+      缓存策略：
+        · 有未过期的台账结果（7 天内）→ 直接用缓存，不联网；
+        · 最近 6 小时失败过 → 不重试，只用缓存；
+        · 否则 POST 一次，成功写缓存，失败写 failedAt。
+    #>
+    param([string]$Url, [string]$Machine, [string]$CachePath, [int]$TimeoutSec = 4, [string]$Token = '')
+    $res = [pscustomobject]@{ start = ''; ok = $false; cached = $false; error = '' }
+    if (-not $Url -or -not $Machine) { return $res }
+    if (-not (Test-TrialLedgerUrl -Url $Url)) { $res.error = '台账地址必须是 https（本机回环自测除外）'; return $res }
+
+    $now = Get-Date
+    $cul = [System.Globalization.CultureInfo]::InvariantCulture
+    $styles = [System.Globalization.DateTimeStyles]::None
+    $cache = Read-TrialLedgerCache -Path $CachePath
+
+    if ($cache.failedAt) {
+        $f = [datetime]::MinValue
+        if ([datetime]::TryParseExact($cache.failedAt, 'yyyy-MM-dd HH:mm:ss', $cul, $styles, [ref]$f)) {
+            if ($now -lt $f.AddHours($script:LedgerFailCacheHours)) {
+                $res.start = $cache.start; $res.cached = $true; $res.error = '最近失败过，只用缓存'
+                return $res
+            }
+        }
+    }
+    if ($cache.start -and $cache.at) {
+        $a = [datetime]::MinValue
+        if ([datetime]::TryParseExact($cache.at, 'yyyy-MM-dd HH:mm:ss', $cul, $styles, [ref]$a)) {
+            if ($now -lt $a.AddDays($script:LedgerRefreshDays)) {
+                $res.start = $cache.start; $res.ok = $true; $res.cached = $true
+                return $res
+            }
+        }
+    }
+
+    try {
+        $body = (@{ machine = $Machine; v = 1 } | ConvertTo-Json -Compress)
+        $hdrs = @{}
+        if ($Token) { $hdrs['x-ledger-token'] = $Token }
+        $r = Invoke-RestMethod -Uri $Url -Method Post -ContentType 'application/json' -Body $body -Headers $hdrs -TimeoutSec $TimeoutSec
+        $s = [string]$r.start
+        if ($s -match '^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}$') {
+            $res.start = $s
+            $res.ok = $true
+            Write-TrialLedgerCache -Path $CachePath -Start $s -At $now.ToString('yyyy-MM-dd HH:mm:ss') -FailedAt ''
+        } else {
+            $res.error = '台账返回的 start 格式不对'
+            Write-TrialLedgerCache -Path $CachePath -Start '' -At '' -FailedAt $now.ToString('yyyy-MM-dd HH:mm:ss')
+        }
+    } catch {
+        $res.error = '台账连不上：' + $_.Exception.Message
+        Write-TrialLedgerCache -Path $CachePath -Start $cache.start -At $cache.at -FailedAt $now.ToString('yyyy-MM-dd HH:mm:ss')
+        if ($cache.start) { $res.start = $cache.start; $res.cached = $true }
+    }
+    return $res
+}
+
+function Merge-TrialAnchor {
+    <#
+      纯函数：在"本地锚点"和"台账起点"里取最早的一个。
+        · 本地没有锚点（重装/清记录）→ 用台账起点；
+        · 台账比本地早（说明这台机器以前领过）→ 用台账；
+        · 否则保持本地。
+      返回选中的字符串；两个都空返回 ''。
+    #>
+    param([string]$Anchor, [string]$LedgerStart)
+    if (-not $Anchor) { return [string]$LedgerStart }
+    if (-not $LedgerStart) { return [string]$Anchor }
+    $cul = [System.Globalization.CultureInfo]::InvariantCulture
+    $styles = [System.Globalization.DateTimeStyles]::None
+    $a = [datetime]::MinValue
+    $b = [datetime]::MinValue
+    if (-not [datetime]::TryParseExact($Anchor, 'yyyy-MM-dd HH:mm:ss', $cul, $styles, [ref]$a)) { return [string]$LedgerStart }
+    if (-not [datetime]::TryParseExact($LedgerStart, 'yyyy-MM-dd HH:mm:ss', $cul, $styles, [ref]$b)) { return [string]$Anchor }
+    if ($b -lt $a) { return [string]$LedgerStart }
+    return [string]$Anchor
+}
+
 function Get-TrialDaysFromConfig {
     param([string]$Dir)
     $days = 7
@@ -207,6 +353,29 @@ function Get-TrialState {
         $okB = [datetime]::TryParseExact([string]$c.start, 'yyyy-MM-dd HH:mm:ss', $cul, $styles, [ref]$b)
         if ($okB -and (-not $okA -or $b -lt $a)) { $anchor = [string]$c.start; $anchorLastSeen = $c.lastSeen }
     }
+
+    # 服务端台账（可选，T1）：只在「本地一个锚点都没有」（疑似重装/清记录）或
+    # 「已经有台账缓存」时联网；正常机器一次都不联网。台账起点更早就以台账为准。
+    try {
+        $ledgerUrl = Get-TrialLedgerUrl -Dir $Dir
+        if ($ledgerUrl -and $machine) {
+            $ledgerCache = Join-Path $Dir 'trial-ledger.json'
+            if ((-not $anchor) -or (Test-Path -LiteralPath $ledgerCache)) {
+                $ledgerToken = Get-TrialLedgerToken -Dir $Dir
+                $led = Get-LedgerStart -Url $ledgerUrl -Machine $machine -CachePath $ledgerCache -Token $ledgerToken
+                if ($led.start) {
+                    $merged = Merge-TrialAnchor -Anchor ([string]$anchor) -LedgerStart ([string]$led.start)
+                    if ($merged -and ($merged -ne [string]$anchor)) {
+                        $anchor = $merged
+                        $anchorLastSeen = $merged
+                    } elseif (-not $anchor) {
+                        $anchor = $merged
+                        $anchorLastSeen = $merged
+                    }
+                }
+            }
+        }
+    } catch { }
 
     $now = Get-Date
     if (-not $anchor) {
