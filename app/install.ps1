@@ -21,6 +21,7 @@ param(
   [switch]$NoPause,         # 结束时不等待"按回车"（给自动化用；客户双击入口不会传这个参数）
   [switch]$SkipSelfCheck,   # 跳过最后的客户自检（排查安装器自身时用）
   [switch]$SkipDefender,    # 不添加 Windows Defender 排除项
+  [switch]$SkipHighPerformance, # 跳过「高性能模式」（Sunshine/Moonlight，可选组件）
   [string]$SourceDir = '',  # 安装包所在目录（默认=本脚本所在目录；测试/打包校验时可指定）
   [string]$InstallTo = '',  # 安装到哪个目录（默认读 product.config.json 的 installDir）
   # 改动（独立审查 L5）：记录"发起安装的那个账号"，提权后拿来比对。
@@ -47,6 +48,8 @@ $script:CurrentStepNo = 0
 $script:CurrentStep   = '(启动)'
 $script:SelfReportPath = ''
 $script:SelfVerdict   = ''
+# 高性能模式（Moonlight/Sunshine，可选组件）的结果，写进安装完成报告
+$script:HpState       = ''
 
 $script:ScriptPath = $PSCommandPath
 if (-not $script:ScriptPath) { $script:ScriptPath = $MyInvocation.MyCommand.Path }
@@ -361,6 +364,7 @@ function Save-InstallReport {
       [void]$lines.Add('')
       [void]$lines.Add('安装结果：完成')
       [void]$lines.Add('自检结论：' + $(if ($script:SelfVerdict) { $script:SelfVerdict } else { '（没有运行）' }))
+      if ($script:HpState) { [void]$lines.Add('高性能模式（Moonlight）：' + [string]$script:HpState) }
       if ($script:SelfReportPath) { [void]$lines.Add('自检报告：' + $script:SelfReportPath) }
       if ($script:Warnings.Count -gt 0) {
         [void]$lines.Add('')
@@ -1786,11 +1790,51 @@ try {
   }
 
   # =========================================================================
-  # 第 11 步：收尾（桌面图标 + 手机入口 + 讲清楚接下来做什么）
+  # 第 11 步：高性能模式（Moonlight/Sunshine，可选组件，2026-11-03）
   # =========================================================================
   $script:CurrentStepNo = 11
+  $script:CurrentStep = '高性能模式（Moonlight，可选）'
+  Write-Section '第 11 步 · 高性能模式（Moonlight，可选）'
+
+  $hpMsi = Join-Path $script:InstallRoot 'Sunshine-Windows-AMD64-installer.msi'
+  $hpScript = Join-Path $script:InstallRoot 'sunshine-integration.ps1'
+  if ($SkipHighPerformance) {
+    Write-Note '按参数跳过高性能模式（网页模式照常可用）'
+    $script:HpState = '按参数跳过'
+  } elseif (-not (Test-Path -LiteralPath $hpMsi)) {
+    Write-Note '这个安装包没带高性能模式组件（没有 Sunshine 安装包），跳过；网页模式照常可用'
+    $script:HpState = '未包含（跳过）'
+  } elseif (-not (Test-Path -LiteralPath $hpScript)) {
+    Write-WarnLine '缺少 sunshine-integration.ps1，跳过高性能模式'
+    $script:HpState = '缺少脚本（跳过）'
+  } elseif ($script:DryRunMode) {
+    Write-Note '（干跑）会安装并预配置 Sunshine（只绑 tailnet、自动随机凭据、防火墙收紧、只广播 H.264）'
+    $script:HpState = '（干跑未执行）'
+  } else {
+    Write-Note '正在安装/预配置 Sunshine（约 1–2 分钟）。它是独立程序（GPL-3.0），只用来给 Moonlight 提供低延迟通道…'
+    $hpOk = $false
+    try {
+      $psExeHp = Get-PowerShellExe
+      & $psExeHp -NoProfile -ExecutionPolicy Bypass -File $hpScript -Action install -AppDir $script:InstallRoot -MsiPath $hpMsi -Quiet
+      $hpOk = ($LASTEXITCODE -eq 0)
+    } catch {
+      Write-WarnLine ('高性能模式安装没能完成：' + [string]$_.Exception.Message)
+    }
+    if ($hpOk) {
+      Write-Ok '高性能模式已就绪：手机装 Moonlight → 手机页「设置 → 高性能模式」输 PIN 配对'
+      $script:HpState = '已就绪（手机装 Moonlight 后配对）'
+    } else {
+      Write-WarnLine '高性能模式没装成（不影响网页模式）；可重跑安装包或手动运行 sunshine-integration.ps1'
+      $script:HpState = '未完成（不影响网页模式）'
+    }
+  }
+
+  # =========================================================================
+  # 第 12 步：收尾（桌面图标 + 手机入口 + 讲清楚接下来做什么）
+  # =========================================================================
+  $script:CurrentStepNo = 12
   $script:CurrentStep = '收尾（桌面文件夹 + 手机入口）'
-  Write-Section '第 11 步 · 收尾（桌面文件夹 + 手机入口）'
+  Write-Section '第 12 步 · 收尾（桌面文件夹 + 手机入口）'
 
   if ($script:DryRunMode) {
     Write-Note '（干跑）会在桌面创建「手机远程」文件夹，里面放 启动 / 自查 / 停止 三个图标'

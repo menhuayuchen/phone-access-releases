@@ -226,6 +226,23 @@ foreach ($folder in $desktopCandidates) {
 }
 
 Write-Host ''
+# 高性能模式（Sunshine/Moonlight，可选组件）：只卸"我们装的"（看 marker），
+# 必须在删安装目录之前跑——脚本和 marker 都在安装目录里。
+$hpMarker = Join-Path $installRoot 'sunshine-integration.json'
+$hpScript = Join-Path $installRoot 'sunshine-integration.ps1'
+if ((Test-Path -LiteralPath $hpMarker) -and (Test-Path -LiteralPath $hpScript)) {
+    Write-Host '-------- 第 5.5 步 · 卸载高性能模式（Moonlight）' -ForegroundColor Cyan
+    try {
+        $psExeHp = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+        & $psExeHp -NoProfile -ExecutionPolicy Bypass -File $hpScript -Action uninstall -AppDir $installRoot -Quiet
+        Ok '高性能模式已卸载（服务 / 防火墙规则 / 配置已清理）'
+    } catch {
+        Warn ('高性能模式卸载没完成：' + $_.Exception.Message)
+        Warn '  可以在「设置 → 应用」里手动卸载 Sunshine；不影响网页模式'
+    }
+    Write-Host ''
+}
+
 Write-Host '-------- 第 6 步 · 删除程序文件' -ForegroundColor Cyan
 # 保留许可证：先把它挪到临时目录，删完再放回去
 $keepLic = $null

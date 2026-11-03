@@ -274,3 +274,14 @@ app\
 ---
 
 *本文档由 selfcheck-builder 随「客户版自检」一起交付；体积与泄漏处数为 2026-10-28 在本机实测。*
+---
+
+## 7. 可选组件：高性能模式（Sunshine / Moonlight，2026-11-03）
+
+- 打包产物可附带 `Sunshine-Windows-AMD64-installer.msi`（约 32 MB）和 `docs\` 里的 GPL 说明/许可证文本；
+- **软集成**：`app\Sunshine-Windows-AMD64-installer.msi` 存在就带上，不存在就跳过（**打包不会失败**，网页模式照常）；
+- 安装器第 11 步调用 `sunshine-integration.ps1 -Action install`（只绑 tailnet、随机凭据、防火墙收紧、只广播 H.264）；
+  失败只警告、不影响网页模式；可用 `-SkipHighPerformance` 跳过；
+- 卸载器第 5.5 步按 marker 调 `sunshine-integration.ps1 -Action uninstall`（只卸我们装的，并删 `%ProgramFiles%\Sunshine\config` 残留）；
+- 体积：不带 MSI ≈129.5 MB；带 MSI ≈161.7 MB（pack.ps1 会按是否带组件调整上限提示，不再误报"比基准大很多"）；
+- MSI 不进版本库（`.gitignore` 已忽略）；打包前从本地放回 `app\` 即可。

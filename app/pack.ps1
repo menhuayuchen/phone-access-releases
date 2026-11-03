@@ -463,6 +463,28 @@ if ($includeTailscale) {
   Write-OkLine 'Tailscale 安装包已复制到 bin\tailscale-setup.exe'
 }
 
+# 可选组件：高性能模式（Sunshine/Moonlight，GPL-3.0 独立程序，2026-11-03）。
+# 软集成：app\ 里有 MSI 就带上；没有就跳过（不带也能正常打包，网页模式照常可用）。
+# GPL 说明与许可证文本放在包内 docs\，见 app\docs\高性能模式-GPL说明.txt。
+$sunshineMsiName = 'Sunshine-Windows-AMD64-installer.msi'
+$sunshineMsi = Join-Path $AppDir $sunshineMsiName
+if (Test-Path -LiteralPath $sunshineMsi) {
+  Copy-Item -LiteralPath $sunshineMsi -Destination (Join-Path $stage $sunshineMsiName) -Force
+  $gplCopied = 0
+  $gplDst = Join-Path $stage 'docs'
+  foreach ($g in @('LICENSE-Sunshine-GPL-3.0.txt', '高性能模式-GPL说明.txt')) {
+    $gp = Join-Path $AppDir ('docs\' + $g)
+    if (Test-Path -LiteralPath $gp) {
+      if (-not (Test-Path -LiteralPath $gplDst)) { $null = New-Item -ItemType Directory -Path $gplDst -Force }
+      Copy-Item -LiteralPath $gp -Destination (Join-Path $gplDst $g) -Force
+      $gplCopied++
+    }
+  }
+  Write-OkLine ('高性能模式组件已带上（Sunshine MSI + GPL 文件 ' + [string]$gplCopied + ' 个，约 ' + (Format-Mb (Get-Item -LiteralPath $sunshineMsi).Length) + '）')
+} else {
+  Write-WarnLine ('没有高性能模式组件（未找到 app\' + $sunshineMsiName + '）：本包不含 Moonlight 通道，网页模式照常可用')
+}
+
 $runtimeDst = Join-Path $stage 'runtime'
 if (-not (Test-Path -LiteralPath $runtimeDst)) { $null = New-Item -ItemType Directory -Path $runtimeDst -Force }
 Copy-Item -LiteralPath $nodeChosen -Destination (Join-Path $runtimeDst 'node.exe') -Force
@@ -682,12 +704,14 @@ $fileCount = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Force -ErrorAct
 Write-OkLine ('目录：' + $stage)
 Write-OkLine ('文件：' + [string]$fileCount + ' 个')
 Write-OkLine ('体积：' + (Format-Mb $stageSize))
+$msiIncluded = Test-Path -LiteralPath (Join-Path $stage 'Sunshine-Windows-AMD64-installer.msi')
+$sizeMaxMb = if ($msiIncluded) { 170 } else { 160 }
 if ($stageSize -lt 100MB) {
   Write-WarnLine ('比基准（≈129 MB）小很多：确认 node.exe 和 node_modules 都在（node.exe 约 89 MB）')
-} elseif ($stageSize -gt 160MB) {
-  Write-WarnLine '比基准大很多：确认没有把 cloudflared（55 MB，只属标准档）或多余文件带进来'
+} elseif ($stageSize -gt ($sizeMaxMb * 1MB)) {
+  Write-WarnLine ('比基准大很多（上限 ' + [string]$sizeMaxMb + ' MB，' + $(if ($msiIncluded) { '已含 32 MB 高性能模式组件' } else { '未含高性能模式组件' }) + '）：确认没有把 cloudflared（55 MB，只属标准档）或多余文件带进来')
 } else {
-  Write-OkLine '体积在预期范围（基准 ≈129 MB）'
+  Write-OkLine ('体积在预期范围（基准 ≈129 MB' + $(if ($msiIncluded) { '，含高性能模式组件 ≈161 MB' } else { '' }) + '）')
 }
 if ($script:Warnings.Count -gt 0) {
   Write-Host ''
