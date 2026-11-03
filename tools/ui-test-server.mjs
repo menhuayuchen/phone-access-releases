@@ -144,6 +144,31 @@ http.createServer((req, res) => {
     let n = 0;
     req.on('data', (c) => { n += c.length; });
     req.on('end', () => json({ ok: true, name: '上传测试.bin', size: n, message: '（测试台）已收到 ' + n + ' 字节' }));
+    return;  }
+  if (url.pathname === '/sunshine-status') {
+    return json({
+      ok: true, installed: true, webUp: true, credentialsSet: true, licensed: true,
+      sunshine: { name: '手机远程-高性能', version: '2026.914.233613', port: '47989', bind: '100.108.92.22' }
+    });
+  }
+  if (url.pathname === '/sunshine-pairings') {
+    return json({
+      ok: true,
+      pairings: [
+        { id: '0123456789abcdef0123456789abcdef', name: '小新平板11', address: '100.64.1.2' },
+        { id: 'fedcba9876543210fedcba9876543210', name: '真我Neo8', address: '100.64.1.3' }
+      ]
+    });
+  }
+  if (url.pathname === '/sunshine-pin' && req.method === 'POST') {
+    let b = '';
+    req.on('data', (c) => { b += c; });
+    req.on('end', () => {
+      let j = {};
+      try { j = JSON.parse(b || '{}'); } catch { }
+      const ok = /^\d{4}$/.test(String(j.pin || ''));
+      json({ ok: ok, status: ok, message: ok ? '（测试台）配对成功：回 Moonlight 里选 Desktop 开始串流。' : '（测试台）PIN 不对' });
+    });
     return;
   }
   if (url.pathname === '/tailscale-status') {

@@ -2308,6 +2308,118 @@ bindImg(img);
     load();
   }
 
+  // ---- 高性能模式（Sunshine/Moonlight，2026-11-03 S3）------------------------
+  // 只做三件事：显示状态、列出等待配对的 Moonlight 设备、提交 4 位 PIN。
+  // 配对请求走服务端 /sunshine-pairings 与 /sunshine-pin（Sunshine 凭据只在服务端）。
+  function sunshineBind(box) {
+    const bodyEl = box.querySelector('#ssBody');
+    const msgEl = box.querySelector('#ssMsg');
+    const btn = box.querySelector('#ssRefresh');
+    if (!bodyEl) return;
+    let timer = 0;
+    let selectedId = '';
+    let lastSig = '';
+    let lastStatus = null;
+    const setMsg = (t, c) => { if (msgEl) { msgEl.textContent = t; msgEl.style.color = c || '#868c96'; } };
+    const stop = () => { if (timer) { clearInterval(timer); timer = 0; } };
+    const step = (n, text) => '<div style="display:flex;gap:8px;margin:4px 0;font-size:12.5px;color:#aeb3bb;line-height:1.75">'
+      + '<b style="color:#8fb6ff;min-width:14px">' + n + '</b><span>' + text + '</span></div>';
+    const pairsHtml = (pairings) => {
+      if (!pairings || !pairings.length) {
+        return '<div style="margin-top:9px;color:#6b7078;font-size:12px">在 Moonlight 里点这台电脑后，这里会自动出现配对请求。</div>';
+      }
+      return '<div style="margin-top:10px;color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">等待配对的设备</div>'
+        + pairings.map((p) => '<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #202228;font-size:12.5px">'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9ccd1">'
+          + escHtml(p.name || 'Moonlight 设备')
+          + (p.address ? ' <span style="color:#6b7078">' + escHtml(p.address) + '</span>' : '') + '</span>'
+          + '<button class="ssPick" data-id="' + escHtml(p.id) + '" style="background:' + (selectedId === p.id ? 'rgba(47,111,235,.25)' : '#2a2d36') + ';'
+          + 'color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:4px 10px;font-size:11.5px;cursor:pointer">'
+          + (selectedId === p.id ? '已选' : '选这个') + '</button></div>').join('');
+    };
+    const bindPairs = (pairings) => {
+      bodyEl.querySelectorAll('.ssPick').forEach((b) => b.addEventListener('click', () => {
+        selectedId = b.getAttribute('data-id') || '';
+        const area = bodyEl.querySelector('#ssPairs');
+        if (area) { area.innerHTML = pairsHtml(pairings); bindPairs(pairings); }
+      }));
+      const pin = bodyEl.querySelector('#ssPin');
+      const pair = bodyEl.querySelector('#ssPair');
+      if (pair) pair.addEventListener('click', async () => {
+        const code = String((pin && pin.value) || '').trim();
+        if (!/^\d{4}$/.test(code)) { setMsg('PIN 是 Moonlight 上显示的 4 位数字', '#ffb454'); return; }
+        if (!selectedId) { setMsg('先在 Moonlight 里点一次这台电脑，等下面出现设备再配对', '#ffb454'); return; }
+        pair.disabled = true;
+        setMsg('配对中…（Moonlight 那边会转圈）', '#868c96');
+        let j = null;
+        try {
+          j = await fetch('/sunshine-pin', {
+            method: 'POST',
+            headers: { 'content-type': 'application/json' },
+            body: JSON.stringify({ pairing_id: selectedId, pin: code, name: '手机' })
+          }).then((r) => r.json());
+        } catch (e) { j = null; }
+        pair.disabled = false;
+        setMsg((j && (j.message || j.error)) || '配对失败', (j && j.ok) ? '#8CE58C' : '#ff6b6b');
+        if (j && j.ok) { selectedId = ''; setTimeout(poll, 1200); }
+      });
+    };
+    const render = (s, pairings) => {
+      lastStatus = s;
+      const sig = JSON.stringify([s.installed, s.webUp, s.credentialsSet, s.licensed, (pairings || []).map((p) => p.id)]);
+      if (sig === lastSig) return;
+      lastSig = sig;
+      const prevPin = (bodyEl.querySelector('#ssPin') || {}).value || '';
+      let h = '';
+      if (!s.installed) {
+        h = setPill(false, '', '未启用') + '<div style="margin-top:8px">这台电脑还没启用高性能模式。重装安装包时勾选「高性能模式（Moonlight）」即可。</div>';
+      } else if (!s.webUp) {
+        h = setPill(false, '', '已安装未运行') + '<div style="margin-top:8px">Sunshine 已装但服务没运行：重启一次电脑（或桌面「重启」）后再看。</div>';
+      } else if (!s.credentialsSet) {
+        h = setPill(false, '', '待初始化') + '<div style="margin-top:8px">已安装，等「手机远程」初始化凭据：重启一次就绪。</div>';
+      } else if (!s.licensed) {
+        h = setPill(false, '', '未授权') + '<div style="margin-top:8px">高性能模式需要许可证或处于试用期内；现在可以继续用网页模式。</div>';
+      } else {
+        const host = location.hostname || '本机';
+        if (!selectedId && pairings && pairings.length) selectedId = pairings[0].id;
+        h = setPill(true, '已就绪', '')
+          + step(1, '手机装 <b>Moonlight</b>（安卓：GitHub 的 moonlight-android releases；iOS：App Store 搜 Moonlight）')
+          + step(2, 'Moonlight 里添加电脑：<code style="color:#8fb6ff">' + escHtml((s.sunshine && s.sunshine.name) || host) + '</code>（地址用 <code>' + escHtml(host) + '</code>）')
+          + step(3, 'Moonlight 显示 4 位 PIN → 填下面 → 点「完成配对」')
+          + '<div id="ssPairs">' + pairsHtml(pairings) + '</div>'
+          + '<div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;align-items:center">'
+          + '<input id="ssPin" inputmode="numeric" maxlength="4" placeholder="4 位 PIN" style="width:110px;background:#0f1014;color:#e8eaee;'
+          + 'border:1px solid #262932;border-radius:9px;padding:8px 11px;font:14px ui-monospace,Consolas,monospace">'
+          + '<button id="ssPair" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 15px;font-size:12.5px;cursor:pointer">完成配对</button></div>';
+      }
+      bodyEl.innerHTML = h;
+      const pinEl = bodyEl.querySelector('#ssPin');
+      if (pinEl && prevPin) pinEl.value = prevPin;
+      if (bodyEl.querySelector('#ssPairs')) bindPairs(pairings || []);
+    };
+    const poll = async () => {
+      let s = null;
+      try { s = await fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { s = null; }
+      if (!s) { setMsg('检测失败：读不到状态', '#ff6b6b'); return; }
+      if (s.installed && s.webUp && s.credentialsSet && s.licensed) {
+        let p = null;
+        try { p = await fetch('/sunshine-pairings?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { p = null; }
+        if (p && p.ok) {
+          render(s, p.pairings || []);
+          if (!timer) timer = setInterval(() => { if (!document.body.contains(box)) { stop(); return; } poll(); }, 3000);
+          return;
+        }
+        render(s, []);
+        if (!timer) timer = setInterval(() => { if (!document.body.contains(box)) { stop(); return; } poll(); }, 3000);
+        return;
+      }
+      stop();
+      render(s, []);
+    };
+    if (btn) btn.addEventListener('click', () => { setMsg(''); lastSig = ''; poll(); });
+    poll();
+  }
+
   function clipboardBind(box) {
     const ta = box.querySelector('#cbText');
     const msg = box.querySelector('#cbMsg');
@@ -2895,6 +3007,17 @@ bindImg(img);
       + '<div id="fileProg" style="color:#868c96;margin-top:6px;font-size:11.5px"></div></div>'
       + '<div id="fileList" style="margin-top:10px;color:#868c96;font-size:12px">正在读取…</div>');
 
+    // 高性能模式（Sunshine/Moonlight）——2026-11-03 S3：电脑装好 Sunshine 后，手机装 Moonlight 用 PIN 配对。
+    body += setSection('高性能模式（Moonlight）',
+      '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
+      + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
+      + '<button id="ssRefresh" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:8px 13px;font-size:12.5px;cursor:pointer">刷新</button>'
+      + '<span id="ssMsg" style="font-size:12px;color:#868c96"></span></div>'
+      + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
+      + '低延迟/高帧率通道：手机装 Moonlight 后，在 Moonlight 里添加这台电脑，PIN 在这里输入完成配对。'
+      + '装不了 Moonlight 也没关系，网页模式（就是现在这个）一直可用。</div>');
+
     // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
     // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
     // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
@@ -2972,6 +3095,8 @@ bindImg(img);
     clipboardBind(box);
     // 小文件传输：上传/列表/下载
     fileBind(box);
+    // 高性能模式（Moonlight）：状态 + 配对
+    sunshineBind(box);
 
     // 复制机器码
     const cc = box.querySelector('#setCopyCode');

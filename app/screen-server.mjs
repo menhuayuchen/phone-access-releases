@@ -14,6 +14,7 @@ import { PAGE } from './page.mjs';
 // 现在由启动脚本按主显示器物理分辨率算好传进来；没传就读 product.config.json；都没有才用 2560×1600 兜底。
 
 import { createServer } from 'node:http';
+import https from 'node:https';
 import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream } from 'node:fs';
 import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
@@ -976,6 +977,67 @@ function listUploads() {
   return out.slice(0, 50);
 }
 
+// ---- 高性能模式（Sunshine/Moonlight）服务端代理（2026-11-03，S3）--------------------
+// 客户电脑上由 sunshine-integration.ps1 装好 Sunshine 并生成随机凭据（sunshine-credentials.json）。
+// 手机页只需要「看状态 / 看等待配对的设备 / 提交 PIN」三件事，这里把 Sunshine 的本地 API
+// （https://127.0.0.1:47990，自签证书 + Basic Auth）包一层，凭据只在服务端，不下发到页面。
+//
+// 安全：这三个接口都在默认鉴权之后；凭据文件只允许本进程读；PIN 只转发给本机 Sunshine。
+const SUNSHINE_EXE = 'C:\\Program Files\\Sunshine\\sunshine.exe';
+const SUNSHINE_CRED_FILE = join(HERE, 'sunshine-credentials.json');
+function readSunshineCreds() {
+  const j = readJsonLoose(SUNSHINE_CRED_FILE);
+  if (j && j.username && j.password) return { username: String(j.username), password: String(j.password) };
+  return null;
+}
+function sunshineApi(method, apiPath, body, timeoutMs = 8000) {
+  return new Promise((resolve) => {
+    const creds = readSunshineCreds();
+    if (!creds) return resolve({ ok: false, httpStatus: 0, error: 'no-credentials', body: '' });
+    let data = '';
+    let settled = false;
+    const done = (obj) => { if (!settled) { settled = true; resolve(obj); } };
+    let req;
+    try {
+      req = https.request({
+        host: '127.0.0.1',
+        port: 47990,
+        path: apiPath,
+        method: method,
+        rejectUnauthorized: false,
+        timeout: timeoutMs,
+        headers: {
+          authorization: 'Basic ' + Buffer.from(creds.username + ':' + creds.password).toString('base64'),
+          'content-type': 'application/json',
+          'user-agent': 'PhoneAccess-Sunshine-Proxy'
+        }
+      }, (res) => {
+        res.on('data', (c) => { data += c; if (data.length > 256 * 1024) { try { res.destroy(); } catch { } } });
+        res.on('end', () => done({ ok: res.statusCode >= 200 && res.statusCode < 300, httpStatus: res.statusCode, body: data }));
+        res.on('error', (e) => done({ ok: false, httpStatus: res.statusCode || 0, error: String((e && e.message) || e), body: data }));
+      });
+    } catch (e) {
+      return done({ ok: false, httpStatus: 0, error: String((e && e.message) || e), body: '' });
+    }
+    req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch { } });
+    req.on('error', (e) => done({ ok: false, httpStatus: 0, error: String((e && e.message) || e), body: data }));
+    if (body) { try { req.write(JSON.stringify(body)); } catch { } }
+    req.end();
+  });
+}
+function sunshineWebUp() {
+  return new Promise((resolve) => {
+    let settled = false;
+    const done = (v) => { if (!settled) { settled = true; resolve(v); } };
+    let sock;
+    try { sock = net.connect(47990, '127.0.0.1'); } catch { return done(false); }
+    sock.setTimeout(900);
+    sock.once('connect', () => { try { sock.destroy(); } catch { } done(true); });
+    sock.once('timeout', () => { try { sock.destroy(); } catch { } done(false); });
+    sock.once('error', () => { try { sock.destroy(); } catch { } done(false); });
+  });
+}
+
 // 读"是否授权"。
 //
 // 改动（独立审查 H3）：原来这里直接把 licence.state.json 里的 usable 字段当作结论。
@@ -1660,6 +1722,116 @@ function handler(req, res) {
     } catch (e) {
       try { res.end(); } catch { }
     }
+    return;
+  }
+
+  // ---- 高性能模式（Sunshine/Moonlight）--------------------------------------
+  // GET  /sunshine-status    -> 安装/服务/凭据/授权/配置摘要
+  // GET  /sunshine-pairings  -> 等待 PIN 的 Moonlight 设备（需要许可证或试用中）
+  // POST /sunshine-pin       -> { pairing_id, pin, name } 提交 PIN（需要许可证或试用中）
+  if (url.pathname === '/sunshine-status') {
+    (async () => {
+      const installed = fileExists(SUNSHINE_EXE);
+      const webUp = installed ? await sunshineWebUp() : false;
+      const creds = !!readSunshineCreds();
+      let cfg = null;
+      if (webUp && creds) {
+        const r = await sunshineApi('GET', '/api/config');
+        if (r.ok) {
+          try {
+            const j = JSON.parse(r.body);
+            cfg = {
+              name: String(j.sunshine_name || ''),
+              version: String(j.version || ''),
+              port: String(j.port || ''),
+              bind: String(j.bind_address || '')
+            };
+          } catch { }
+        }
+      }
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({
+          ok: true,
+          installed: installed,
+          webUp: webUp,
+          credentialsSet: creds,
+          licensed: isFullFunction(),
+          sunshine: cfg
+        }));
+      } catch { }
+    })();
+    return;
+  }
+  if (url.pathname === '/sunshine-pairings') {
+    const sreply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      } catch { }
+    };
+    if (!isFullFunction()) {
+      return sreply(200, { ok: false, error: '高性能模式需要许可证或处于试用期内。可以先继续用网页模式。' });
+    }
+    if (!readSunshineCreds()) {
+      return sreply(200, { ok: false, error: '高性能模式还没初始化（缺凭据文件）。重启一次「手机远程」或重新运行安装包。' });
+    }
+    (async () => {
+      const r = await sunshineApi('GET', '/api/pin');
+      if (!r.ok) return sreply(200, { ok: false, error: '连不上 Sunshine（HTTP ' + (r.httpStatus || 0) + '）' });
+      let j = null;
+      try { j = JSON.parse(r.body); } catch { }
+      const list = (j && Array.isArray(j.pairings)) ? j.pairings : [];
+      const pairings = list.slice(0, 8).map((p) => ({
+        id: String((p && p.id) || ''),
+        name: String((p && p.name) || ''),
+        address: String((p && p.address) || '')
+      })).filter((p) => p.id);
+      sreply(200, { ok: true, pairings: pairings });
+    })();
+    return;
+  }
+  if (url.pathname === '/sunshine-pin' && req.method === 'POST') {
+    const sreply = (code, obj) => {
+      try {
+        res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(obj));
+      } catch { }
+    };
+    if (!isFullFunction()) {
+      return sreply(200, { ok: false, error: '高性能模式需要许可证或处于试用期内。' });
+    }
+    let pbody = '';
+    req.on('data', (c) => { pbody += c; if (pbody.length > 8192) req.destroy(); });
+    req.on('end', () => {
+      let pairingId = '';
+      let pin = '';
+      let name = '';
+      try {
+        const m = JSON.parse(pbody || '{}') || {};
+        pairingId = String(m.pairing_id || '').trim().toLowerCase();
+        pin = String(m.pin || '').trim();
+        name = String(m.name || '').trim().slice(0, 40);
+      } catch { }
+      if (!/^[0-9a-f]{32}$/.test(pairingId)) return sreply(400, { ok: false, message: '配对请求 id 不对（应由页面自动带过来）' });
+      if (!/^\d{4}$/.test(pin)) return sreply(400, { ok: false, message: 'PIN 是 Moonlight 上显示的 4 位数字' });
+      (async () => {
+        const r = await sunshineApi('POST', '/api/pin', {
+          pairing_id: pairingId,
+          pin: pin,
+          name: name || '手机'
+        }, 20000);
+        if (!r.ok) return sreply(200, { ok: false, message: 'Sunshine 拒绝了配对（HTTP ' + (r.httpStatus || 0) + '）' });
+        let j = null;
+        try { j = JSON.parse(r.body); } catch { }
+        const good = !!(j && (j.status === true || j.status === 'true'));
+        sreply(200, {
+          ok: good,
+          status: j ? j.status : null,
+          message: good ? '配对成功：回 Moonlight 里选「Desktop」就能开始串流。' : 'PIN 不对或配对超时，让手机重新点一次配对再试。'
+        });
+      })();
+    });
     return;
   }
 

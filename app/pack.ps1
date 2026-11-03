@@ -112,6 +112,8 @@ $appFiles = @(
   # 许可证：校验与状态生成随包分发。私钥在 seller-keys 目录（app 之外），天然打不进来。
   'licence.ps1',
   'licence-state.ps1',
+  # 高性能模式（Moonlight/Sunshine）安装与卸载（2026-11-03）：可选组件，见 docs/B1-参考Moonlight-方案。
+  'sunshine-integration.ps1',
   # 7 天试用锚点（2026-10-30）：licence-state.ps1 会 dot-source 它，缺了会退回"试用不可用"。
   'trial.ps1',
   'https-setup.ps1',
@@ -180,7 +182,7 @@ $requiredInStage = @(
   'stop-phone-access.ps1', 'stop-phone-access.cmd',
   'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1',
   'install.ps1', 'install.cmd',
-  'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs',
+  'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs', 'sunshine-integration.ps1',
   'package.json', 'pnpm-lock.yaml',
   'capture.exe', 'capture.exe.bak', 'input.exe', 'audio.exe', 'sources.exe',
   'lib\NAudio.Core.dll', 'lib\NAudio.Wasapi.dll', 'lib\NAudio.WinMM.dll',
