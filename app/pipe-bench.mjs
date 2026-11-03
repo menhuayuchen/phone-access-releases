@@ -1,4 +1,7 @@
 // 吞吐测试：只读管道、按帧切分，统计帧率/带宽，不接 WebRTC
+// 用法：node pipe-bench.mjs [管道名]（默认 dsh-screen-frames）
+// 2026-11-03 修 bug：读长度前必须判断 frameLen===0。原来一帧数据没到齐时 return，
+// 下一批数据进来会把帧内容当成长度重新读 → desync（B1 测量时踩到）。
 import net from 'node:net';
 
 const t0 = Date.now();
@@ -6,8 +9,9 @@ let frames = 0, bytes = 0, jpeg = 0, i420 = 0;
 const chunks = [];
 let buffered = 0, head = Buffer.alloc(0), frameLen = 0, pending = 0;
 
-const sock = net.connect('\\\\.\\pipe\\dsh-screen-frames');
-sock.on('connect', () => console.log('connected'));
+const pipeName = process.argv[2] || 'dsh-screen-frames';
+const sock = net.connect('\\\\.\\pipe\\' + pipeName);
+sock.on('connect', () => console.log('connected ' + pipeName));
 sock.on('error', (e) => { console.log('error', e.code); process.exit(1); });
 sock.on('close', () => { console.log('closed'); report(); process.exit(0); });
 
@@ -16,7 +20,7 @@ sock.on('data', (chunk) => {
   chunks.push(chunk);
   buffered += chunk.length;
   while (buffered >= 4) {
-    if (head.length < 4) {
+    if (frameLen === 0 && head.length < 4) {
       while (head.length < 4 && chunks.length) {
         const need = 4 - head.length;
         const take = Math.min(need, chunks[0].length);
