@@ -3905,7 +3905,48 @@ bindImg(img);
   } catch (e) {}
 })();
 </script>
-</body></html>`;
+<style>
+@media (max-width: 960px) {
+  body { padding-top: 0 !important; }
+  #bar, .bar, header { margin-top: 0 !important; padding-top: 2px !important; padding-bottom: 2px !important; }
+  #hud { white-space: pre-line !important; text-align: left !important; }
+}
+</style>
+<script>
+(function () {
+  try {
+    var h = document.getElementById('hud');
+    var KEYV = 'hudvis';
+    function visible() { return localStorage.getItem(KEYV) !== '0'; }
+    function applyVis() { if (h) h.style.display = visible() ? '' : 'none'; }
+    function fmt() {
+      if (!h) return;
+      applyVis();
+      if (!matchMedia('(max-width:960px)').matches) return;
+      var txt = h.textContent || '';
+      if (txt.indexOf(' · ') >= 0) h.textContent = txt.split(' · ').join('\n');
+    }
+    if (h) { new MutationObserver(fmt).observe(h, { childList: true, characterData: true, subtree: true }); fmt(); }
+    // 设置面板出现后注入「显示状态数值」开关
+    var injected = false;
+    function inject() {
+      if (injected) return;
+      var anchor = document.getElementById('hqFlow') || document.getElementById('hqW');
+      if (!anchor) return;
+      var box = document.createElement('label');
+      box.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;color:#c9ccd1;margin-top:8px';
+      var cb = document.createElement('input');
+      cb.type = 'checkbox'; cb.id = 'hqHud'; cb.checked = visible();
+      cb.onchange = function () { localStorage.setItem(KEYV, cb.checked ? '1' : '0'); applyVis(); };
+      box.appendChild(cb); box.appendChild(document.createTextNode('显示状态数值（帧率/分辨率）'));
+      anchor.parentNode.insertBefore(box, anchor);
+      injected = true;
+    }
+    new MutationObserver(inject).observe(document.body, { childList: true, subtree: true });
+    setTimeout(inject, 1500);
+  } catch (e) {}
+})();
+</script></body></html>`;
 
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__KEY__/g, encodeURIComponent(key))
