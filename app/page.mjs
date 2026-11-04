@@ -776,7 +776,17 @@ async function startH264() {
           .then(function () { setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 300); });
         return;
       }
-      setNote('高清解码出错，已切回清晰模式');
+      // 偶发解码错误优先重连高清，连续失败才降级到低频画面
+      const nowE = Date.now();
+      if (nowE - (h264.lastErrAt || 0) > 20000) h264.errCount = 0;
+      h264.lastErrAt = nowE;
+      h264.errCount = (h264.errCount || 0) + 1;
+      if (h264.errCount <= 3) {
+        setNote('高清解码异常，正在重连…', 2500);
+        setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 400);
+        return;
+      }
+      setNote('高清连续解码失败，已切到低频画面', 6000);
       startMjpeg();
     }
   });
@@ -833,7 +843,12 @@ async function startH264() {
     setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 1500);
   };
   h264.failTimer = setTimeout(function () {
-    if (state.mode === 'h264' && !h264.configured) { setNote('高清模式没连上，已切回清晰模式'); startMjpeg(); }
+    if (state.mode === 'h264' && !h264.configured) {
+      h264.bootTries = (h264.bootTries || 0) + 1;
+      if (h264.bootTries <= 2) { restartH264(); return; }   // 先重试高清，别直接掉低频
+      setNote('高清模式多次连不上，已切到低频画面', 6000);
+      startMjpeg();
+    }
   }, 5000);  };
 
   const useRtc = new URLSearchParams(location.search).get('rtc') === '1' && !!window.RTCPeerConnection;
