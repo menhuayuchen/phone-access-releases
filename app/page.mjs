@@ -870,6 +870,7 @@ async function startH264() {
         ent.buf.set(pay, off); ent.got += pay.length;
         if (ent.got >= total) {
           parts.delete(ts);
+          if (!h264.rtcStarted) { if (!ent.key) return; h264.rtcStarted = true; }
           try { h264.decoder.decode(new EncodedVideoChunk({ type: ent.key ? 'key' : 'delta', timestamp: ts, data: ent.buf })); } catch (err) { }
         }
       };
