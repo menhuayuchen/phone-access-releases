@@ -843,7 +843,7 @@ async function startH264() {
       const pc = new RTCPeerConnection({ iceServers: [] });
       const ch = pc.createDataChannel('frames', { ordered: true, maxRetransmits: 0 });
       ch.binaryType = 'arraybuffer';
-      const parts = new Map();
+
       ch.onopen = async function () {
         for (let i = 0; i < 20; i++) {
           try {
