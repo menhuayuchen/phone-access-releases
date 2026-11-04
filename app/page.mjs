@@ -1330,6 +1330,10 @@ let dotHideTimer = null;
 function scheduleDotHide() {
   if (dotHideTimer) clearTimeout(dotHideTimer);
   dotHideTimer = setTimeout(function () {
+    // 手指还按着（拖动中/长按）就不算"无操作"，推迟隐藏
+    try {
+      if ((typeof ptr !== 'undefined' && ptr && !ptr.up) || viewPan) { scheduleDotHide(); return; }
+    } catch (e) { }
     try { dot.style.display = 'none'; } catch (e) { }
     const mc = document.getElementById('mcur');
     if (mc) mc.style.display = 'none';
