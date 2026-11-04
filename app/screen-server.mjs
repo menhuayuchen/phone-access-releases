@@ -380,7 +380,7 @@ function h264RtcSendFrame(frame) {
     head.writeUInt32BE(off, 10);         // 10..13
     const msg = Buffer.concat([head, part]);
     for (const ch of h264RtcChannels) {
-      try { if (ch.readyState === 'open') ch.send(msg); } catch { }
+      try { if (ch.readyState === 'open' && ch.bufferedAmount < 512 * 1024) ch.send(msg); } catch { }
     }
     off += part.length;
   }
