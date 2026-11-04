@@ -484,6 +484,24 @@ if (Test-Path -LiteralPath $sunshineMsi) {
 } else {
   Write-WarnLine ('没有高性能模式组件（未找到 app\' + $sunshineMsiName + '）：本包不含 Moonlight 通道，网页模式照常可用')
 }
+# 可选组件：ffmpeg（网页端 H.264 编码用，2026-11-04）。
+# 软集成：app\bin\ffmpeg.exe 存在就带上；没有就跳过（网页端继续走 MJPEG）。
+# 注意：这个文件约 100 MB，zip 后约 36-40 MB；包体上限（蓝奏云 100 MB）要留余量。
+$ffmpegExe = Join-Path $AppDir 'bin\ffmpeg.exe'
+if (Test-Path -LiteralPath $ffmpegExe) {
+  $binDst2 = Join-Path $stage 'bin'
+  if (-not (Test-Path -LiteralPath $binDst2)) { $null = New-Item -ItemType Directory -Path $binDst2 -Force }
+  Copy-Item -LiteralPath $ffmpegExe -Destination (Join-Path $binDst2 'ffmpeg.exe') -Force
+  $ffNotice = Join-Path $AppDir 'docs\FFmpeg-GPL说明.txt'
+  if (Test-Path -LiteralPath $ffNotice) {
+    $docsDst2 = Join-Path $stage 'docs'
+    if (-not (Test-Path -LiteralPath $docsDst2)) { $null = New-Item -ItemType Directory -Path $docsDst2 -Force }
+    Copy-Item -LiteralPath $ffNotice -Destination (Join-Path $docsDst2 'FFmpeg-GPL说明.txt') -Force
+  }
+  Write-OkLine ('网页端 H.264 组件已带上（bin\ffmpeg.exe，' + (Format-Mb (Get-Item -LiteralPath $ffmpegExe).Length) + '）')
+} else {
+  Write-WarnLine '没有网页端 H.264 组件（未找到 app\bin\ffmpeg.exe）：网页端继续用 MJPEG'
+}
 
 $runtimeDst = Join-Path $stage 'runtime'
 if (-not (Test-Path -LiteralPath $runtimeDst)) { $null = New-Item -ItemType Directory -Path $runtimeDst -Force }

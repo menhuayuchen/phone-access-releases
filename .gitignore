@@ -22,3 +22,5 @@ app/machine.id
 app/machine.legacy.id
 # 高性能模式组件（32MB 二进制，不进版本库；打包时从本地放回 app\ 即可）
 app/Sunshine-Windows-AMD64-installer.msi
+# 网页端 H.264 组件（约 100MB 二进制，不进版本库）
+app/bin/ffmpeg.exe
