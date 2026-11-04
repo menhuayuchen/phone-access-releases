@@ -281,6 +281,15 @@ const state = {
 let stopped = document.hidden, lowTimer = null, pc = null, ws = null, statsTimer = null, noteTimer = null, rtcRetry = 0, videoWatch = null, gotVideo = false;
 // 视频类模式（WebRTC 流畅 / H.264 高清）：坐标换算都按 <video> 的实际像素算
 const isVideoMode = () => (state.mode === 'raw' || state.mode === 'h264');
+function videoSourceSize() {
+  if (state.mode === 'h264') {
+    if (h264.streamW) return { w: h264.streamW, h: h264.streamH };
+    const cv = h264.canvas || document.getElementById('wccv');
+    return { w: (cv && cv.width) || 16, h: (cv && cv.height) || 9 };
+  }
+  if (state.mode === 'raw') return { w: vid.videoWidth || 16, h: vid.videoHeight || 9 };
+  return { w: img.naturalWidth || 16, h: img.naturalHeight || 9 };
+}
 const h264 = { ws: null, ms: null, sb: null, queue: [], mime: null, okAt: 0, failTimer: null, appended: 0, supported: null, jumpTimer: null };
 let srcTimer = null, srcSig = '';
 
@@ -620,14 +629,25 @@ async function startH264() {
   h264.fps = 0; h264.fpsAt = Date.now(); h264.fpsN = 0;
   h264.decoder = new VideoDecoder({
     output: function (frame) {
-      try {
-        if (cv.width !== frame.displayWidth || cv.height !== frame.displayHeight) { cv.width = frame.displayWidth; cv.height = frame.displayHeight; }
-        h264.ctx.drawImage(frame, 0, 0, cv.width, cv.height);
-        h264.frames++;
-        h264.fpsN++;
-        const now = Date.now();
-        if (now - h264.fpsAt >= 1000) { h264.fps = h264.fpsN * 1000 / (now - h264.fpsAt); h264.fpsAt = now; h264.fpsN = 0; }
-      } finally { frame.close(); }
+      // 只保留最新一帧，用 rAF 画：解码比屏幕快时丢掉中间帧，延迟不会越积越大
+      if (h264.pendingFrame) { try { h264.pendingFrame.close(); } catch (e) { } }
+      h264.pendingFrame = frame;
+      if (h264.rafPending) return;
+      h264.rafPending = true;
+      requestAnimationFrame(function () {
+        h264.rafPending = false;
+        const f = h264.pendingFrame;
+        h264.pendingFrame = null;
+        if (!f) return;
+        try {
+          if (cv.width !== f.displayWidth || cv.height !== f.displayHeight) { cv.width = f.displayWidth; cv.height = f.displayHeight; }
+          h264.ctx.drawImage(f, 0, 0, cv.width, cv.height);
+          h264.frames++;
+          h264.fpsN++;
+          const now = Date.now();
+          if (now - h264.fpsAt >= 1000) { h264.fps = h264.fpsN * 1000 / (now - h264.fpsAt); h264.fpsAt = now; h264.fpsN = 0; }
+        } finally { try { f.close(); } catch (e) { } }
+      });
     },
     error: function (e) {
       console.log('h264 decoder error', e && e.message);
@@ -648,6 +668,8 @@ async function startH264() {
         try { desc = Uint8Array.from(atob(m.description), function (c) { return c.charCodeAt(0); }); } catch (e) { desc = null; }
         try {
           h264.decoder.configure({ codec: m.codec, description: desc, optimizeForLatency: true });
+          h264.streamW = m.width || 0;
+          h264.streamH = m.height || 0;
           h264.configured = true;
         } catch (e) { console.log('h264 configure failed', e && e.message); startMjpeg(); }
       }
@@ -1091,15 +1113,16 @@ cmdtext.addEventListener('keydown', (e) => {
 });
 
 // ---- 输入：坐标换算 --------------------------------------------------------
-const media = () => (isVideoMode() ? vid : img);
+const media = () => (state.mode === 'h264' && h264.canvas) ? h264.canvas : (isVideoMode() ? vid : img);
 
 function contentBox() {
   // 用 stage 的矩形，而不是 el.getBoundingClientRect()：
   // 画面缩放时 el 带着 CSS transform，getBoundingClientRect() 会返回放大后的框，
   // 再把指针坐标反算回未缩放坐标就会二次缩放，点哪都偏。stage 不受 transform 影响。
   const r = stage.getBoundingClientRect();
-  const nw = isVideoMode() ? (vid.videoWidth || 16) : (img.naturalWidth || 16);
-  const nh = isVideoMode() ? (vid.videoHeight || 9) : (img.naturalHeight || 9);
+  const _vs = videoSourceSize();
+  const nw = _vs.w;
+  const nh = _vs.h;
   if (!nw || !nh || !r.width || !r.height) return r;
   const scale = Math.min(r.width / nw, r.height / nh);
   const w = nw * scale, h = nh * scale;
@@ -1125,8 +1148,9 @@ function toScreen(cx, cy) {
   }
   const box = contentBox();
   const src = state.rect;
-  const nw = isVideoMode() ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
-  const nh = isVideoMode() ? (vid.videoHeight || 1) : (img.naturalHeight || 1);
+  const _vs2 = videoSourceSize();
+  const nw = _vs2.w;
+  const nh = _vs2.h;
   let fx = (cx - box.left) / box.width, fy = (cy - box.top) / box.height;
   fx = Math.min(1, Math.max(0, fx)); fy = Math.min(1, Math.max(0, fy));
   if (!src) return { x: Math.round(fx * nw), y: Math.round(fy * nh) };
@@ -1137,8 +1161,9 @@ function toScreen(cx, cy) {
 function toPage(sx, sy) {
   const box = contentBox();
   const src = state.rect;
-  const nw = isVideoMode() ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
-  const nh = isVideoMode() ? (vid.videoHeight || 1) : (img.naturalHeight || 1);
+  const _vs2 = videoSourceSize();
+  const nw = _vs2.w;
+  const nh = _vs2.h;
   let fx, fy;
   if (src && src.w > 0 && src.h > 0) { fx = (sx - src.x) / src.w; fy = (sy - src.y) / src.h; }
   else { fx = sx / nw; fy = sy / nh; }
