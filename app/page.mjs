@@ -1323,11 +1323,21 @@ function toPage(sx, sy) {
 }
 
 
+let dotHideTimer = null;
+function scheduleDotHide() {
+  if (dotHideTimer) clearTimeout(dotHideTimer);
+  dotHideTimer = setTimeout(function () {
+    try { dot.style.display = 'none'; } catch (e) { }
+    const mc = document.getElementById('mcur');
+    if (mc) mc.style.display = 'none';
+  }, 5000);
+}
 function showDot(x, y) {
   const r = stage.getBoundingClientRect();
   dot.style.left = (x - r.left) + 'px';
   dot.style.top = (y - r.top) + 'px';
   dot.style.display = 'block';
+  scheduleDotHide();
 }
 function ripple(x, y) {
   const r = stage.getBoundingClientRect();
@@ -1585,6 +1595,7 @@ function showMouseCur(x, y) {
   mc.style.display = 'block';
   mc.style.left = x + 'px';
   mc.style.top = y + 'px';
+  scheduleDotHide();
 }
 function hideMouseCur() {
   const mc = document.getElementById('mcur');
@@ -1601,6 +1612,9 @@ overlay.addEventListener('pointermove', (e) => {
       view.ty = Math.min(0, Math.max(r.height * (1 - view.scale), viewPan.ty + dy));
       applyView();
     }
+    // 放大平移时黄点仍跟着手指走
+    const qp = layoutPoint(e.clientX, e.clientY);
+    showDot(qp.x, qp.y);
     return;
   }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
