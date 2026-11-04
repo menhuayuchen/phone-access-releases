@@ -694,7 +694,6 @@ async function startH264() {
       startMjpeg();
     }
   });
-  const connectWs = () => {
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const sock = new WebSocket(proto + '//' + location.host + '/ws-h264?k=' + encodeURIComponent(KEY) + '&s=' + SID);
   h264.ws = sock;
@@ -732,75 +731,8 @@ async function startH264() {
   };
   h264.failTimer = setTimeout(function () {
     if (state.mode === 'h264' && !h264.configured) { setNote('高清模式没连上，已切回清晰模式'); startMjpeg(); }
-    };
-
-  // 优先 WebRTC DataChannel（UDP 语义，丢帧不重传）；4 秒没画面自动回落 WebSocket
-  let rtcTried = false;
-  if (window.RTCPeerConnection) {
-    try {
-      const sig = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/h264-rtc?k=' + encodeURIComponent(KEY) + '&s=' + SID);
-      const pc = new RTCPeerConnection({ iceServers: [] });
-      const ch = pc.createDataChannel('frames', { ordered: false, maxRetransmits: 0 });
-      ch.binaryType = 'arraybuffer';
-      ch.onopen = async function () {
-        // 编码器由数据通道打开触发启动；等它产出 avcC 再配置解码器
-        for (let i = 0; i < 20; i++) {
-          try {
-            const init = await (await fetch('/h264-init?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
-            if (init && init.ok && init.description) {
-              const desc = Uint8Array.from(atob(init.description), function (c) { return c.charCodeAt(0); });
-              h264.decoder.configure({ codec: init.codec, description: desc, optimizeForLatency: true });
-              h264.streamW = init.width || 0; h264.streamH = init.height || 0; h264.configured = true;
-              return;
-            }
-          } catch (e) { }
-          await new Promise(function (r) { setTimeout(r, 250); });
-        }
-      };
-      const parts = new Map();
-      ch.onmessage = function (ev) {
-        const b = new Uint8Array(ev.data);
-        if (b.length < 15) return;
-        const dv = new DataView(ev.data);
-        const ts = dv.getInt32(1), key = b[5] === 1, total = dv.getUint32(6), off = dv.getUint32(10);
-        const payload = b.subarray(14);
-        let ent = parts.get(ts);
-        if (!ent) { ent = { buf: new Uint8Array(total), got: 0, key: key }; parts.set(ts, ent); }
-        if (off + payload.length > total) return;
-        ent.buf.set(payload, off); ent.got += payload.length;
-        if (ent.got >= total) {
-          parts.delete(ts);
-          if (parts.size > 24) parts.clear();
-          try { h264.decoder.decode(new EncodedVideoChunk({ type: ent.key ? 'key' : 'delta', timestamp: ts, data: ent.buf })); h264.rtcOk = true; } catch (err) { }
-        }
-      };
-      sig.onopen = async function () {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          sig.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
-        } catch (e) { try { sig.close(); pc.close(); } catch (e2) { } connectWs(); }
-      };
-      sig.onmessage = async function (ev) {
-        try {
-          const m = JSON.parse(ev.data);
-          if (m.type === 'answer') await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
-          else if (m.type === 'answer-error') { try { sig.close(); pc.close(); } catch (e) { } connectWs(); }
-        } catch (e) { }
-      };
-      h264.rtc = { sig: sig, pc: pc, ch: ch };
-      rtcTried = true;
-      setTimeout(function () {
-        if (!h264.rtcOk && state.mode === 'h264') {
-          try { sig.close(); pc.close(); } catch (e) { }
-          connectWs();
-        }
-      }, 4000);
-    } catch (e) { rtcTried = false; }
-  }
-  if (!rtcTried) connectWs();
-}
-function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
+  }, 5000);
+}function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
   // MJPEG 流已退役（2026-11-04）：浏览器不支持 WebCodecs 或高清失败时，
   // 改用低频画面轮询（/frame.jpg），保留"能看见、能点"的基本能力。
