@@ -278,6 +278,9 @@ const state = {
   audio: false, rect: null, monitors: [], windows: []
 };
 let stopped = document.hidden, lowTimer = null, pc = null, ws = null, statsTimer = null, noteTimer = null, rtcRetry = 0, videoWatch = null, gotVideo = false;
+// 视频类模式（WebRTC 流畅 / H.264 高清）：坐标换算都按 <video> 的实际像素算
+const isVideoMode = () => (state.mode === 'raw' || state.mode === 'h264');
+const h264 = { ws: null, ms: null, sb: null, queue: [], mime: null, okAt: 0, failTimer: null, appended: 0, supported: null, jumpTimer: null };
 let srcTimer = null, srcSig = '';
 
 function setStat(t) { stat.textContent = t; }
@@ -398,7 +401,7 @@ srcSel.addEventListener('change', async () => {
   await postMode({ monitor: state.monitor, window: state.window });
   setNote('已切换来源');
   buzz(8);
-  if (state.mode === 'mjpeg') restartImg(); else restartRtc();
+  if (state.mode === 'mjpeg') restartImg(); else if (state.mode === 'h264') restartH264(); else restartRtc();
 });
 
 async function postMode(patch) {
@@ -406,7 +409,7 @@ async function postMode(patch) {
   try {
     await fetch('/mode', { method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ mode: 'mjpeg', monitor: state.monitor, window: state.window,
-        width: state.mode === 'raw' ? 1280 : 2560 }) });
+        width: isVideoMode() ? 1280 : 2560 }) });
   } catch (e) { console.log('mode failed', e); }
 }
 
@@ -545,6 +548,106 @@ function restartImg() {
   imgOkAt = Date.now();
   // 切换来源/切模式后要重新按当前状态决定走流还是走轮询，否则省流量会静默失效
   if (state.lowBw && state.mode === 'mjpeg') startLowBw(); else showStream();
+}
+// ---- 高清模式（H.264 / MSE，2026-11-04）------------------------------------
+// 服务端用 ffmpeg（h264_mf）把画面编成 fMP4，这里用 MSE 播放：
+// 同画质带宽比 MJPEG 低一个数量级，手机还走硬件解码。ffmpeg 缺失/浏览器不支持时自动回落 MJPEG。
+const H264_CODECS = ['video/mp4; codecs="avc1.4D4032"', 'video/mp4; codecs="avc1.640032"', 'video/mp4; codecs="avc1.4D4028"', 'video/mp4; codecs="avc1.42E01E"'];
+function h264Supported() {
+  if (h264.supported !== null) return h264.supported;
+  try {
+    h264.mime = (window.MediaSource && H264_CODECS.find(function (m) { return MediaSource.isTypeSupported(m); })) || null;
+  } catch (e) { h264.mime = null; }
+  h264.supported = !!h264.mime;
+  return h264.supported;
+}
+function h264Jump() {
+  try {
+    if (vid.buffered.length > 0) {
+      const end = vid.buffered.end(vid.buffered.length - 1);
+      if (end - vid.currentTime > 0.8) vid.currentTime = end - 0.2;
+    }
+  } catch (e) { }
+}
+function stopH264() {
+  if (h264.failTimer) { clearTimeout(h264.failTimer); h264.failTimer = null; }
+  if (h264.jumpTimer) { clearInterval(h264.jumpTimer); h264.jumpTimer = null; }
+  if (h264.ws) {
+    try { h264.ws.onclose = null; h264.ws.onerror = null; h264.ws.onmessage = null; h264.ws.close(); } catch (e) { }
+    h264.ws = null;
+  }
+  h264.sb = null; h264.ms = null; h264.queue = []; h264.appended = 0; h264.okAt = 0;
+  try { vid.removeAttribute('src'); } catch (e) { }
+  try { vid.srcObject = null; } catch (e) { }
+}
+function h264Pump() {
+  const sb = h264.sb;
+  if (!sb || sb.updating || h264.queue.length === 0) return;
+  try {
+    sb.appendBuffer(h264.queue.shift());
+    h264.appended++;
+  } catch (e) { console.log('h264 append failed', e && e.message); }
+}
+async function startH264() {
+  // 先问服务端有没有 H.264 组件：没有就走 MJPEG（不重连、不空等）
+  let st = null;
+  try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
+  if (!st || !st.enabled) { startMjpeg(); return; }
+  h264.retries = 0;
+  stopH264();
+  stopRtc();
+  state.mode = 'h264';
+  btnCrisp.classList.add('on');
+  btnSmooth.classList.remove('on');
+  applyRect();
+  img.classList.remove('show');
+  vid.classList.add('show');
+  try { abortStream(); } catch (e) { }
+  try { vid.muted = !state.audio; vid.play().catch(function () { }); } catch (e) { }
+  const ms = new MediaSource();
+  h264.ms = ms;
+  vid.src = URL.createObjectURL(ms);
+  ms.addEventListener('sourceopen', function () {
+    try { h264.sb = ms.addSourceBuffer(h264.mime); h264.sb.mode = 'segments'; }
+    catch (e) { console.log('h264 addSourceBuffer', e && e.message); }
+    if (h264.sb) { h264.sb.addEventListener('updateend', h264Pump); h264Pump(); }
+  });
+  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const sock = new WebSocket(proto + '//' + location.host + '/ws-h264?k=' + encodeURIComponent(KEY) + '&s=' + SID);
+  h264.ws = sock;
+  sock.binaryType = 'arraybuffer';
+  sock.onmessage = function (e) {
+    h264.queue.push(new Uint8Array(e.data));
+    if (h264.queue.length > 60) h264.queue.shift();
+    if (!h264.okAt) h264.okAt = Date.now();
+    h264.retries = 0;
+    h264Pump();
+  };
+  sock.onerror = function () { };
+  sock.onclose = function () {
+    if (state.mode !== 'h264' || stopped) return;
+    h264.retries = (h264.retries || 0) + 1;
+    if (h264.retries > 3) { setNote('高清模式连不上，已切回清晰模式'); startMjpeg(); return; }
+    setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 1500);
+  };
+  h264.jumpTimer = setInterval(function () { if (state.mode === 'h264' && !stopped) h264Jump(); }, 500);
+  h264.failTimer = setTimeout(function () {
+    if (state.mode === 'h264' && !h264.okAt) {
+      console.log('h264: no data in 4s, fallback to mjpeg');
+      setNote('高清模式没连上，已切回清晰模式');
+      startMjpeg();
+    }
+  }, 4000);
+}
+function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
+function startMjpeg() {
+  stopH264();
+  state.mode = 'mjpeg';
+  btnCrisp.classList.add('on');
+  btnSmooth.classList.remove('on');
+  applyRect();
+  restartImg();
+  setStat('清晰模式');
 }
 // ---- 流畅模式（WebRTC）-----------------------------------------------------
 function stopRtc() {
@@ -755,8 +858,8 @@ async function startPcmAudio() {
     };
     audioWs.onclose = () => {
       audioWs = null;
-      if (state.audio && state.mode === 'mjpeg' && !stopped) {
-        setTimeout(() => { if (state.audio && state.mode === 'mjpeg') startPcmAudio(); }, 1500);
+      if (state.audio && (state.mode === 'mjpeg' || state.mode === 'h264') && !stopped) {
+        setTimeout(() => { if (state.audio && (state.mode === 'mjpeg' || state.mode === 'h264')) startPcmAudio(); }, 1500);
       }
     };
     setStat('声音已开（清晰模式）');
@@ -768,19 +871,23 @@ async function startPcmAudio() {
 
 // ---- 顶栏 ------------------------------------------------------------------
 btnCrisp.addEventListener('click', async () => {
-  state.mode = 'mjpeg'; btnCrisp.classList.add('on'); btnSmooth.classList.remove('on');
   applyRect();
   stopRtc();
   try { await fetch('/rtc-off', { method: 'POST' }); } catch (e) {}
   await postMode({});
-  restartImg();
-  setStat('清晰模式');
-  if (state.lowBw) startLowBw();
-  if (state.audio) startPcmAudio();     // 声音跟着切到 PCM 通道
+  if (h264Supported()) {
+    startH264();
+    setStat('高清模式（H.264）');
+  } else {
+    startMjpeg();
+  }
+  if (state.lowBw && state.mode === 'mjpeg') startLowBw();
+  if (state.audio) startPcmAudio();     // 声音统一走 PCM 通道（H.264 只传画面）
   buzz(8);
 });
 
 btnSmooth.addEventListener('click', async () => {
+  stopH264();
   state.mode = 'raw'; btnSmooth.classList.add('on'); btnCrisp.classList.remove('on');
   applyRect();
   stopPcmAudio();                       // 流畅模式用 WebRTC 的音频轨，PCM 通道关掉
@@ -952,15 +1059,15 @@ cmdtext.addEventListener('keydown', (e) => {
 });
 
 // ---- 输入：坐标换算 --------------------------------------------------------
-const media = () => (state.mode === 'raw' ? vid : img);
+const media = () => (isVideoMode() ? vid : img);
 
 function contentBox() {
   // 用 stage 的矩形，而不是 el.getBoundingClientRect()：
   // 画面缩放时 el 带着 CSS transform，getBoundingClientRect() 会返回放大后的框，
   // 再把指针坐标反算回未缩放坐标就会二次缩放，点哪都偏。stage 不受 transform 影响。
   const r = stage.getBoundingClientRect();
-  const nw = state.mode === 'raw' ? (vid.videoWidth || 16) : (img.naturalWidth || 16);
-  const nh = state.mode === 'raw' ? (vid.videoHeight || 9) : (img.naturalHeight || 9);
+  const nw = isVideoMode() ? (vid.videoWidth || 16) : (img.naturalWidth || 16);
+  const nh = isVideoMode() ? (vid.videoHeight || 9) : (img.naturalHeight || 9);
   if (!nw || !nh || !r.width || !r.height) return r;
   const scale = Math.min(r.width / nw, r.height / nh);
   const w = nw * scale, h = nh * scale;
@@ -986,8 +1093,8 @@ function toScreen(cx, cy) {
   }
   const box = contentBox();
   const src = state.rect;
-  const nw = state.mode === 'raw' ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
-  const nh = state.mode === 'raw' ? (vid.videoHeight || 1) : (img.naturalHeight || 1);
+  const nw = isVideoMode() ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
+  const nh = isVideoMode() ? (vid.videoHeight || 1) : (img.naturalHeight || 1);
   let fx = (cx - box.left) / box.width, fy = (cy - box.top) / box.height;
   fx = Math.min(1, Math.max(0, fx)); fy = Math.min(1, Math.max(0, fy));
   if (!src) return { x: Math.round(fx * nw), y: Math.round(fy * nh) };
@@ -998,8 +1105,8 @@ function toScreen(cx, cy) {
 function toPage(sx, sy) {
   const box = contentBox();
   const src = state.rect;
-  const nw = state.mode === 'raw' ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
-  const nh = state.mode === 'raw' ? (vid.videoHeight || 1) : (img.naturalHeight || 1);
+  const nw = isVideoMode() ? (vid.videoWidth || 1) : (img.naturalWidth || 1);
+  const nh = isVideoMode() ? (vid.videoHeight || 1) : (img.naturalHeight || 1);
   let fx, fy;
   if (src && src.w > 0 && src.h > 0) { fx = (sx - src.x) / src.w; fy = (sy - src.y) / src.h; }
   else { fx = sx / nw; fy = sy / nh; }
@@ -1632,6 +1739,11 @@ async function pollStats() {
           // （host 候选直连），和这条轮询链路不是同一条路，所以只标「链路」，
           // 免得用户看到三千毫秒以为画面很卡、实际却很流畅。
           + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
+    } else if (state.mode === 'h264') {
+      hud.textContent = 'H.264 · ' + (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—')
+        + ' · ' + (vfcFps > 0 ? vfcFps.toFixed(1) + ' fps' : '—')
+        + (h264.appended ? ' · ' + h264.appended + ' 段' : '')
+        + (rttMs > 0 ? ' · 链路 ' + rttMs + 'ms' : '');
     } else if (state.lowBw) {
       // 省流量不走 MJPEG 流，服务器 out= 恒为 0，显示帧率会误导，这里直接标轮询参数
       hud.textContent = '省流量 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
@@ -1659,6 +1771,7 @@ document.addEventListener('visibilitychange', () => {
   else {
     stopped = false;
     if (state.mode === 'mjpeg') restartImg();
+    else if (state.mode === 'h264') restartH264();
     // 流畅模式下回到前台时，如果连接已经断了/画面死了，主动重连一次
     else if (!pc || pc.connectionState !== 'connected') { rtcRetry = 0; restartRtc(); }
   }
@@ -1697,7 +1810,13 @@ bindImg(img);
   await postMode({});
   await loadSources(true);
   startSourcesPolling();
-  restartImg();
+  // 本地/真机验证用：?h264=1 直接进高清模式（正式入口还是点「清晰」）
+  if (new URLSearchParams(location.search).get('h264') === '1' && h264Supported()) {
+    startH264();
+    setStat('高清模式（H.264）');
+  } else {
+    restartImg();
+  }
   pollStats();
   statsTimer = setInterval(pollStats, 2000);
   window.__page = { state, contentBox, toScreen, toPage, layoutPoint };   // 调试用

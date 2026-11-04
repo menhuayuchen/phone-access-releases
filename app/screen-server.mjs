@@ -131,6 +131,154 @@ const decoder = createDecoder({ onFrame: (i420, w, h) => rtc.video(i420, w, h), 
 let rtcMode = false;   // 流畅模式：MJPEG 帧解码后推给 WebRTC
 let rtcActiveAt = 0;   // 最近一次有 RTC 观众/刚开启的时间（用于没人看时让抓屏休息）
 
+// ---- 网页端 H.264（MSE 播放，2026-11-04）------------------------------------
+// 为什么单独一条管线：MJPEG 带宽太大（2560 宽约 64–160 Mbps），手机解码也费电。
+// 这里用 ffmpeg（bin\ffmpeg.exe，h264_mf 编码）产出 fragmented MP4，手机用 MSE 硬解，
+// 同画质带宽降到 10–20 Mbps。ffmpeg 缺失或页面不支持 MSE 时自动回落到 MJPEG。
+const cfgH264 = cfgScreen.h264 || {};
+const FFMPEG_EXE = join(HERE, 'bin', 'ffmpeg.exe');
+const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
+const H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
+const H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
+const H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
+const H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+
+const h264 = {
+  proc: null,
+  init: null,
+  pending: Buffer.alloc(0),
+  clients: new Set(),
+  bytes: 0,
+  frames: 0,
+  stopTimer: null,
+  lastError: ''
+};
+
+function h264Broadcast(buf) {
+  for (const ws of h264.clients) {
+    if (ws.bufferedAmount > 1024 * 1024) continue;   // 跟不上就丢，保延迟
+    try { ws.send(buf, { binary: true }); } catch { }
+  }
+}
+
+function h264TakeInit(chunk) {
+  h264.pending = Buffer.concat([h264.pending, chunk]);
+  const buf = h264.pending;
+  // 简单找 ftyp + moov 的结束位置（fMP4 初始化段就这两块）
+  let off = 0, moovEnd = 0, hasFtyp = false;
+  while (off + 8 <= buf.length) {
+    const size = buf.readUInt32BE(off);
+    const type = buf.toString('ascii', off + 4, off + 8);
+    if (size < 8 || off + size > buf.length) break;
+    if (type === 'ftyp') hasFtyp = true;
+    if (type === 'moov') { moovEnd = off + size; }
+    off += size;
+  }
+  if (hasFtyp && moovEnd) {
+    h264.init = Buffer.from(buf.subarray(0, moovEnd));
+    h264.pending = Buffer.alloc(0);
+    for (const ws of h264.clients) { try { ws.send(h264.init, { binary: true }); } catch { } }
+    const rest = buf.subarray(moovEnd);
+    if (rest.length) h264Broadcast(rest);
+    return true;
+  }
+  if (buf.length > 4 * 1024 * 1024) h264.pending = buf.subarray(buf.length - 512 * 1024);
+  return false;
+}
+
+function h264Start() {
+  if (!H264_ENABLED || h264.proc) return;
+  if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-nostdin',
+    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}`,
+    '-filter_complex', `[0:v]hwdownload,format=bgra,scale=${H264_W}:-2,format=nv12[v]`,
+    '-map', '[v]',
+    '-c:v', 'h264_mf', '-b:v', `${H264_KBPS}K`, '-g', String(H264_FPS * 2), '-bf', '0',
+    '-f', 'mp4',
+    '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
+    '-frag_duration', '20000', '-flush_packets', '1',
+    'pipe:1'
+  ];
+  console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
+  h264.init = null;
+  h264.pending = Buffer.alloc(0);
+  h264.bytes = 0;
+  h264.frames = 0;
+  try {
+    h264.proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  } catch (e) {
+    h264.lastError = String(e.message || e);
+    console.log('h264: spawn failed ' + h264.lastError);
+    h264.proc = null;
+    return;
+  }
+  h264.proc.stdout.on('data', (d) => {
+    h264.bytes += d.length;
+    if (h264.init) h264Broadcast(d); else h264TakeInit(d);
+  });
+  h264.proc.stderr.on('data', (d) => {
+    const s = String(d).trim();
+    if (s) { h264.lastError = s.split('\n').slice(-1)[0]; }
+  });
+  h264.proc.on('exit', (code) => {
+    console.log('h264: ffmpeg exit ' + code);
+    h264.proc = null;
+    h264.init = null;
+    if (h264.clients.size > 0) setTimeout(() => { if (h264.clients.size > 0) h264Start(); }, 1500);
+  });
+  h264.proc.on('error', (e) => { h264.lastError = String(e.message || e); });
+}
+
+function h264Stop() {
+  if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
+  if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
+  h264.init = null;
+  h264.pending = Buffer.alloc(0);
+  console.log('h264: stopped');
+}
+
+const h264Wss = new WebSocketServer({ noServer: true });
+
+function attachH264Ws(server, key) {
+  server.on('upgrade', (req, socket, head) => {
+    let url;
+    try { url = new URL(req.url, 'http://x'); } catch { try { socket.destroy(); } catch { } return; }
+    if (url.pathname !== '/ws-h264') return;
+    if (!sourceAllowed(req)) {
+      try { socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'); } catch { }
+      socket.destroy();
+      return;
+    }
+    if (!authorized(req, url)) {
+      try { socket.write('HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\n\r\n'); } catch { }
+      socket.destroy();
+      return;
+    }
+    if (!H264_ENABLED) {
+      try { socket.write('HTTP/1.1 503 Unavailable\r\nContent-Length: 0\r\n\r\n'); } catch { }
+      socket.destroy();
+      return;
+    }
+    h264Wss.handleUpgrade(req, socket, head, (ws) => h264Wss.emit('connection', ws, req));
+  });
+  h264Wss.on('connection', (ws) => {
+    h264.clients.add(ws);
+    console.log('h264: viewer connected (' + h264.clients.size + ')');
+    h264Start();
+    if (h264.init) { try { ws.send(h264.init, { binary: true }); } catch { } }
+    ws.on('close', () => {
+      h264.clients.delete(ws);
+      console.log('h264: viewer closed (' + h264.clients.size + ')');
+      if (h264.clients.size === 0) {
+        h264.stopTimer = setTimeout(() => { if (h264.clients.size === 0) h264Stop(); }, 15000);
+      }
+    });
+    ws.on('error', () => { });
+  });
+}
+
+
 // ---- 注入被前台高权限窗口挡住（UIPI）时的自愈 ----
 // input.exe 自己会先试 SwitchToThisWindow；在某些进程上下文里这招会被前台锁拒，所以再从
 // PowerShell 侧补一枪（实测 PowerShell 调的 SwitchToThisWindow 能稳定把前台踢回桌面）。
@@ -200,7 +348,8 @@ function attachAudioWs(server, key) {
     // 表现就是「流畅模式一直连不上、几秒后自动退回清晰」。
     // /rtc 的鉴权失败由 rtc.mjs 自己处理（写 401 + destroy），这里绝不能碰它。
     if (url.pathname !== '/ws-audio') {
-      if (url.pathname !== '/rtc') { try { socket.destroy(); } catch { } }
+      // /rtc 由 rtc.mjs 处理，/ws-h264 由 attachH264Ws 处理；其余路径在这里销毁。
+      if (url.pathname !== '/rtc' && url.pathname !== '/ws-h264') { try { socket.destroy(); } catch { } }
       return;
     }
     if (!sourceAllowed(req)) {
@@ -2392,6 +2541,22 @@ function handler(req, res) {
     return;
   }
 
+  if (url.pathname === '/h264-status') {
+    // 页面用它决定「清晰模式走 H.264 还是回落 MJPEG」
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({
+      ok: true,
+      enabled: H264_ENABLED,
+      width: H264_W,
+      height: H264_H,
+      fps: H264_FPS,
+      kbps: H264_KBPS,
+      viewers: h264.clients.size,
+      lastError: h264.lastError
+    }));
+    return;
+  }
+
   if (url.pathname === '/rtc-on' && req.method === 'POST') {
     rtcMode = true;
     rtcActiveAt = Date.now();   // 给抓屏 60 秒预热，新观众连上就能立刻有画面
@@ -2820,6 +2985,7 @@ for (const host of hosts) {
     }
     return true;
   });
+  attachH264Ws(s, KEY);
   attachAudioWs(s, KEY);
   s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
   s.listen(port, host, () => {
