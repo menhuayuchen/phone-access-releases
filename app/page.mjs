@@ -2456,7 +2456,25 @@ bindImg(img);
           + 'color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:4px 10px;font-size:11.5px;cursor:pointer">'
           + (selectedId === p.id ? '已选' : '选这个') + '</button></div>').join('');
     };
-    const bindPairs = (pairings) => {
+    const bindComponent = () => {
+      const btn = bodyEl.querySelector('#ssComp');
+      const msg = bodyEl.querySelector('#ssCompMsg');
+      if (!btn) return;
+      btn.addEventListener('click', async () => {
+        btn.disabled = true;
+        if (msg) msg.textContent = '开始下载…';
+        let j = null;
+        try { j = await fetch('/sunshine-component', { method: 'POST' }).then((r) => r.json()); } catch (e) { j = null; }
+        if (!j || !j.ok) { btn.disabled = false; if (msg) msg.textContent = (j && (j.message || j.error)) || '下载启动失败'; return; }
+        const timer = setInterval(async () => {
+          if (!document.body.contains(box)) { clearInterval(timer); return; }
+          lastSig = '';
+          await poll();
+          const st = bodyEl.querySelector('#ssComp');
+          if (!st || !st.disabled) clearInterval(timer);
+        }, 1500);
+      });
+    };    const bindPairs = (pairings) => {
       bodyEl.querySelectorAll('.ssPick').forEach((b) => b.addEventListener('click', () => {
         selectedId = b.getAttribute('data-id') || '';
         const area = bodyEl.querySelector('#ssPairs');
@@ -2503,7 +2521,29 @@ bindImg(img);
       const prevPin = (bodyEl.querySelector('#ssPin') || {}).value || '';
       let h = '';
       if (!s.installed) {
-        h = setPill(false, '', '未启用') + '<div style="margin-top:8px">这台电脑还没启用高性能模式。重装安装包时勾选「高性能模式（Moonlight）」即可。</div>';
+        const comp = s.component || {};
+        const job = comp.job || {};
+        const busy = job.phase === 'downloading' || job.phase === 'installing';
+        const mb = (n) => ((Number(n) || 0) / 1048576).toFixed(1);
+        const pct = job.total ? Math.min(100, Math.round((job.received || 0) / job.total * 100)) : 0;
+        const phaseText = job.phase === 'downloading'
+          ? ('下载中 ' + pct + '%（' + mb(job.received) + ' / ' + mb(job.total) + ' MB）')
+          : job.phase === 'installing' ? '正在安装（电脑上会弹管理员授权，请点「是」）'
+          : job.phase === 'error' ? ('失败：' + (job.error || '未知错误'))
+          : '';
+        h = setPill(false, '', '未启用') + '<div style="margin-top:8px">这台电脑还没装「高性能模式」组件（Moonlight 用的 Sunshine）。</div>';
+        if (comp.configured) {
+          h += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+            + '<button id="ssComp" ' + (busy ? 'disabled' : '') + ' style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
+            + 'padding:9px 15px;font-size:13px;cursor:pointer' + (busy ? ';opacity:.6' : '') + '">'
+            + (busy ? '处理中…' : '下载并安装组件（约 32MB）') + '</button>'
+            + '<span id="ssCompMsg" style="font-size:12px;color:#868c96">' + escHtml(phaseText) + '</span></div>'
+            + '<div style="color:#6b7078;font-size:11px;margin-top:6px">Sunshine 是 GPL-3.0 独立程序（来源 LizardByte/Sunshine），'
+            + '安装后只绑 tailnet；手机还需另装 Moonlight。安装时电脑会弹管理员授权。</div>';
+        } else {
+          h += '<div style="margin-top:8px;color:#868c96;font-size:12px">组件下载地址还没配置'
+            + '（上传组件后把链接和 SHA256 填进 product.config.json → components.sunshine）。</div>';
+        }
       } else if (!s.webUp) {
         h = setPill(false, '', '已安装未运行') + '<div style="margin-top:8px">Sunshine 已装但服务没运行：重启一次电脑（或桌面「重启」）后再看。</div>';
       } else if (!s.credentialsSet) {
@@ -2531,6 +2571,7 @@ bindImg(img);
       const pinEl = bodyEl.querySelector('#ssPin');
       if (pinEl && prevPin) pinEl.value = prevPin;
       if (bodyEl.querySelector('#ssPairs')) bindPairs(pairings || []);
+      if (bodyEl.querySelector('#ssComp')) bindComponent();
     };
     const poll = async () => {
       let s = null;

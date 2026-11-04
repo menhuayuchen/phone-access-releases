@@ -20,6 +20,16 @@
     "dshPath": ""
   },
   "_screen说明": "全部为 0 时按主显示器物理分辨率自动推导（例如 2560×1600 → 抓屏宽 2560、流畅模式宽 1280）。1.0.7 起 maxCaptureWidth 不再影响抓屏：它只是「发送宽度」档位（手机设置里的 标准1440 / 高清1920 / 超清2560），抓屏始终按原分辨率，缩放在服务端做、切换立即生效；0=不限制。",
+  "components": {
+    "_说明": "可选组件（单独下载，GPL-3.0 独立程序）。urls 按顺序尝试，支持 https 和 file:// 本地路径；sha256 必须与文件一致；sizeBytes 用于进度与大小校验。真机验证时可以把 urls 填成本地 file:///D:/... 的 MSI 路径。",
+    "sunshine": {
+      "name": "高性能模式组件（Moonlight / Sunshine）",
+      "urls": [],
+      "sha256": "",
+      "sizeBytes": 33710080,
+      "notice": "Sunshine 是 GPL-3.0 独立程序（来源 LizardByte/Sunshine），安装后只绑 tailnet、随机 Web 密码、防火墙收紧；手机需另装 Moonlight 客户端。"
+    }
+  },
   "screen": {
     "captureWidth": 0,
     "captureHeight": 0,

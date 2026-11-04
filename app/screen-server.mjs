@@ -13,9 +13,9 @@ import { PAGE } from './page.mjs';
 // rtc.mjs 的 1280。换到非 2560 宽的机器后这几处判断集体偏掉，表现为清晰度错/莫名降档/RTC 比例怪且不报错。
 // 现在由启动脚本按主显示器物理分辨率算好传进来；没传就读 product.config.json；都没有才用 2560×1600 兜底。
 
-import { createServer } from 'node:http';
+import http, { createServer } from 'node:http';
 import https from 'node:https';
-import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream, createWriteStream } from 'node:fs';
 import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
@@ -48,6 +48,9 @@ function readProductConfig() {
 const productConfig = readProductConfig() || {};
 const cfgPorts = productConfig.ports || {};
 const cfgScreen = productConfig.screen || {};
+// 可选组件（Sunshine 高性能模式）：单独下载后安装（GPL-3.0 独立程序）
+const cfgComponents = productConfig.components || {};
+const sunshineComp = cfgComponents.sunshine || {};
 const cfgMaxW = Number(cfgScreen.maxCaptureWidth);
 
 const [hostsArg = '127.0.0.1', portArg = String(Number(cfgPorts.screen) || 8660), frameFile = 'screen-latest.jpg',
@@ -336,6 +339,110 @@ function audioPush(pcm) {
   }
 }
 
+// ---- 可选组件下载（Sunshine MSI，GPL-3.0 独立程序）------------------------
+let sunshineJob = { phase: 'idle', received: 0, total: 0, error: '', startedAt: 0 };
+
+function sha256File(file) {
+  return new Promise((resolve, reject) => {
+    const h = createHash('sha256');
+    const st = createReadStream(file);
+    st.on('data', (d) => h.update(d));
+    st.on('end', () => resolve(h.digest('hex')));
+    st.on('error', reject);
+  });
+}
+
+function saveStreamToFile(stream, dest, onProgress) {
+  return new Promise((resolve, reject) => {
+    const out = createWriteStream(dest);
+    let got = 0;
+    stream.on('data', (d) => { got += d.length; try { onProgress(got); } catch { } });
+    stream.on('error', reject);
+    out.on('error', reject);
+    out.on('finish', () => resolve(got));
+    stream.pipe(out);
+  });
+}
+
+function fetchToFileOnce(url, dest, onProgress, redirects) {
+  return new Promise((resolve, reject) => {
+    let u;
+    try { u = new URL(url); } catch (e) { reject(e); return; }
+    if (u.protocol === 'file:') {
+      // 本地文件（真机验证/离线安装用）
+      try {
+        const src = fileURLToPath(u);
+        const total = statSync(src).size;
+        resolve(saveStreamToFile(createReadStream(src), dest, (n) => onProgress(n, total)));
+      } catch (e) { reject(e); }
+      return;
+    }
+    if (u.protocol !== 'http:' && u.protocol !== 'https:') { reject(new Error('不支持的下载协议：' + u.protocol)); return; }
+    const mod = u.protocol === 'https:' ? https : http;
+    mod.get(u, (r) => {
+      if (r.statusCode >= 300 && r.statusCode < 400 && r.headers.location && (redirects || 0) < 3) {
+        r.resume();
+        resolve(fetchToFileOnce(new URL(r.headers.location, u).toString(), dest, onProgress, (redirects || 0) + 1));
+        return;
+      }
+      if (r.statusCode !== 200) { r.resume(); reject(new Error('下载失败 HTTP ' + r.statusCode)); return; }
+      const total = Number(r.headers['content-length']) || 0;
+      resolve(saveStreamToFile(r, dest, (n) => onProgress(n, total)));
+    }).on('error', reject);
+  });
+}
+
+async function downloadAndInstallSunshine() {
+  const urls = Array.isArray(sunshineComp.urls) ? sunshineComp.urls.filter(Boolean) : [];
+  const dest = join(HERE, 'sunshine-setup.msi');
+  let lastErr = null;
+  let got = 0;
+  for (const u of urls) {
+    try {
+      sunshineJob.received = 0;
+      sunshineJob.total = Number(sunshineComp.sizeBytes) || 0;
+      got = await fetchToFileOnce(u, dest, (n, total) => {
+        sunshineJob.received = n;
+        if (total) sunshineJob.total = total;
+      }, 0);
+      lastErr = null;
+      break;
+    } catch (e) { lastErr = e; }
+  }
+  if (lastErr) throw lastErr;
+  if (sunshineComp.sizeBytes && got !== Number(sunshineComp.sizeBytes)) throw new Error('组件大小不对：' + got + ' / ' + sunshineComp.sizeBytes);
+  if (sunshineComp.sha256) {
+    const h = await sha256File(dest);
+    if (h.toLowerCase() !== String(sunshineComp.sha256).toLowerCase()) throw new Error('SHA256 校验失败');
+  }
+  sunshineJob.received = got;
+  if (process.env.PA_COMPONENT_SKIP_INSTALL === '1') { sunshineJob.phase = 'ready'; return; }
+  sunshineJob.phase = 'installing';
+  const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const integ = join(HERE, 'sunshine-integration.ps1');
+  if (!fileExists(integ)) throw new Error('缺少 sunshine-integration.ps1');
+  const runner = join(HERE, 'sunshine-install-run.ps1');
+  const lines = [
+    '$ErrorActionPreference = "Continue"',
+    'Start-Process powershell -Verb RunAs -ArgumentList @(',
+    '  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ' + JSON.stringify(integ) + ',',
+    '  "-Action", "install", "-MsiPath", ' + JSON.stringify(dest) + ',',
+    '  "-AppDir", ' + JSON.stringify(HERE) + ', "-Quiet"',
+    ') | Out-Null'
+  ];
+  writeFileSync(runner, lines.join('\r\n'), 'utf8');
+  await new Promise((resolve) => {
+    const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner], { stdio: 'ignore', windowsHide: true });
+    child.on('exit', resolve);
+    child.on('error', resolve);
+  });
+  // 安装器是提权后异步跑的：这里最多等 3 分钟看 exe 出现
+  for (let i = 0; i < 90; i++) {
+    if (fileExists(SUNSHINE_EXE)) { sunshineJob.phase = 'done'; return; }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error('安装没有完成（可能没点管理员授权，或安装器报错）');
+}
 function attachAudioWs(server, key) {
   server.on('upgrade', (req, socket, head) => {
     let url;
@@ -1930,6 +2037,10 @@ function handler(req, res) {
           webUp: webUp,
           credentialsSet: creds,
           licensed: isFullFunction(),
+          component: {
+            configured: (Array.isArray(sunshineComp.urls) && sunshineComp.urls.length > 0 && !!sunshineComp.sha256),
+            job: sunshineJob
+          },
           sunshine: cfg
         }));
       } catch { }
@@ -2538,6 +2649,41 @@ function handler(req, res) {
         setTimeout(() => input.send({ t: 'key', vk: 0x5B, down: 0 }), 130);
         setTimeout(() => answer({ ok: true, via: 'win+d', before }), 500);
       });
+    return;
+  }
+
+  // ---- 可选组件：高性能模式（Sunshine MSI）下载与安装 -------------------------
+  if (url.pathname === '/sunshine-component') {
+    const urls = Array.isArray(sunshineComp.urls) ? sunshineComp.urls.filter(Boolean) : [];
+    const configured = urls.length > 0 && !!sunshineComp.sha256;
+    if (req.method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({
+        ok: true,
+        installed: fileExists(SUNSHINE_EXE),
+        configured: configured,
+        name: String(sunshineComp.name || '高性能模式组件（Moonlight）'),
+        sizeBytes: Number(sunshineComp.sizeBytes) || 0,
+        sha256: String(sunshineComp.sha256 || ''),
+        notice: String(sunshineComp.notice || ''),
+        job: sunshineJob
+      }));
+      return;
+    }
+    if (req.method === 'POST') {
+      const sreply = (code, obj) => {
+        try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { }
+      };
+      if (!isFullFunction()) return sreply(200, { ok: false, message: '高性能模式需要许可证或试用中。' });
+      if (!configured) return sreply(200, { ok: false, message: '组件下载地址还没配置（product.config.json → components.sunshine.urls）。' });
+      if (sunshineJob.phase === 'downloading') return sreply(200, { ok: true, job: sunshineJob });
+      sunshineJob = { phase: 'downloading', received: 0, total: Number(sunshineComp.sizeBytes) || 0, error: '', startedAt: Date.now() };
+      downloadAndInstallSunshine().catch((e) => {
+        sunshineJob = { phase: 'error', received: sunshineJob.received || 0, total: sunshineJob.total || 0, error: String(e.message || e), startedAt: Date.now() };
+      });
+      return sreply(200, { ok: true, job: sunshineJob });
+    }
+    res.writeHead(405); res.end('method not allowed');
     return;
   }
 
