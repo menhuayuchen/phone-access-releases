@@ -2491,6 +2491,40 @@ bindImg(img);
   }
   // ---- 小文件传输（2026-11-03，A5 第二步）--------------------------------------
   // 上传：XHR 原始字节流 POST /file?name=…（带进度）；列表/下载：GET /files、GET /file?name=…
+  function h264QualityBind(box) {
+    const wSel = box.querySelector('#hqW');
+    const fpsSel = box.querySelector('#hqFps');
+    const kSel = box.querySelector('#hqKbps');
+    const msg = box.querySelector('#hqMsg');
+    if (!wSel || !fpsSel || !kSel) return;
+    const setMsg = (s, c) => { if (msg) { msg.textContent = s; msg.style.color = c || '#868c96'; } };
+    (async () => {
+      try {
+        const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+        if (!j || !j.ok) return;
+        wSel.value = String(j.width);
+        fpsSel.value = String(j.fps);
+        kSel.value = String(j.kbps);
+        if (!j.width || !j.height) setMsg('高清通道未启用');
+      } catch (e) { }
+    })();
+    const apply = async () => {
+      setMsg('正在应用…');
+      try {
+        const j = await (await fetch('/h264-quality', {
+          method: 'POST', headers: { 'content-type': 'application/json' },
+          body: JSON.stringify({ width: Number(wSel.value), fps: Number(fpsSel.value), kbps: Number(kSel.value) })
+        })).json();
+        if (j && j.ok) {
+          setMsg('已生效：' + j.width + '×' + j.height + ' · ' + j.fps + 'fps · ' + Math.round(j.kbps / 1000) + 'Mbps', '#8CE58C');
+          if (state.mode === 'h264') restartH264();
+        } else setMsg('应用失败', '#ff6b6b');
+      } catch (e) { setMsg('应用失败：网络断了', '#ff6b6b'); }
+    };
+    wSel.addEventListener('change', apply);
+    fpsSel.addEventListener('change', apply);
+    kSel.addEventListener('change', apply);
+  }
   function fileBind(box) {
     const pick = box.querySelector('#filePick');
     const sendBtn = box.querySelector('#fileSend');
@@ -3362,6 +3396,16 @@ bindImg(img);
     // 所以换档不需要重启；这里也不再写「请双击桌面重启」。
     body += setSection('画面质量', qInner);
 
+    // 高清串流（H.264）手动设置：分辨率/帧率/码率
+    body += setSection('高清串流（H.264）',
+      '<div style="display:flex;gap:14px;flex-wrap:wrap;color:#c9ccd1;font-size:12.5px;align-items:center">'
+      + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option></select></label>'
+      + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option></select></label>'
+      + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="15000">15 Mbps</option><option value="20000">20 Mbps</option></select></label>'
+      + '</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:8px">改完自动重启编码器；网络差就降帧率/码率，同网可 60fps。跨网建议 30fps + 8–12Mbps。</div>'
+      + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>');
+
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
     body += setSection('个性化', p13nInner(lic));
 
@@ -3400,6 +3444,7 @@ bindImg(img);
     clipboardBind(box);
     // 小文件传输：上传/列表/下载
     fileBind(box);
+    h264QualityBind(box);
     // 高性能模式（Moonlight）：状态 + 配对
     sunshineBind(box);
 

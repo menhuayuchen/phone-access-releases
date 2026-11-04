@@ -141,10 +141,10 @@ let rtcActiveAt = 0;   // 最近一次有 RTC 观众/刚开启的时间（用于
 const cfgH264 = cfgScreen.h264 || {};
 const FFMPEG_EXE = join(HERE, 'bin', 'ffmpeg.exe');
 const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
-const H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
-const H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
-const H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
-const H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
+let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
+let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
+let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 // 编码器：优先 NVENC（硬编，延迟低、CPU 几乎为 0），不可用时回退 h264_mf（软编）
 let H264_ENCODER = 'mf';
 try {
@@ -2864,6 +2864,30 @@ function handler(req, res) {
     return;
   }
 
+  if (url.pathname === '/h264-quality') {
+    const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, maxCapture: CAP_W });
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    let b = '';
+    req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
+    req.on('end', () => {
+      let m = {};
+      try { m = JSON.parse(b || '{}'); } catch { }
+      const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width);
+      if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
+      if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
+      if (Number.isFinite(w) && w >= 640) {
+        H264_W = evenDown(Math.min(CAP_W, Math.round(w)));
+        H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+      }
+      // 重启编码器让新参数生效（页面会重新连接）
+      if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
+      h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
+      if (h264.clients.size > 0) setTimeout(() => { if (!h264.proc) h264Start(); }, 300);
+      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS });
+    });
+    return;
+  }
   if (url.pathname === '/h264-status') {
     // 页面用它决定「清晰模式走 H.264 还是回落 MJPEG」
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
