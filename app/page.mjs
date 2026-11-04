@@ -197,6 +197,7 @@ const ZOOM_MODE_KEY = 'zoomMode';
 let zoomMode = 'system';
 try { if (localStorage.getItem(ZOOM_MODE_KEY) === 'view') zoomMode = 'view'; } catch (e) {}
 const view = { scale: 1, tx: 0, ty: 0 };
+let viewPan = null;
 function applyView() {
   const on = view.scale > 1.0001;
   const tf = on ? 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')' : '';
@@ -208,7 +209,7 @@ function applyView() {
     const cvEl = document.getElementById('wccv');
     if (cvEl) { cvEl.style.transformOrigin = '0 0'; cvEl.style.transform = tf; }
   } catch (e) {}
-  if (viewReset) viewReset.style.display = on ? 'block' : 'none';
+  if (viewReset) viewReset.style.display = 'none';   // 改用右侧 +/−/⟳ 按钮，左侧恢复按钮不再显示
 }
 function resetView() {
   view.scale = 1; view.tx = 0; view.ty = 0;
@@ -1553,6 +1554,12 @@ if (kbundo) {
 let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoomG = null, viewG = null, zoomCtrl = false, lastTapAt = 0;
 
 overlay.addEventListener('pointerdown', (e) => {
+  // 画面缩放放大后：单指拖动 = 平移画面（不再发送远程移动）
+  if (zoomMode === 'view' && view.scale > 1.001 && e.pointerType !== 'mouse') {
+    viewPan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+    try { overlay.setPointerCapture(e.pointerId); } catch (err) {}
+    return;
+  }
   if (!state.control) return;
   if (ptr && !ptr.up) return;
   const q = layoutPoint(e.clientX, e.clientY);
@@ -1584,6 +1591,14 @@ function hideMouseCur() {
   if (mc) mc.style.display = 'none';
 }
 overlay.addEventListener('pointermove', (e) => {
+  // 画面缩放放大后：单指拖动平移本机画面
+  if (viewPan && e.pointerId === viewPan.id) {
+    const r = stage.getBoundingClientRect();
+    view.tx = Math.min(0, Math.max(r.width * (1 - view.scale), viewPan.tx + (e.clientX - viewPan.x)));
+    view.ty = Math.min(0, Math.max(r.height * (1 - view.scale), viewPan.ty + (e.clientY - viewPan.y)));
+    applyView();
+    return;
+  }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
   if (e.pointerType === 'mouse' && state.control) {
     const qm = layoutPoint(e.clientX, e.clientY);
@@ -1617,6 +1632,7 @@ overlay.addEventListener('pointermove', (e) => {
 });
 
 overlay.addEventListener('pointerup', (e) => {
+  if (viewPan) { viewPan = null; return; }
   if (longTimer) { clearTimeout(longTimer); longTimer = null; }
   if (!ptr || ptr.up) return;
   ptr.up = true;
