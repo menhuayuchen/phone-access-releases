@@ -107,7 +107,15 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   #bar button, #bar .btn, .bar button, header button { padding: 5px 8px !important; font-size: 12px !important; }
   #hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
-#mobSheet button{padding:8px 12px;border-radius:9px;background:#2a2e35;color:#e6e8eb;border:0;font-size:13px;}</style>
+#mobSheet button{padding:8px 12px;border-radius:9px;background:#2a2e35;color:#e6e8eb;border:0;font-size:13px;}@media (max-width: 960px) {
+  #bar, .bar, header { display: flex; align-items: center; flex-wrap: nowrap !important; gap: 6px; padding: 4px 6px !important; overflow: visible !important; }
+  #bar button, .bar button, header button { flex: 0 0 auto; white-space: nowrap; padding: 6px 10px !important; font-size: 13px !important; }
+  #bar select, .bar select { flex: 1 1 auto; min-width: 0; }
+  #stat { display: none !important; }
+  #hint { display: none !important; }
+  #hud { position: fixed; left: 8px; bottom: 8px; z-index: 9998; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px !important; background: rgba(0,0,0,.55); padding: 3px 6px; border-radius: 6px; }
+}
+</style>
 </head><body>
 <header>
   <button id="mCrisp">清晰</button>
