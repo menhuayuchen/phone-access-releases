@@ -2526,6 +2526,8 @@ bindImg(img);
           body: JSON.stringify({ width: Number(wSel.value), fps: Number(fpsSel.value), kbps: Number(kSel.value) })
         })).json();
         if (j && j.ok) {
+          try { fpsSel.value = String(j.fps); wSel.value = String(j.width); kSel.value = String(j.kbps); } catch (e) { }
+          updateFlow();
           setMsg('已生效：' + j.width + '×' + j.height + ' · ' + j.fps + 'fps · ' + Math.round(j.kbps / 1000) + 'Mbps', '#8CE58C');
           updateFlow();
           if (state.mode === 'h264') restartH264();
