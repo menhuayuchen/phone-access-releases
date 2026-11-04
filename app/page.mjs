@@ -3987,7 +3987,7 @@ bindImg(img);
     sheet.id = 'mobSheet';
     sheet.style.cssText = 'display:none;position:fixed;left:0;right:0;bottom:0;z-index:10000;background:#1c1f24;padding:10px;gap:8px;flex-wrap:wrap;border-top:1px solid #333';
     document.body.appendChild(sheet);
-    ids.forEach(function (id) { var b = document.getElementById(id); if (b) sheet.appendChild(b); });
+    var slots = ids.map(function (id) { var b = document.getElementById(id); return b ? { b: b, p: b.parentNode, n: b.nextSibling } : null; }).filter(Boolean);
     more.onclick = function () { sheet.style.display = (sheet.style.display === 'flex') ? 'none' : 'flex'; };
     function apply() {
       if (matchMedia('(max-width:820px)').matches) { more.style.display = ''; }
