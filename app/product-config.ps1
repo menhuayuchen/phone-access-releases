@@ -45,6 +45,28 @@ function ConvertTo-BoolOr {
   return $Default
 }
 
+# 两个配置对象深合并（本地覆盖用）：覆盖文件里有的键优先，对象逐层合并，其它类型直接替换。
+function Merge-ConfigObject {
+  param($Base, $Overlay)
+  if ($null -eq $Overlay) { return $Base }
+  if ($null -eq $Base) { return $Overlay }
+  $baseIsObj = ($Base -is [System.Management.Automation.PSCustomObject])
+  $overIsObj = ($Overlay -is [System.Management.Automation.PSCustomObject])
+  if (-not $baseIsObj -or -not $overIsObj) { return $Overlay }
+  $result = [ordered]@{}
+  foreach ($p in $Base.PSObject.Properties) { $result[$p.Name] = $p.Value }
+  foreach ($p in $Overlay.PSObject.Properties) {
+    $curIsObj = ($result.Contains($p.Name)) -and ($result[$p.Name] -is [System.Management.Automation.PSCustomObject])
+    $newIsObj = ($p.Value -is [System.Management.Automation.PSCustomObject])
+    if ($curIsObj -and $newIsObj) {
+      $result[$p.Name] = Merge-ConfigObject -Base $result[$p.Name] -Overlay $p.Value
+    } else {
+      $result[$p.Name] = $p.Value
+    }
+  }
+  return [pscustomobject]$result
+}
+
 # 读 product.config.json，返回一个字段一定齐全的对象（缺什么补内置默认值）。
 # 配置文件不存在 / JSON 坏了 / 字段类型不对，一律退回默认值继续跑，不抛异常。
 function Get-ProductConfig {
@@ -66,6 +88,24 @@ function Get-ProductConfig {
     [void]$warnings.Add("没有读到 $file（或内容不是合法 JSON），全部按内置默认值运行")
   }
 
+  # 本地覆盖（2026-11-04 新增）：<AppDir>\product.config.local.json，可选。
+  # 为什么需要：开发时把产品源 app\ 下的文件同步到安装目录，会顺手把 product.config.json 覆盖回去，
+  # 本机改过的 enableDsh 等开关就丢了 —— 2026-11-04 实际踩到：同步一次，方案乙被打回方案甲，
+  # 手机上忽然"登不上 DSH"。这个文件不存在于产品源里，同步不会碰它，本机设置因此能活下来。
+  # 约定：只有需要"本机/客户现场覆盖出厂默认"的键才写在这里（enableDsh、ports.*、tailnetServePort 等）。
+  $localFile = Join-Path $AppDir 'product.config.local.json'
+  if (Test-Path -LiteralPath $localFile) {
+    try {
+      $localText = Get-Content -LiteralPath $localFile -Raw -Encoding UTF8 -ErrorAction Stop
+      if ($localText -and $localText.Trim()) {
+        $overlay = $localText | ConvertFrom-Json
+        $raw = Merge-ConfigObject -Base $raw -Overlay $overlay
+      }
+    } catch {
+      [void]$warnings.Add("$localFile 不是合法 JSON，已忽略本地覆盖")
+    }
+  }
+
   $installDir = [string](Get-ConfigValue $raw @('installDir') '%LOCALAPPDATA%\PhoneAccess')
   if ($installDir.Trim()) {
     try { $installDir = [Environment]::ExpandEnvironmentVariables($installDir.Trim().Trim('"')) } catch { }
@@ -76,6 +116,8 @@ function Get-ProductConfig {
   $cfg = [pscustomobject]@{
     ConfigFile       = $file
     ConfigFound      = ($null -ne $raw)
+    ConfigLocalFile  = $localFile
+    ConfigLocalFound = (Test-Path -LiteralPath $localFile)
     Warnings         = @()
     ports            = [pscustomobject]@{
       door   = (ConvertTo-PortOr (Get-ConfigValue $raw @('ports', 'door') 8650) 8650)

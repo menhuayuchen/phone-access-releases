@@ -180,6 +180,21 @@ if ($enableDsh) {
       ($serveBefore -split "`r?`n" | Select-Object -First 8) | ForEach-Object { Write-Host "    $_" }
     }
     & $ts serve --bg --http=$servePort "http://127.0.0.1:$tailPort" | Out-Null
+    # 改动（2026-11-04）：再给对话控制台单开一个 **HTTPS** 入口（默认 8443 → 同一扇门）。
+    # 为什么需要：:80 的 HTTPS 已经给了画面页（那才是客户要"添加到主屏幕"的 App 入口），
+    # 手机浏览器里存的 DSH 标签如果是 https://<域名>/ 就会落到画面页，看起来"标签失效、要重输地址"。
+    # 这个入口是纯 tailnet 的，不对外暴露；关掉用 tailscale serve --https=8443 off。
+    # 端口可被配置覆盖：dshServePort（缺省 8443）。
+    $dshServePort = 8443
+    try {
+      $cfgForServe = Get-ProductConfig -AppDir $here
+      $p = Get-ConfigValue $cfgForServe @('dshServePort') 0
+      if ($p) { $dshServePort = [int]$p }
+    } catch { }
+    if ($dshServePort -gt 0) {
+      & $ts serve --bg --https=$dshServePort "http://127.0.0.1:$tailPort" 2>&1 | Out-Null
+      if ($LASTEXITCODE -ne 0) { Write-Host "[!] HTTPS 控制台入口 :$dshServePort 没建起来（端口可能被占用），改用 http://<tailnet 地址>:$dshPort/ 也能用" }
+    }
   } else {
     Write-Host '[!] Tailscale is not connected; the name-based entry is skipped (IP still works).'
   }

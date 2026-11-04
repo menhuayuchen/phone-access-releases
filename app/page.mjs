@@ -283,6 +283,7 @@ let stopped = document.hidden, lowTimer = null, pc = null, ws = null, statsTimer
 const isVideoMode = () => (state.mode === 'raw' || state.mode === 'h264');
 function videoSourceSize() {
   if (state.mode === 'h264') {
+    if (h264.useTrack && vid.videoWidth) return { w: vid.videoWidth, h: vid.videoHeight };
     if (h264.streamW) return { w: h264.streamW, h: h264.streamH };
     const cv = h264.canvas || document.getElementById('wccv');
     return { w: (cv && cv.width) || 16, h: (cv && cv.height) || 9 };
@@ -613,22 +614,50 @@ async function startH264() {
   img.classList.remove('show');
   vid.classList.remove('show');
   try { abortStream(); } catch (e) { }
-  let cv = document.getElementById('wccv');
-  if (!cv) {
-    cv = document.createElement('canvas');
-    cv.id = 'wccv';
-    cv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;background:#000;display:none;';
-    stage.appendChild(cv);
+  h264.useTrack = false;
+  h264.track = null; h264.writer = null; h264.pendingFrame = null;
+  if (window.MediaStreamTrackGenerator) {
+    // 直接输出到 <video>（GPU 合成，比 canvas drawImage 省电、延迟更低）
+    try {
+      const gen = new MediaStreamTrackGenerator({ kind: 'video' });
+      h264.track = gen;
+      h264.writer = gen.writable.getWriter();
+      vid.srcObject = new MediaStream([gen]);
+      vid.classList.add('show');
+      vid.muted = !state.audio;
+      vid.play().catch(function () { });
+      h264.useTrack = true;
+    } catch (e) { h264.useTrack = false; }
   }
-  cv.style.display = 'block';
-  h264.canvas = cv;
-  h264.ctx = cv.getContext('2d', { alpha: false });
+  if (!h264.useTrack) {
+    let cv = document.getElementById('wccv');
+    if (!cv) {
+      cv = document.createElement('canvas');
+      cv.id = 'wccv';
+      cv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;background:#000;display:none;';
+      stage.appendChild(cv);
+    }
+    cv.style.display = 'block';
+    h264.canvas = cv;
+    h264.ctx = cv.getContext('2d', { alpha: false });
+  }
   h264.configured = false;
   h264.pendingFrames = [];
   h264.frames = 0;
   h264.fps = 0; h264.fpsAt = Date.now(); h264.fpsN = 0;
   h264.decoder = new VideoDecoder({
     output: function (frame) {
+      if (h264.useTrack && h264.writer) {
+        try {
+          const p = h264.writer.write(frame);   // VideoFrame 所有权交给 track
+          if (p && p.catch) p.catch(function () { try { frame.close(); } catch (e) { } });
+          h264.frames++;
+          h264.fpsN++;
+          const now = Date.now();
+          if (now - h264.fpsAt >= 1000) { h264.fps = h264.fpsN * 1000 / (now - h264.fpsAt); h264.fpsAt = now; h264.fpsN = 0; }
+        } catch (e) { try { frame.close(); } catch (e2) { } }
+        return;
+      }
       // 只保留最新一帧，用 rAF 画：解码比屏幕快时丢掉中间帧，延迟不会越积越大
       if (h264.pendingFrame) { try { h264.pendingFrame.close(); } catch (e) { } }
       h264.pendingFrame = frame;
@@ -1824,7 +1853,7 @@ async function pollStats() {
           // 免得用户看到三千毫秒以为画面很卡、实际却很流畅。
           + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
     } else if (state.mode === 'h264') {
-      hud.textContent = 'H.264(WebCodecs) · ' + (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')
+      hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
         + ' · ' + (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…')
         + ' · 已解码 ' + h264.frames + ' 帧';
     } else if (state.lowBw) {

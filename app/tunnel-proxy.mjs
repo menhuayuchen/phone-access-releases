@@ -11,7 +11,7 @@
 //      按新鲜度依次试，第一个能用的才发出去。以前是"信日志"，日志被清空就把死 token 发出去。
 //   2. 页面级 401（有人拿旧 token / cookie 丢了 / 在另一个域名打开）不再显示那句英文，
 //      而是给一个可点的页面：从 /go 进来过的（带 dshk cookie）自动跳回 /go 重新登录。
-//   3. /go 成功时种一个 dshk cookie（存 key 的 sha256，不是 key 本身），30 天，
+//   3. /go 成功时种一个 dshk cookie（存 key 的 sha256，不是 key 本身），1 年，
 //      用来判断"这台设备本来就持有密钥"，所以自动跳转不会把密钥门槛抹掉。
 //
 // Usage: node tunnel-proxy.mjs [listenHost] [listenPort] [targetHost] [targetPort]
@@ -267,7 +267,7 @@ const server = http.createServer((req, res) => {
       res.writeHead(302, {
         location: '/?token=' + token,
         'cache-control': 'no-store',
-        'set-cookie': `dshk=${keyDigest(key)}; Path=/; Max-Age=604800; HttpOnly; SameSite=Lax`,
+        'set-cookie': `dshk=${keyDigest(key)}; Path=/; Max-Age=31536000; HttpOnly; SameSite=Lax`,
       });
       res.end();
     }).catch(() => {
