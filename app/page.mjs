@@ -102,6 +102,11 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   #hud { font-size: 11px !important; }
   #bar, .bar, header { font-size: 12px !important; padding: 2px 6px !important; }
 }
+@media (max-width: 820px) {
+  #bar, .bar, header { flex-wrap: nowrap !important; overflow-x: auto !important; padding: 2px 6px !important; }
+  #bar button, #bar .btn, .bar button, header button { padding: 5px 8px !important; font-size: 12px !important; }
+  #hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+}
 </style>
 </head><body>
 <header>
