@@ -841,7 +841,7 @@ async function startH264() {
     try {
       const sig = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/h264-rtc?k=' + encodeURIComponent(KEY) + '&s=' + SID);
       const pc = new RTCPeerConnection({ iceServers: [] });
-      const ch = pc.createDataChannel('frames', { ordered: false, maxRetransmits: 0 });
+      const ch = pc.createDataChannel('frames', { ordered: true, maxRetransmits: 0 });
       ch.binaryType = 'arraybuffer';
       const parts = new Map();
       ch.onopen = async function () {
@@ -860,21 +860,13 @@ async function startH264() {
       };
       ch.onmessage = function (ev) {
         const b = new Uint8Array(ev.data);
-        if (b.length < 15) return;
+        if (b.length < 10) return;
         const dv = new DataView(ev.data);
-        const ts = dv.getInt32(1), isKey = b[5] === 1, total = dv.getUint32(6), off = dv.getUint32(10);
-        const pay = b.subarray(14);
-        let ent = parts.get(ts);
-        if (!ent) { ent = { buf: new Uint8Array(total), got: 0, key: isKey }; parts.set(ts, ent); }
-        if (off + pay.length > total) return;
-        ent.buf.set(pay, off); ent.got += pay.length;
-        if (ent.got >= total) {
-          parts.delete(ts);
-          if (!h264.rtcStarted) { if (!ent.key) return; h264.rtcStarted = true; }
-          try { h264.decoder.decode(new EncodedVideoChunk({ type: ent.key ? 'key' : 'delta', timestamp: ts, data: ent.buf })); } catch (err) { }
-        }
-      };
-      sig.onopen = async function () {
+        const ts = dv.getInt32(0), isKey = b[4] === 1, len = dv.getUint32(5);
+        if (len <= 0 || b.length < 9 + len) return;
+        if (!h264.rtcStarted) { if (!isKey) return; h264.rtcStarted = true; }
+        try { h264.decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: ts, data: b.subarray(9, 9 + len) })); } catch (err) { }
+      };      sig.onopen = async function () {
         try {
           const offer = await pc.createOffer();
           await pc.setLocalDescription(offer);

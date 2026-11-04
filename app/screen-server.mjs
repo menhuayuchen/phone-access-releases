@@ -367,25 +367,15 @@ const h264RtcChannels = new Set();
 
 function h264RtcSendFrame(frame) {
   if (h264RtcChannels.size === 0) return;
-  const CHUNK = 12000;
-  const total = frame.data.length;
-  let off = 0;
-  while (off < total) {
-    const part = frame.data.subarray(off, Math.min(off + CHUNK, total));
-    const head = Buffer.alloc(14);
-    head[0] = off === 0 ? (part.length === total ? 0 : 1) : (off + part.length >= total ? 3 : 2);
-    head.writeInt32BE(frame.ts, 1);      // 1..4
-    head[5] = frame.key ? 1 : 0;
-    head.writeUInt32BE(total, 6);        // 6..9
-    head.writeUInt32BE(off, 10);         // 10..13
-    const msg = Buffer.concat([head, part]);
-    for (const ch of h264RtcChannels) {
-      try { if (ch.readyState === 'open' && ch.bufferedAmount < 512 * 1024) ch.send(msg); } catch { }
-    }
-    off += part.length;
+  const head = Buffer.alloc(9);
+  head.writeInt32BE(frame.ts, 0);
+  head[4] = frame.key ? 1 : 0;
+  head.writeUInt32BE(frame.data.length, 5);
+  const msg = Buffer.concat([head, frame.data]);
+  for (const ch of h264RtcChannels) {
+    try { if (ch.readyState === 'open' && ch.bufferedAmount < 1024 * 1024) ch.send(msg); } catch { }
   }
 }
-
 function attachH264Rtc(server, key) {
   const wss = new WebSocketServer({ noServer: true });
   server.on('upgrade', (req, socket, head) => {
