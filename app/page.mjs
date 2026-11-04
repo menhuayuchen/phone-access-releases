@@ -107,7 +107,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   #bar button, #bar .btn, .bar button, header button { padding: 5px 8px !important; font-size: 12px !important; }
   #hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
-</style>
+#mobSheet button{padding:8px 12px;border-radius:9px;background:#2a2e35;color:#e6e8eb;border:0;font-size:13px;}</style>
 </head><body>
 <header>
   <button id="mCrisp">清晰</button>
@@ -3870,6 +3870,31 @@ bindImg(img);
       }).catch(() => { });
     }, 30000);
   }).catch(() => { /* 拿不到许可证信息时不打扰用户：画面照常能看，个性化保持默认 */ });
+})();
+</script>
+<script>
+(function () {
+  try {
+    var ids = ['deskBtn','snd','ctl','kbBtn','lowbw','zoomBtn','cmdBtn'];
+    var bar = document.getElementById('mCrisp').parentNode;
+    var more = document.createElement('button');
+    more.id = 'mobMore';
+    more.textContent = '⋯ 更多';
+    more.style.display = 'none';
+    bar.insertBefore(more, document.getElementById('deskBtn'));
+    var sheet = document.createElement('div');
+    sheet.id = 'mobSheet';
+    sheet.style.cssText = 'display:none;position:fixed;left:0;right:0;bottom:0;z-index:10000;background:#1c1f24;padding:10px;gap:8px;flex-wrap:wrap;border-top:1px solid #333';
+    document.body.appendChild(sheet);
+    ids.forEach(function (id) { var b = document.getElementById(id); if (b) sheet.appendChild(b); });
+    more.onclick = function () { sheet.style.display = (sheet.style.display === 'flex') ? 'none' : 'flex'; };
+    function apply() {
+      if (matchMedia('(max-width:820px)').matches) { more.style.display = ''; }
+      else { more.style.display = 'none'; sheet.style.display = 'none'; }
+    }
+    apply();
+    window.addEventListener('resize', apply);
+  } catch (e) {}
 })();
 </script>
 </body></html>`;
