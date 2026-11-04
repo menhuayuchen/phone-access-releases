@@ -780,7 +780,7 @@ async function startH264() {
       startMjpeg();
     }
   });
-  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const connectWs = () => {  const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const sock = new WebSocket(proto + '//' + location.host + '/ws-h264?k=' + encodeURIComponent(KEY) + '&s=' + SID);
   h264.ws = sock;
   sock.binaryType = 'arraybuffer';
@@ -834,7 +834,66 @@ async function startH264() {
   };
   h264.failTimer = setTimeout(function () {
     if (state.mode === 'h264' && !h264.configured) { setNote('高清模式没连上，已切回清晰模式'); startMjpeg(); }
-  }, 5000);
+  }, 5000);  };
+
+  const useRtc = new URLSearchParams(location.search).get('rtc') === '1' && !!window.RTCPeerConnection;
+  if (useRtc) {
+    try {
+      const sig = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/h264-rtc?k=' + encodeURIComponent(KEY) + '&s=' + SID);
+      const pc = new RTCPeerConnection({ iceServers: [] });
+      const ch = pc.createDataChannel('frames', { ordered: false, maxRetransmits: 0 });
+      ch.binaryType = 'arraybuffer';
+      const parts = new Map();
+      ch.onopen = async function () {
+        for (let i = 0; i < 20; i++) {
+          try {
+            const init = await (await fetch('/h264-init?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+            if (init && init.ok && init.description) {
+              const d = Uint8Array.from(atob(init.description), function (c) { return c.charCodeAt(0); });
+              h264.decoder.configure({ codec: init.codec, description: d, optimizeForLatency: true });
+              h264.streamW = init.width || 0; h264.streamH = init.height || 0; h264.configured = true;
+              return;
+            }
+          } catch (e) { }
+          await new Promise(function (r) { setTimeout(r, 250); });
+        }
+      };
+      ch.onmessage = function (ev) {
+        const b = new Uint8Array(ev.data);
+        if (b.length < 15) return;
+        const dv = new DataView(ev.data);
+        const ts = dv.getInt32(1), isKey = b[5] === 1, total = dv.getUint32(6), off = dv.getUint32(10);
+        const pay = b.subarray(14);
+        let ent = parts.get(ts);
+        if (!ent) { ent = { buf: new Uint8Array(total), got: 0, key: isKey }; parts.set(ts, ent); }
+        if (off + pay.length > total) return;
+        ent.buf.set(pay, off); ent.got += pay.length;
+        if (ent.got >= total) {
+          parts.delete(ts);
+          try { h264.decoder.decode(new EncodedVideoChunk({ type: ent.key ? 'key' : 'delta', timestamp: ts, data: ent.buf })); } catch (err) { }
+        }
+      };
+      sig.onopen = async function () {
+        try {
+          const offer = await pc.createOffer();
+          await pc.setLocalDescription(offer);
+          sig.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
+        } catch (e) { connectWs(); }
+      };
+      sig.onmessage = async function (ev) {
+        try {
+          const m = JSON.parse(ev.data);
+          if (m.type === 'answer') await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
+          else if (m.type === 'answer-error') connectWs();
+        } catch (e) { }
+      };
+      setTimeout(function () {
+        if (state.mode === 'h264' && !h264.configured) { try { sig.close(); pc.close(); } catch (e) { } connectWs(); }
+      }, 5000);
+    } catch (e) { connectWs(); }
+  } else {
+    connectWs();
+  }
 }function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
   // MJPEG 流已退役（2026-11-04）：浏览器不支持 WebCodecs 或高清失败时，
