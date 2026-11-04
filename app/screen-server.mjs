@@ -30,6 +30,8 @@ const thumb = { cacheKey: '', buf: null };
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 import { createRtc } from './rtc.mjs';
+import wrtcNs from '@roamhq/wrtc';
+const RTCPeerConnection = wrtcNs.RTCPeerConnection;
 import { createInput } from './input.mjs';
 import { startAudio } from './audio.mjs';
 import { createDecoder } from './decode.mjs';
@@ -352,11 +354,86 @@ function processH264Buffer() {
     for (const s of samples) {
       h264.tsUs = (h264.tsUs || 0) + Math.round(1e6 / H264_FPS);
       for (const ws of h264.clients) h264SendFrame(ws, h264.tsUs, s.key, s.data);
+      h264RtcSendFrame({ ts: h264.tsUs, key: s.key, data: s.data });
     }
     h264.frames += samples.length;
     h264.pending = h264.pending.subarray(mdat.end);
     continue;
   }
+}
+// ---- WebRTC DataChannel 传输（UDP 语义：无序、不重传）--------------------
+const h264RtcChannels = new Set();
+
+function h264RtcSendFrame(frame) {
+  if (h264RtcChannels.size === 0) return;
+  const CHUNK = 12000;
+  const total = frame.data.length;
+  let off = 0;
+  while (off < total) {
+    const part = frame.data.subarray(off, Math.min(off + CHUNK, total));
+    const head = Buffer.alloc(14);
+    head[0] = off === 0 ? (part.length === total ? 0 : 1) : (off + part.length >= total ? 3 : 2);
+    head.writeInt32BE(frame.ts, 1);      // 1..4
+    head[5] = frame.key ? 1 : 0;
+    head.writeUInt32BE(total, 6);        // 6..9
+    head.writeUInt32BE(off, 10);         // 10..13
+    const msg = Buffer.concat([head, part]);
+    for (const ch of h264RtcChannels) {
+      try { if (ch.readyState === 'open') ch.send(msg); } catch { }
+    }
+    off += part.length;
+  }
+}
+
+function attachH264Rtc(server, key) {
+  const wss = new WebSocketServer({ noServer: true });
+  server.on('upgrade', (req, socket, head) => {
+    let url;
+    try { url = new URL(req.url, 'http://x'); } catch { try { socket.destroy(); } catch { } return; }
+    if (url.pathname !== '/h264-rtc') return;
+    if (!sourceAllowed(req) || !authorized(req, url)) {
+      try { socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\n\r\n'); } catch { }
+      socket.destroy();
+      return;
+    }
+    try { socket.setNoDelay(true); } catch { }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
+  wss.on('connection', (ws) => {
+    let pc = null;
+    let channels = [];
+    const cleanup = () => {
+      for (const ch of channels) { try { h264RtcChannels.delete(ch); } catch { } }
+      channels = [];
+      try { if (pc) pc.close(); } catch { }
+      pc = null;
+    };
+    ws.on('close', cleanup);
+    ws.on('message', async (raw) => {
+      let msg = null;
+      try { msg = JSON.parse(String(raw)); } catch { return; }
+      if (!msg || msg.type !== 'offer' || !msg.sdp) return;
+      try {
+        pc = new RTCPeerConnection({ iceServers: [] });
+        pc.ondatachannel = (ev) => {
+          const ch = ev.channel;
+          if (ch.label !== 'frames') return;
+          ch.binaryType = 'arraybuffer';
+          ch.onopen = () => { h264RtcChannels.add(ch); h264Start(); };
+          ch.onclose = () => { h264RtcChannels.delete(ch); };
+          channels.push(ch);
+        };
+        await pc.setRemoteDescription({ type: 'offer', sdp: msg.sdp });
+        const answer = await pc.createAnswer();
+        await pc.setLocalDescription(answer);
+        try { ws.send(JSON.stringify({ type: 'answer', sdp: pc.localDescription.sdp })); } catch { }
+      } catch (e) {
+        try { ws.send(JSON.stringify({ type: 'answer-error', error: String(e.message || e) })); } catch { }
+        cleanup();
+      }
+    });
+    ws.on('error', () => { });
+  });
 }
 function h264Start() {
   if (!H264_ENABLED || h264.proc) return;
@@ -3333,6 +3410,7 @@ for (const host of hosts) {
     return true;
   });
   attachH264Ws(s, KEY);
+  attachH264Rtc(s, KEY);
   attachAudioWs(s, KEY);
   s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
   s.listen(port, host, () => {
