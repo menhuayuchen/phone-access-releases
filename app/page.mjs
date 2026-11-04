@@ -3946,7 +3946,16 @@ bindImg(img);
     setTimeout(inject, 1500);
   } catch (e) {}
 })();
-</script></body></html>`;
+</script><style>#zoomPop{z-index:10001 !important;}</style>
+<script>
+(function(){
+  try{
+    var sheet=document.getElementById('mobSheet');
+    if(sheet){ sheet.addEventListener('click',function(e){ if(e.target && e.target.tagName==='BUTTON'){ setTimeout(function(){ sheet.style.display='none'; },60); } }); }
+  }catch(e){}
+})();
+</script>
+</body></html>`;
 
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__KEY__/g, encodeURIComponent(key))
