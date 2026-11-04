@@ -236,12 +236,12 @@ function updateZoomCtl() {
   if (!el) {
     el = document.createElement('div');
     el.id = 'zoomCtl';
-    el.style.cssText = 'position:fixed;right:10px;bottom:130px;z-index:9997;display:none;flex-direction:column;gap:8px';
+    el.style.cssText = 'position:fixed;right:8px;bottom:130px;z-index:9997;display:none;flex-direction:column;gap:2px;background:rgba(20,22,26,.35);border:1px solid rgba(255,255,255,.12);border-radius:26px;padding:4px;opacity:.55;transition:opacity .2s'; el.addEventListener('pointerdown', function(){ el.style.opacity = '1'; }); el.addEventListener('pointerleave', function(){ el.style.opacity = '.55'; });
     const items = [['＋', 1.25], ['－', 0.8], ['⟳', 0]];
     items.forEach(function (it) {
       const b = document.createElement('button');
       b.textContent = it[0];
-      b.style.cssText = 'width:44px;height:44px;border-radius:22px;background:rgba(30,32,38,.92);color:#e6e8eb;border:1px solid #3a3e4a;font-size:20px;line-height:1';
+      b.style.cssText = 'width:38px;height:38px;border-radius:19px;background:transparent;color:#e6e8eb;border:0;font-size:18px;line-height:1';
       b.addEventListener('click', function (e) {
         e.stopPropagation();
         if (it[1] === 0) { resetView(); return; }
@@ -1556,7 +1556,7 @@ let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoo
 overlay.addEventListener('pointerdown', (e) => {
   // 画面缩放放大后：单指拖动 = 平移画面（不再发送远程移动）
   if (zoomMode === 'view' && view.scale > 1.001 && e.pointerType !== 'mouse') {
-    viewPan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty };
+    viewPan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, t: Date.now(), moved: false };
     try { overlay.setPointerCapture(e.pointerId); } catch (err) {}
     return;
   }
@@ -1593,10 +1593,14 @@ function hideMouseCur() {
 overlay.addEventListener('pointermove', (e) => {
   // 画面缩放放大后：单指拖动平移本机画面
   if (viewPan && e.pointerId === viewPan.id) {
-    const r = stage.getBoundingClientRect();
-    view.tx = Math.min(0, Math.max(r.width * (1 - view.scale), viewPan.tx + (e.clientX - viewPan.x)));
-    view.ty = Math.min(0, Math.max(r.height * (1 - view.scale), viewPan.ty + (e.clientY - viewPan.y)));
-    applyView();
+    const dx = e.clientX - viewPan.x, dy = e.clientY - viewPan.y;
+    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) viewPan.moved = true;
+    if (viewPan.moved) {
+      const r = stage.getBoundingClientRect();
+      view.tx = Math.min(0, Math.max(r.width * (1 - view.scale), viewPan.tx + dx));
+      view.ty = Math.min(0, Math.max(r.height * (1 - view.scale), viewPan.ty + dy));
+      applyView();
+    }
     return;
   }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
@@ -1632,7 +1636,21 @@ overlay.addEventListener('pointermove', (e) => {
 });
 
 overlay.addEventListener('pointerup', (e) => {
-  if (viewPan) { viewPan = null; return; }
+  if (viewPan) {
+    const vp = viewPan; viewPan = null;
+    if (!vp.moved) {
+      const qi = layoutPoint(e.clientX, e.clientY);
+      const pi = toScreen(qi.x, qi.y);
+      const nowI = Date.now();
+      const dblI = nowI - lastTapAt < 320;
+      lastTapAt = dblI ? 0 : nowI;
+      queue({ t: 'move', x: pi.x, y: pi.y });
+      queue({ t: 'click', b: 0, n: dblI ? 2 : 1 });
+      ripple(qi.x, qi.y);
+      buzz(12);
+    }
+    return;
+  }
   if (longTimer) { clearTimeout(longTimer); longTimer = null; }
   if (!ptr || ptr.up) return;
   ptr.up = true;
