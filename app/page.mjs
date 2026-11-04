@@ -214,15 +214,56 @@ function resetView() {
   view.scale = 1; view.tx = 0; view.ty = 0;
   applyView();
 }
+// 以 (cx,cy) 为不动点缩放画面（按钮用；手势路径另有实现）
+function zoomViewAt(cx, cy, factor) {
+  const r = stage.getBoundingClientRect();
+  const px = cx - r.left, py = cy - r.top;
+  let s = Math.max(1, Math.min(5, view.scale * factor));
+  if (s <= 1.0001) { view.scale = 1; view.tx = 0; view.ty = 0; }
+  else {
+    const k = s / view.scale;
+    view.tx = px - (px - view.tx) * k;
+    view.ty = py - (py - view.ty) * k;
+    view.scale = s;
+    view.tx = Math.min(0, Math.max(r.width * (1 - s), view.tx));
+    view.ty = Math.min(0, Math.max(r.height * (1 - s), view.ty));
+  }
+  applyView();
+}
+function updateZoomCtl() {
+  let el = document.getElementById('zoomCtl');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'zoomCtl';
+    el.style.cssText = 'position:fixed;right:10px;bottom:130px;z-index:9997;display:none;flex-direction:column;gap:8px';
+    const items = [['＋', 1.25], ['－', 0.8], ['⟳', 0]];
+    items.forEach(function (it) {
+      const b = document.createElement('button');
+      b.textContent = it[0];
+      b.style.cssText = 'width:44px;height:44px;border-radius:22px;background:rgba(30,32,38,.92);color:#e6e8eb;border:1px solid #3a3e4a;font-size:20px;line-height:1';
+      b.addEventListener('click', function (e) {
+        e.stopPropagation();
+        if (it[1] === 0) { resetView(); return; }
+        const r = stage.getBoundingClientRect();
+        zoomViewAt(r.left + r.width / 2, r.top + r.height / 2, it[1]);
+      });
+      el.appendChild(b);
+    });
+    document.body.appendChild(el);
+  }
+  el.style.display = (zoomMode === 'view') ? 'flex' : 'none';
+}
 function setZoomMode(m) {
   zoomMode = (m === 'view') ? 'view' : 'system';
   try { localStorage.setItem(ZOOM_MODE_KEY, zoomMode); } catch (e) {}
   if (zoomMode === 'system') { /* 画面缩放保留，用户可继续看大图；要复原点左侧按钮 */ }
+  updateZoomCtl();
 }
 if (viewReset) viewReset.addEventListener('click', (e) => { e.stopPropagation(); resetView(); });
 
 // ---- 顶部「缩放」折叠窗 -----------------------------------------------------
 const zoomBtn = document.getElementById('zoomBtn');
+updateZoomCtl();
 const zoomPop = document.getElementById('zoomPop');
 const headerEl = document.querySelector('header');
 function paintZoomPop() {
