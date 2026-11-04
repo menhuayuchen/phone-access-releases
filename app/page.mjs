@@ -369,7 +369,7 @@ async function loadSources(force) {
       state.window = 0; state.monitor = -1; applyRect();
       postMode({ monitor: -1, window: 0 });
       setNote('来源窗口已关闭，已切回全部屏幕');
-      if (state.mode === 'mjpeg') restartImg();
+      if (state.mode === 'mjpeg') startMjpeg();
     }
   } catch (e) { console.log('sources failed', e); }
 }
@@ -412,7 +412,7 @@ srcSel.addEventListener('change', async () => {
   await postMode({ monitor: state.monitor, window: state.window });
   setNote('已切换来源');
   buzz(8);
-  if (state.mode === 'mjpeg') restartImg(); else if (state.mode === 'h264') { fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rect: state.rect }) }).catch(function () {}); restartH264(); } else restartRtc();
+  if (state.mode === 'mjpeg') startMjpeg(); else if (state.mode === 'h264') { fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rect: state.rect }) }).catch(function () {}); restartH264(); } else restartRtc();
 });
 
 async function postMode(patch) {
@@ -552,7 +552,7 @@ function abortStream() {
   try { img.removeAttribute('src'); } catch (e) {}
 }
 
-function restartImg() {
+function startMjpeg() {
   stopLowBw();
   img.classList.add('show');
   vid.classList.remove('show');
@@ -865,7 +865,7 @@ async function restartRtc() {
       state.mode = 'mjpeg';
       try { btnCrisp.classList.add('on'); btnSmooth.classList.remove('on'); } catch (e) {}
       try { postMode({ mode: 'mjpeg', width: streamW }); } catch (e) {}
-      restartImg();
+      startMjpeg();
       return;
     }
     // 一直重试，但封顶 8 秒一次：以前超过 6 次就放弃，服务端重启十几秒后画面就再也不回来了
@@ -1856,7 +1856,7 @@ async function pollStats() {
     // 服务器明确说"我们这条流已经不在了"（viewers=0）时才重开，正常播放零重开。
     if (state.mode === 'mjpeg' && !state.lowBw && !stopped && img.getAttribute('src') && vw) {
       if (Number(vw[1]) === 0) {
-        if (++deadPolls >= 2) { deadPolls = 0; setStat('断流重连中…'); restartImg(); }
+        if (++deadPolls >= 2) { deadPolls = 0; setStat('断流重连中…'); startMjpeg(); }
       } else deadPolls = 0;
     } else deadPolls = 0;
     if (out && !state.lowBw) adaptStream(Number(out[1]), inp ? Number(inp[1]) : 0, drop ? Number(drop[1]) : 0, lagM ? Number(lagM[1]) : 0);
@@ -1894,7 +1894,7 @@ async function pollStats() {
   } catch (e) {
     hud.textContent = '';
     // /health 连续拿不到：多半是服务端在重启，6 秒后自己把流重开一次
-    if (++failPolls >= 3 && state.mode === 'mjpeg' && !stopped) { failPolls = 0; restartImg(); }
+    if (++failPolls >= 3 && state.mode === 'mjpeg' && !stopped) { failPolls = 0; startMjpeg(); }
   }
 }
 
@@ -1902,7 +1902,7 @@ document.addEventListener('visibilitychange', () => {
   if (document.hidden) { stopped = true; }
   else {
     stopped = false;
-    if (state.mode === 'mjpeg') restartImg();
+    if (state.mode === 'mjpeg') startMjpeg();
     else if (state.mode === 'h264') restartH264();
     // 流畅模式下回到前台时，如果连接已经断了/画面死了，主动重连一次
     else if (!pc || pc.connectionState !== 'connected') { rtcRetry = 0; restartRtc(); }
@@ -1932,7 +1932,7 @@ addEventListener('orientationchange', syncViewportHeight);
 if (window.visualViewport) window.visualViewport.addEventListener('resize', syncViewportHeight);
 function bindImg(el) {
   el.addEventListener('load', () => { imgOkAt = Date.now(); setStat(state.lowBw ? '省流量（2 帧/秒 · ' + lowBwWidth() + ' 宽）' : '直播中'); });
-  el.addEventListener('error', () => { if (!stopped) setTimeout(() => restartImg(), 1200); });
+  el.addEventListener('error', () => { if (!stopped) setTimeout(() => startMjpeg(), 1200); });
 }
 bindImg(img);
 
@@ -1944,11 +1944,11 @@ bindImg(img);
   startSourcesPolling();
   // 默认优先高清（H.264）；不支持或组件缺失时 startH264 会自己回落 MJPEG
   if (new URLSearchParams(location.search).get('mjpeg') === '1') {
-    restartImg();
+    startMjpeg();
   } else if (h264Supported()) {
     startH264();
   } else {
-    restartImg();
+    startMjpeg();
   }
   pollStats();
   statsTimer = setInterval(pollStats, 2000);
