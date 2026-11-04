@@ -627,6 +627,16 @@ async function startH264() {
       vid.muted = !state.audio;
       vid.play().catch(function () { });
       h264.useTrack = true;
+      h264.dispN = 0; h264.dispFps = 0; h264.dispAt = Date.now();
+      if (vid.requestVideoFrameCallback) {
+        const tick = () => {
+          h264.dispN++;
+          const now = Date.now();
+          if (now - h264.dispAt >= 1000) { h264.dispFps = h264.dispN * 1000 / (now - h264.dispAt); h264.dispN = 0; h264.dispAt = now; }
+          if (state.mode === 'h264' && h264.useTrack) vid.requestVideoFrameCallback(tick);
+        };
+        vid.requestVideoFrameCallback(tick);
+      }
     } catch (e) { h264.useTrack = false; }
   }
   if (!h264.useTrack) {
@@ -1860,7 +1870,7 @@ async function pollStats() {
           + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
     } else if (state.mode === 'h264') {
       hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
-        + ' · ' + (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…')
+        + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'))
         + ' · 已解码 ' + h264.frames + ' 帧';
     } else if (state.lowBw) {
       // 省流量不走 MJPEG 流，服务器 out= 恒为 0，显示帧率会误导，这里直接标轮询参数
