@@ -91,18 +91,18 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
           border:1px solid #2b2e35; border-radius:8px; display:none;
           font:12px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap; word-break:break-all; }
 #cmdout.on { display:block; }
-@media (max-width: 820px) {
+@media (max-width: 960px) {
   #hint { display: none !important; }
   #bar, .bar, header { font-size: 12px !important; }
   #hud { font-size: 11px !important; }
   #stage { border-radius: 0 !important; }
 }
-@media (max-width: 820px) {
+@media (max-width: 960px) {
   #hint { display: none !important; }
   #hud { font-size: 11px !important; }
   #bar, .bar, header { font-size: 12px !important; padding: 2px 6px !important; }
 }
-@media (max-width: 820px) {
+@media (max-width: 960px) {
   #bar, .bar, header { flex-wrap: nowrap !important; overflow-x: auto !important; padding: 2px 6px !important; }
   #bar button, #bar .btn, .bar button, header button { padding: 5px 8px !important; font-size: 12px !important; }
   #hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
