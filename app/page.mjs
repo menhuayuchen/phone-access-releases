@@ -97,6 +97,11 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   #hud { font-size: 11px !important; }
   #stage { border-radius: 0 !important; }
 }
+@media (max-width: 820px) {
+  #hint { display: none !important; }
+  #hud { font-size: 11px !important; }
+  #bar, .bar, header { font-size: 12px !important; padding: 2px 6px !important; }
+}
 </style>
 </head><body>
 <header>
