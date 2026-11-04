@@ -198,6 +198,9 @@ let zoomMode = 'system';
 try { if (localStorage.getItem(ZOOM_MODE_KEY) === 'view') zoomMode = 'view'; } catch (e) {}
 const view = { scale: 1, tx: 0, ty: 0 };
 let viewPan = null;
+const activePtr = new Map();
+let scrollAnchor = null;
+let wheelAccP = 0;
 function applyView() {
   const on = view.scale > 1.0001;
   const tf = on ? 'translate(' + view.tx + 'px,' + view.ty + 'px) scale(' + view.scale + ')' : '';
@@ -1564,6 +1567,7 @@ if (kbundo) {
 let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoomG = null, viewG = null, zoomCtrl = false, lastTapAt = 0;
 
 overlay.addEventListener('pointerdown', (e) => {
+  activePtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
   // 放大平移时又落下第二根手指 → 取消平移，让双指滚轮/三指手势接管
   if (viewPan && e.isPrimary === false) { viewPan = null; }
   // 画面缩放放大后：单指拖动 = 平移画面（不再发送远程移动）
@@ -1604,6 +1608,19 @@ function hideMouseCur() {
   if (mc) mc.style.display = 'none';
 }
 overlay.addEventListener('pointermove', (e) => {
+  if (activePtr.has(e.pointerId)) activePtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
+  if (activePtr.size >= 2) {
+    let sy = 0, n = 0;
+    activePtr.forEach(function (v) { sy += v.y; n++; });
+    const avgY = sy / n;
+    if (scrollAnchor === null) scrollAnchor = avgY;
+    wheelAccP += (scrollAnchor - avgY);
+    scrollAnchor = avgY;
+    const st = Math.trunc(wheelAccP / 18);
+    if (st) { wheelAccP -= st * 18; queue({ t: 'wheel', d: st }); }
+    return;
+  }
+  scrollAnchor = null;
   // 画面缩放放大后：单指拖动平移本机画面
   if (viewPan && e.pointerId === viewPan.id) {
     const dx = e.clientX - viewPan.x, dy = e.clientY - viewPan.y;
@@ -1655,6 +1672,7 @@ overlay.addEventListener('pointermove', (e) => {
 });
 
 overlay.addEventListener('pointerup', (e) => {
+  activePtr.delete(e.pointerId); scrollAnchor = null;
   if (viewPan) {
     const vp = viewPan; viewPan = null;
     if (!vp.moved) {
