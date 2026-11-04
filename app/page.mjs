@@ -412,7 +412,7 @@ srcSel.addEventListener('change', async () => {
   await postMode({ monitor: state.monitor, window: state.window });
   setNote('已切换来源');
   buzz(8);
-  if (state.mode === 'mjpeg') restartImg(); else if (state.mode === 'h264') restartH264(); else restartRtc();
+  if (state.mode === 'mjpeg') restartImg(); else if (state.mode === 'h264') { restartH264(); } else restartRtc();
 });
 
 async function postMode(patch) {
@@ -581,6 +581,7 @@ function h264Jump() {
   } catch (e) { }
 }
 function stopH264() {
+  h264.gen = (h264.gen || 0) + 1;
   if (h264.failTimer) { clearTimeout(h264.failTimer); h264.failTimer = null; }
   if (h264.jumpTimer) { clearInterval(h264.jumpTimer); h264.jumpTimer = null; }
   if (h264.ws) {
@@ -630,10 +631,11 @@ async function startH264() {
       h264.dispN = 0; h264.dispFps = 0; h264.dispAt = Date.now();
       if (vid.requestVideoFrameCallback) {
         const tick = () => {
+          if (myGen !== h264.gen || !h264.useTrack || state.mode !== 'h264') return;
           h264.dispN++;
           const now = Date.now();
           if (now - h264.dispAt >= 1000) { h264.dispFps = h264.dispN * 1000 / (now - h264.dispAt); h264.dispN = 0; h264.dispAt = now; }
-          if (state.mode === 'h264' && h264.useTrack) vid.requestVideoFrameCallback(tick);
+          if (myGen === h264.gen && state.mode === 'h264' && h264.useTrack) vid.requestVideoFrameCallback(tick);
         };
         vid.requestVideoFrameCallback(tick);
       }
@@ -651,6 +653,8 @@ async function startH264() {
     h264.canvas = cv;
     h264.ctx = cv.getContext('2d', { alpha: false });
   }
+  h264.gen = (h264.gen || 0) + 1;
+  const myGen = h264.gen;
   h264.configured = false;
   h264.pendingFrames = [];
   h264.frames = 0;
@@ -3394,7 +3398,8 @@ bindImg(img);
       + '<div id="setQMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>';
     // 2026-10-30 画质修复：抓屏宽度不再随档位变（详情见 screen-server.mjs 顶部注释），
     // 所以换档不需要重启；这里也不再写「请双击桌面重启」。
-    body += setSection('画面质量', qInner);
+    // 画面质量（MJPEG 发送宽度）已随 MJPEG 退役；清晰度改由「高清串流（H.264）」控制
+    void qInner;
 
     // 高清串流（H.264）手动设置：分辨率/帧率/码率
     body += setSection('高清串流（H.264）',
