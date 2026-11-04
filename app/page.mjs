@@ -700,6 +700,15 @@ async function startH264() {
     },
     error: function (e) {
       console.log('h264 decoder error', e && e.message);
+      const wNow = Number(h264.streamW) || 0;
+      if (wNow > 1920) {
+        setNote('这台设备解不动 ' + wNow + ' 宽，已自动降到 1920');
+        try { h264.decoder.close(); } catch (e2) { }
+        fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ width: 1920, fps: 60 }) })
+          .catch(function () { })
+          .then(function () { setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 300); });
+        return;
+      }
       setNote('高清解码出错，已切回清晰模式');
       startMjpeg();
     }
