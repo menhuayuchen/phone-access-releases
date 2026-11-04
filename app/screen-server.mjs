@@ -2941,6 +2941,19 @@ function handler(req, res) {
     return;
   }
 
+  if (url.pathname === '/h264-init') {
+    const info = h264.initInfo;
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({
+      ok: !!info,
+      codec: info ? info.codec : '',
+      description: info && info.avcC ? info.avcC.toString('base64') : '',
+      width: info ? info.width : H264_W,
+      height: info ? info.height : H264_H,
+      timescale: info ? info.timescale : 1000
+    }));
+    return;
+  }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
     if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, maxCapture: CAP_W });
