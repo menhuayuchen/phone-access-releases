@@ -1564,6 +1564,8 @@ if (kbundo) {
 let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoomG = null, viewG = null, zoomCtrl = false, lastTapAt = 0;
 
 overlay.addEventListener('pointerdown', (e) => {
+  // 放大平移时又落下第二根手指 → 取消平移，让双指滚轮/三指手势接管
+  if (viewPan && e.isPrimary === false) { viewPan = null; }
   // 画面缩放放大后：单指拖动 = 平移画面（不再发送远程移动）
   if (zoomMode === 'view' && view.scale > 1.001 && e.pointerType !== 'mouse') {
     viewPan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, t: Date.now(), moved: false };
