@@ -91,6 +91,12 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
           border:1px solid #2b2e35; border-radius:8px; display:none;
           font:12px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap; word-break:break-all; }
 #cmdout.on { display:block; }
+@media (max-width: 820px) {
+  #hint { display: none !important; }
+  #bar, .bar, header { font-size: 12px !important; }
+  #hud { font-size: 11px !important; }
+  #stage { border-radius: 0 !important; }
+}
 </style>
 </head><body>
 <header>
@@ -727,7 +733,11 @@ async function startH264() {
     if (len <= 0 || buf.length < 9 + len) return;
     try {
       h264.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: buf.subarray(9, 9 + len) }));
-    } catch (e) { console.log('h264 decode fail', e && e.message); }
+    } catch (e) {
+      h264.errs = (h264.errs || 0) + 1;
+      console.log('h264 decode fail', e && e.message);
+      if (h264.errs >= 8) { h264.errs = 0; try { h264.decoder.close(); } catch (e2) { } restartH264(); }
+    }
   };
   sock.onclose = function () {
     if (state.mode !== 'h264' || stopped) return;
