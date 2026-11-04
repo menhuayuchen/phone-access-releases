@@ -734,7 +734,20 @@ async function startH264() {
           h264.streamW = m.width || 0;
           h264.streamH = m.height || 0;
           h264.configured = true;
-        } catch (e) { console.log('h264 configure failed', e && e.message); startMjpeg(); }
+        } catch (e) {
+          console.log('h264 configure failed', e && e.message);
+          const cw = Number(m.width) || 0;
+          if (cw > 1920) {
+            setNote('这台设备解不动 ' + cw + ' 宽，已自动降到 1920', 6000);
+            try { h264.decoder.close(); } catch (e2) { }
+            fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ width: 1920, fps: 60 }) })
+              .catch(function () { })
+              .then(function () { setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 300); });
+            return;
+          }
+          setNote('高清解码器初始化失败，已切到低频画面', 6000);
+          startMjpeg();
+        }
       }
       return;
     }
