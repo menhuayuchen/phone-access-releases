@@ -157,56 +157,222 @@ const h264 = {
   lastError: ''
 };
 
-function h264Broadcast(buf) {
-  for (const ws of h264.clients) {
-    if (ws.bufferedAmount > 1024 * 1024) continue;   // 跟不上就丢，保延迟
-    try { ws.send(buf, { binary: true }); } catch { }
-  }
+function h264SendInit(ws) {
+  if (!h264.initInfo || !ws) return;
+  try {
+    ws.send(JSON.stringify({
+      type: 'h264-init',
+      codec: h264.initInfo.codec,
+      description: h264.initInfo.avcC ? h264.initInfo.avcC.toString('base64') : '',
+      timescale: h264.initInfo.timescale,
+      width: h264.initInfo.width,
+      height: h264.initInfo.height
+    }));
+  } catch { }
 }
-
-function h264TakeInit(chunk) {
-  h264.pending = Buffer.concat([h264.pending, chunk]);
-  const buf = h264.pending;
-  // 简单找 ftyp + moov 的结束位置（fMP4 初始化段就这两块）
-  let off = 0, moovEnd = 0, hasFtyp = false;
-  while (off + 8 <= buf.length) {
-    const size = buf.readUInt32BE(off);
+// ---- fMP4 解析：取出 avcC 与每帧数据，直接发给 WebCodecs 解码（不用 MSE）----
+function mp4Boxes(buf, start, end) {
+  const out = [];
+  let off = start;
+  while (off + 8 <= end) {
+    let size = buf.readUInt32BE(off);
     const type = buf.toString('ascii', off + 4, off + 8);
-    if (size < 8 || off + size > buf.length) break;
-    if (type === 'ftyp') hasFtyp = true;
-    if (type === 'moov') { moovEnd = off + size; }
+    let header = 8;
+    if (size === 1) { if (off + 16 > end) break; size = Number(buf.readBigUInt64BE(off + 8)); header = 16; }
+    else if (size === 0) { size = end - off; }
+    if (size < header || off + size > end) break;
+    out.push({ type, start: off, end: off + size, size, header });
     off += size;
   }
-  if (hasFtyp && moovEnd) {
-    h264.init = Buffer.from(buf.subarray(0, moovEnd));
-    h264.pending = Buffer.alloc(0);
-    for (const ws of h264.clients) { try { ws.send(h264.init, { binary: true }); } catch { } }
-    const rest = buf.subarray(moovEnd);
-    if (rest.length) h264Broadcast(rest);
-    return true;
-  }
-  if (buf.length > 4 * 1024 * 1024) h264.pending = buf.subarray(buf.length - 512 * 1024);
-  return false;
+  return out;
 }
 
+function h264ParseMoov(buf) {
+  // 找 moov → trak → mdia → minf → stbl → stsd → avc1 → avcC，以及 mdhd timescale
+  let avcC = null, timescale = 1000, width = 0, height = 0;
+  for (const moov of mp4Boxes(buf, 0, buf.length)) {
+    if (moov.type !== 'moov') continue;
+    for (const trak of mp4Boxes(buf, moov.start + moov.header, moov.end)) {
+      if (trak.type !== 'trak') continue;
+      for (const mdia of mp4Boxes(buf, trak.start + trak.header, trak.end)) {
+        if (mdia.type !== 'mdia') continue;
+        for (const child of mp4Boxes(buf, mdia.start + mdia.header, mdia.end)) {
+          if (child.type === 'mdhd') {
+            const p = child.start + child.header + 4;   // version/flags
+            const ver = buf[child.start + child.header];
+            timescale = ver === 1 ? buf.readUInt32BE(p + 16) : buf.readUInt32BE(p + 8);
+          }
+          if (child.type !== 'minf') continue;
+          for (const minf of mp4Boxes(buf, child.start + child.header, child.end)) {
+            if (minf.type !== 'stbl') continue;
+            for (const stbl of mp4Boxes(buf, minf.start + minf.header, minf.end)) {
+              if (stbl.type !== 'stsd') continue;
+              for (const stsd of mp4Boxes(buf, stbl.start + stbl.header + 8, stbl.end)) {
+                if (stsd.type !== 'avc1') continue;
+                const w = buf.readUInt16BE(stsd.start + 32), h = buf.readUInt16BE(stsd.start + 34);
+                if (w) width = w;
+                if (h) height = h;
+                for (const avc of mp4Boxes(buf, stsd.start + stsd.header + 78, stsd.end)) {
+                  if (avc.type !== 'avcC') continue;
+                  avcC = Buffer.from(buf.subarray(avc.start + avc.header, avc.end));
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+  return { avcC, timescale, width, height };
+}
+
+function h264CodecString(avcC) {
+  if (!avcC || avcC.length < 4) return 'avc1.4D4032';
+  const hex = (n) => n.toString(16).padStart(2, '0').toUpperCase();
+  return 'avc1.' + hex(avcC[1]) + hex(avcC[2]) + hex(avcC[3]);
+}
+
+function h264ExtractSamples(moof, mdat) {
+  // 逐帧切 mdat（ffmpeg 单流样本是连续的；不依赖 base_data_offset）
+  const out = [];
+  for (const t of mp4Boxes(moof, 0, moof.length)) {
+    if (t.type !== 'moof') continue;
+    for (const traf of mp4Boxes(moof, t.start + t.header, t.end)) {
+      if (traf.type !== 'traf') continue;
+      let defSize = 0;
+      const truns = [];
+      for (const g of mp4Boxes(moof, traf.start + traf.header, traf.end)) {
+        if (g.type === 'tfhd') {
+          const flags = moof.readUInt32BE(g.start + 8) & 0xffffff;
+          let q = g.start + 16;   // version/flags(4) + track_id(4)
+          if (flags & 0x1) q += 8;
+          if (flags & 0x2) q += 4;
+          if (flags & 0x8) q += 4;
+          if (flags & 0x10) { defSize = moof.readUInt32BE(q); }
+        } else if (g.type === 'trun') {
+          truns.push(g);
+        }
+      }
+      const mdatPayload = mdat.subarray(8);
+      let off = 0;
+      for (const g of truns) {
+        const flags = moof.readUInt32BE(g.start + 8) & 0xffffff;
+        let q = g.start + 12;
+        const count = moof.readUInt32BE(q); q += 4;
+        if (flags & 0x1) q += 4;      // data_offset（这里不用）
+        let firstFlags = 0;
+        if (flags & 0x4) { firstFlags = moof.readUInt32BE(q); q += 4; }
+        const hasDur = !!(flags & 0x100), hasSize = !!(flags & 0x200), hasFlags = !!(flags & 0x400), hasCto = !!(flags & 0x800);
+        for (let i = 0; i < count; i++) {
+          if (hasDur) q += 4;
+          const size = hasSize ? (q += 4, moof.readUInt32BE(q - 4)) : defSize;
+          let sflags = firstFlags;
+          if (hasFlags) { sflags = moof.readUInt32BE(q); q += 4; }
+          if (hasCto) q += 4;
+          const data = mdatPayload.subarray(off, off + size);
+          off += size;
+          // 判断关键帧：sample flags 的 sync 位，或扫 NAL 里有没有 IDR(5)
+          let key = !!(sflags & 0x10000);
+          if (!key) {
+            for (let k = 0; k + 4 <= data.length;) {
+              const len = data.readUInt32BE(k);
+              if (len <= 0 || k + 4 + len > data.length) break;
+              const nalType = data[k + 4] & 0x1f;
+              if (nalType === 5) { key = true; break; }
+              k += 4 + len;
+            }
+          }
+          out.push({ key, data });
+        }
+      }
+    }
+  }
+  return out;
+}
+function h264SendFrame(ws, tsUs, key, data) {
+  if (ws.bufferedAmount > 1024 * 1024) return;
+  try {
+    const head = Buffer.alloc(9);
+    head.writeInt32BE(tsUs, 0);
+    head[4] = key ? 1 : 0;
+    head.writeUInt32BE(data.length, 5);
+    ws.send(Buffer.concat([head, data]), { binary: true });
+  } catch { }
+}
+function processH264Buffer() {
+  for (;;) {
+    if (!h264.pending || h264.pending.length < 8) return;
+    const boxes = mp4Boxes(h264.pending, 0, h264.pending.length);
+    if (!boxes.length) return;
+    if (!h264.initInfo) {
+      // 等 ftyp+moov 齐全
+      let ftyp = null, moov = null;
+      for (const b of boxes) { if (b.type === 'ftyp') ftyp = b; if (b.type === 'moov') moov = b; }
+      if (!ftyp || !moov) {
+        if (h264.pending.length > 2 * 1024 * 1024) h264.pending = Buffer.alloc(0);
+        return;
+      }
+      const initBuf = h264.pending.subarray(0, moov.end);
+      const info = h264ParseMoov(initBuf);
+      h264.initInfo = {
+        avcC: info.avcC,
+        timescale: info.timescale || 1000,
+        width: info.width || H264_W,
+        height: info.height || H264_H,
+        codec: h264CodecString(info.avcC)
+      };
+      console.log('h264: init ' + h264.initInfo.codec + ' ' + h264.initInfo.width + 'x' + h264.initInfo.height);
+      for (const ws of h264.clients) h264SendInit(ws);
+      h264.pending = h264.pending.subarray(moov.end);
+      continue;
+    }
+    // 一段：moof + mdat
+    const moof = boxes.find((b) => b.type === 'moof');
+    if (!moof) {
+      // 没有 moof 说明是残片/未知盒：丢掉到下一个 moof 之前
+      const next = boxes.find((b) => b.type === 'moof');
+      h264.pending = Buffer.alloc(0);
+      return;
+    }
+    const moofEndIdx = boxes.indexOf(moof);
+    const mdat = boxes.slice(moofEndIdx + 1).find((b) => b.type === 'mdat');
+    if (!mdat) return;   // 等 mdat 到齐
+    const moofBuf = h264.pending.subarray(moof.start, moof.end);
+    const mdatBuf = h264.pending.subarray(mdat.start, mdat.end);
+    let samples = [];
+    try { samples = h264ExtractSamples(moofBuf, mdatBuf); } catch { samples = []; }
+    for (const s of samples) {
+      h264.tsUs = (h264.tsUs || 0) + Math.round(1e6 / H264_FPS);
+      for (const ws of h264.clients) h264SendFrame(ws, h264.tsUs, s.key, s.data);
+    }
+    h264.frames += samples.length;
+    h264.pending = h264.pending.subarray(mdat.end);
+    continue;
+  }
+}
 function h264Start() {
   if (!H264_ENABLED || h264.proc) return;
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
-    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}`,
+    // 低延迟输入：不探测/不缓存
+    '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
+    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0`,
     '-filter_complex', `[0:v]hwdownload,format=bgra,scale=${H264_W}:-2,format=nv12[v]`,
     '-map', '[v]',
-    '-c:v', 'h264_mf', '-b:v', `${H264_KBPS}K`, '-g', String(H264_FPS * 2), '-bf', '0',
+    // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
+    '-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr',
+    '-quality', '70', '-b:v', `${H264_KBPS}K`, '-g', String(H264_FPS), '-bf', '0',
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
-    '-frag_duration', '20000', '-flush_packets', '1',
+    '-frag_duration', '5000', '-flush_packets', '1',
     'pipe:1'
   ];
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
-  h264.init = null;
+  h264.initInfo = null;
   h264.pending = Buffer.alloc(0);
   h264.bytes = 0;
+  h264.tsUs = 0;
   h264.frames = 0;
   try {
     h264.proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
@@ -218,7 +384,8 @@ function h264Start() {
   }
   h264.proc.stdout.on('data', (d) => {
     h264.bytes += d.length;
-    if (h264.init) h264Broadcast(d); else h264TakeInit(d);
+    h264.pending = Buffer.concat([h264.pending, d]);
+    processH264Buffer();
   });
   h264.proc.stderr.on('data', (d) => {
     const s = String(d).trim();
@@ -236,7 +403,7 @@ function h264Start() {
 function h264Stop() {
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
   if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
-  h264.init = null;
+  h264.initInfo = null;
   h264.pending = Buffer.alloc(0);
   console.log('h264: stopped');
 }
@@ -269,7 +436,7 @@ function attachH264Ws(server, key) {
     h264.clients.add(ws);
     console.log('h264: viewer connected (' + h264.clients.size + ')');
     h264Start();
-    if (h264.init) { try { ws.send(h264.init, { binary: true }); } catch { } }
+    h264SendInit(ws);
     ws.on('close', () => {
       h264.clients.delete(ws);
       console.log('h264: viewer closed (' + h264.clients.size + ')');

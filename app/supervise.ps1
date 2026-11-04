@@ -15,6 +15,26 @@ $proxyPort = [int]$cfg.ports.door
 $screenPort = [int]$cfg.ports.screen
 $enableDsh = [bool]$cfg.enableDsh
 
+# 改动（2026-11-04）：配置原来只在进程启动时读一次 —— 改 enableDsh 必须重启 supervisor 才生效，
+# 而 supervisor 由安装器以提权方式拉起时，普通权限进程根本杀不掉它（实测 Access denied），
+# 用户只能重启机器。下面这个函数按 product.config.json 的修改时间做增量重读：
+# 方案甲/乙切换当场生效；端口变更只告警（换端口必须重启守护，否则会把正在跑的门留在半开状态）。
+$script:cfgStamp = if (Test-Path (Join-Path $here 'product.config.json')) { (Get-Item (Join-Path $here 'product.config.json')).LastWriteTimeUtc.Ticks } else { -1 }
+function Read-ConfigSnapshot {
+  $cfgFile = Join-Path $here 'product.config.json'
+  $stamp = if (Test-Path $cfgFile) { (Get-Item $cfgFile).LastWriteTimeUtc.Ticks } else { -1 }
+  if ($stamp -eq $script:cfgStamp) { return $null }
+  $script:cfgStamp = $stamp
+  try { $c = Get-ProductConfig -AppDir $here } catch { Log ('[warn] 配置重读失败，继续用旧值: ' + $_.Exception.Message); return $null }
+  if (-not $c) { return $null }
+  return [pscustomobject]@{
+    EnableDsh  = [bool]$c.enableDsh
+    DshPort    = [int]$c.ports.dsh
+    DoorPort   = [int]$c.ports.door
+    ScreenPort = [int]$c.ports.screen
+  }
+}
+
 # 改动（P0-1）：$screenIp 原来写死一个固定的 tailnet 地址。换一台机器/换一个 tailnet 后，守护拿它去 curl /health
 # 必然失败，而且是**静默**失败：退回去看 screen-latest.jpg 的时间戳，可管道模式根本不写这个文件
 # （capture.cs 只在没有管道客户端时才写文件），于是"画面卡死"和"注入器卡死"这两类最重要的自愈全部失效。
@@ -177,6 +197,25 @@ while ($true) {
     if ((Test-Path $log) -and ((Get-Item $log).Length -gt 5MB)) {
       Move-Item $log "$log.old" -Force -ErrorAction SilentlyContinue
       Log 'supervisor log rotated'
+    }
+
+    # 改动（2026-11-04）：配置热重读（见文件头 Read-ConfigSnapshot）。
+    # 只改 $enableDsh 这一个开关：端口不在这里换，避免把正在跑的门换成半开状态。
+    $snap = Read-ConfigSnapshot
+    if ($snap) {
+      if (($snap.DshPort -ne $port) -or ($snap.DoorPort -ne $proxyPort) -or ($snap.ScreenPort -ne $screenPort)) {
+        Log ("[warn] 配置里的端口变了: dsh {0}->{1} / door {2}->{3} / screen {4}->{5}；本守护仍用旧端口，换端口需要重启守护" -f $port, $snap.DshPort, $proxyPort, $snap.DoorPort, $screenPort, $snap.ScreenPort)
+      }
+      if ($snap.EnableDsh -ne $enableDsh) {
+        $enableDsh = $snap.EnableDsh
+        if ($enableDsh) {
+          Log 'config changed: enableDsh -> true（方案乙），从本轮起守护 DSH(8642) 与它的门(8650)'
+        } else {
+          Log 'config changed: enableDsh -> false（方案甲），从本轮起不再守护 DSH 与它的门（残留进程由 start-phone-access 停掉）'
+        }
+        $notListeningRounds = 0
+        $fails = 0
+      }
     }
 
     # 许可证状态刷新：客户把 licence.json 放进安装目录后，不用重启服务就会生效

@@ -186,6 +186,28 @@ if ($enableDsh) {
 } else {
   # 客户可见文案：交付给客户的版本里绝不出现"DSH"字样（那是卖家自用时的叫法）。
   Write-Host '[i] 本轮只启动画面服务（手机看屏幕 + 触控）'
+  # 改动（2026-11-04）：从方案乙切到方案甲时，8642/8650 上还留着上一轮的 DSH 与门，
+  # 而谁都不负责停它们 —— supervisor 只按自己启动时的配置办事，autostart 只负责"起"。
+  # 结果"改成方案甲"看起来没生效（手机还能打开对话控制台，微信群里看起来像又崩了）。
+  # 这里收尾：只清我们自己那两类进程（node 门 / DeepSeek Harness），绝不动桌面版 DSH。
+  # autostart 每 2 分钟跑一次本脚本，所以切换最迟 2 分钟内生效，不需要重启任何东西。
+  $stale = @()
+  foreach ($prt in @($dshPort, $tailPort)) {
+    Get-NetTCPConnection -State Listen -LocalPort $prt -ErrorAction SilentlyContinue |
+      ForEach-Object { $stale += [pscustomobject]@{ Port = $prt; Owner = [int]$_.OwningProcess } }
+  }
+  foreach ($s in ($stale | Sort-Object Owner -Unique)) {
+    if ($s.Owner -le 0) { continue }
+    $proc = Get-Process -Id $s.Owner -ErrorAction SilentlyContinue
+    if (-not $proc) { continue }
+    if ($proc.ProcessName -notmatch '^(node|DeepSeek Harness)$') { continue }
+    try {
+      Stop-Process -Id $s.Owner -Force -ErrorAction Stop
+      Write-Host ("[i] 方案甲：已停掉上一轮残留的 {0}（pid {1}，端口 {2}）" -f $proc.ProcessName, $s.Owner, $s.Port)
+    } catch {
+      Write-Host ("[!] 方案甲：停不掉 {0}（pid {1}）: {2}" -f $proc.ProcessName, $s.Owner, $_.Exception.Message)
+    }
+  }
   $tsState = Get-TailscaleInfo -TailscaleExe $ts
 }
 

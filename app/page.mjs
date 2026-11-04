@@ -123,6 +123,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   <div id="overlay"></div>
   <button id="viewReset" title="恢复画面原始大小">恢复原大小</button>
   <div class="cursorDot" id="dot"></div>
+  <div id="mcur" style="position:fixed;left:0;top:0;width:16px;height:22px;pointer-events:none;z-index:9999;display:none;background:no-repeat url('data:image/svg+xml;utf8,<svg xmlns=%22http://www.w3.org/2000/svg%22 width=%2216%22 height=%2222%22 viewBox=%220 0 16 22%22><path d=%22M1 1 L1 17 L5 13 L8 21 L11 20 L8 12 L14 12 Z%22 fill=%22%23fff%22 stroke=%22%23000%22 stroke-width=%221%22/></svg>');transform:translate(-1px,-1px)"></div>
   <div id="note"></div>
   <div id="kbbar">
     <textarea id="kbtext" rows="1" placeholder="在这里打字，发到电脑…" autocapitalize="off" autocomplete="off" spellcheck="false"></textarea>
@@ -565,7 +566,7 @@ function h264Jump() {
   try {
     if (vid.buffered.length > 0) {
       const end = vid.buffered.end(vid.buffered.length - 1);
-      if (end - vid.currentTime > 0.8) vid.currentTime = end - 0.2;
+      if (end - vid.currentTime > 0.15) vid.currentTime = end - 0.02;
     }
   } catch (e) { }
 }
@@ -576,7 +577,7 @@ function stopH264() {
     try { h264.ws.onclose = null; h264.ws.onerror = null; h264.ws.onmessage = null; h264.ws.close(); } catch (e) { }
     h264.ws = null;
   }
-  h264.sb = null; h264.ms = null; h264.queue = []; h264.appended = 0; h264.okAt = 0;
+  h264.sb = null; h264.ms = null; h264.queue = []; h264.appended = 0; h264.okAt = 0; h264.configured = false;
   try { vid.removeAttribute('src'); } catch (e) { }
   try { vid.srcObject = null; } catch (e) { }
 }
@@ -589,57 +590,88 @@ function h264Pump() {
   } catch (e) { console.log('h264 append failed', e && e.message); }
 }
 async function startH264() {
-  // 先问服务端有没有 H.264 组件：没有就走 MJPEG（不重连、不空等）
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   if (!st || !st.enabled) { startMjpeg(); return; }
-  h264.retries = 0;
+  if (!(window.VideoDecoder && window.EncodedVideoChunk)) { startMjpeg(); return; }   // 没有 WebCodecs 就回落 MJPEG
   stopH264();
   stopRtc();
   state.mode = 'h264';
   btnCrisp.classList.add('on');
   btnSmooth.classList.remove('on');
+  setStat('高清模式（H.264/WebCodecs）');
   applyRect();
   img.classList.remove('show');
-  vid.classList.add('show');
+  vid.classList.remove('show');
   try { abortStream(); } catch (e) { }
-  try { vid.muted = !state.audio; vid.play().catch(function () { }); } catch (e) { }
-  const ms = new MediaSource();
-  h264.ms = ms;
-  vid.src = URL.createObjectURL(ms);
-  ms.addEventListener('sourceopen', function () {
-    try { h264.sb = ms.addSourceBuffer(h264.mime); h264.sb.mode = 'segments'; }
-    catch (e) { console.log('h264 addSourceBuffer', e && e.message); }
-    if (h264.sb) { h264.sb.addEventListener('updateend', h264Pump); h264Pump(); }
+  let cv = document.getElementById('wccv');
+  if (!cv) {
+    cv = document.createElement('canvas');
+    cv.id = 'wccv';
+    cv.style.cssText = 'position:absolute;left:0;top:0;width:100%;height:100%;object-fit:contain;background:#000;display:none;';
+    stage.appendChild(cv);
+  }
+  cv.style.display = 'block';
+  h264.canvas = cv;
+  h264.ctx = cv.getContext('2d', { alpha: false });
+  h264.configured = false;
+  h264.pendingFrames = [];
+  h264.frames = 0;
+  h264.fps = 0; h264.fpsAt = Date.now(); h264.fpsN = 0;
+  h264.decoder = new VideoDecoder({
+    output: function (frame) {
+      try {
+        if (cv.width !== frame.displayWidth || cv.height !== frame.displayHeight) { cv.width = frame.displayWidth; cv.height = frame.displayHeight; }
+        h264.ctx.drawImage(frame, 0, 0, cv.width, cv.height);
+        h264.frames++;
+        h264.fpsN++;
+        const now = Date.now();
+        if (now - h264.fpsAt >= 1000) { h264.fps = h264.fpsN * 1000 / (now - h264.fpsAt); h264.fpsAt = now; h264.fpsN = 0; }
+      } finally { frame.close(); }
+    },
+    error: function (e) {
+      console.log('h264 decoder error', e && e.message);
+      setNote('高清解码出错，已切回清晰模式');
+      startMjpeg();
+    }
   });
   const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
   const sock = new WebSocket(proto + '//' + location.host + '/ws-h264?k=' + encodeURIComponent(KEY) + '&s=' + SID);
   h264.ws = sock;
   sock.binaryType = 'arraybuffer';
-  sock.onmessage = function (e) {
-    h264.queue.push(new Uint8Array(e.data));
-    if (h264.queue.length > 60) h264.queue.shift();
-    if (!h264.okAt) h264.okAt = Date.now();
-    h264.retries = 0;
-    h264Pump();
+  sock.onmessage = function (ev) {
+    if (typeof ev.data === 'string') {
+      let m = null;
+      try { m = JSON.parse(ev.data); } catch (e) { }
+      if (m && m.type === 'h264-init') {
+        let desc = null;
+        try { desc = Uint8Array.from(atob(m.description), function (c) { return c.charCodeAt(0); }); } catch (e) { desc = null; }
+        try {
+          h264.decoder.configure({ codec: m.codec, description: desc, optimizeForLatency: true });
+          h264.configured = true;
+        } catch (e) { console.log('h264 configure failed', e && e.message); startMjpeg(); }
+      }
+      return;
+    }
+    const buf = new Uint8Array(ev.data);
+    if (buf.length < 9) return;
+    if (!h264.configured) return;
+    const ts = new DataView(ev.data).getInt32(0);
+    const key = buf[4] === 1;
+    const len = new DataView(ev.data).getUint32(5);
+    if (len <= 0 || buf.length < 9 + len) return;
+    try {
+      h264.decoder.decode(new EncodedVideoChunk({ type: key ? 'key' : 'delta', timestamp: ts, data: buf.subarray(9, 9 + len) }));
+    } catch (e) { console.log('h264 decode fail', e && e.message); }
   };
-  sock.onerror = function () { };
   sock.onclose = function () {
     if (state.mode !== 'h264' || stopped) return;
-    h264.retries = (h264.retries || 0) + 1;
-    if (h264.retries > 3) { setNote('高清模式连不上，已切回清晰模式'); startMjpeg(); return; }
     setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 1500);
   };
-  h264.jumpTimer = setInterval(function () { if (state.mode === 'h264' && !stopped) h264Jump(); }, 500);
   h264.failTimer = setTimeout(function () {
-    if (state.mode === 'h264' && !h264.okAt) {
-      console.log('h264: no data in 4s, fallback to mjpeg');
-      setNote('高清模式没连上，已切回清晰模式');
-      startMjpeg();
-    }
-  }, 4000);
-}
-function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
+    if (state.mode === 'h264' && !h264.configured) { setNote('高清模式没连上，已切回清晰模式'); startMjpeg(); }
+  }, 5000);
+}function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
   stopH264();
   state.mode = 'mjpeg';
@@ -1360,6 +1392,7 @@ overlay.addEventListener('pointerdown', (e) => {
   moved = false; dragBtn = -1;
   const p = toScreen(q.x, q.y);
   queue({ t: 'move', x: p.x, y: p.y });
+  hideMouseCur();
   showDot(q.x, q.y);
   longTimer = setTimeout(() => {
     longTimer = null;
@@ -1370,7 +1403,32 @@ overlay.addEventListener('pointerdown', (e) => {
   }, 550);
 });
 
+function showMouseCur(x, y) {
+  const mc = document.getElementById('mcur');
+  if (!mc) return;
+  mc.style.display = 'block';
+  mc.style.left = x + 'px';
+  mc.style.top = y + 'px';
+}
+function hideMouseCur() {
+  const mc = document.getElementById('mcur');
+  if (mc) mc.style.display = 'none';
+}
 overlay.addEventListener('pointermove', (e) => {
+  // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
+  if (e.pointerType === 'mouse' && state.control) {
+    const qm = layoutPoint(e.clientX, e.clientY);
+    const nowM = Date.now();
+    if (nowM - lastMoveSent > 20) {
+      lastMoveSent = nowM;
+      const pm = toScreen(qm.x, qm.y);
+      queue({ t: 'move', x: pm.x, y: pm.y });
+    }
+    showMouseCur(qm.x, qm.y);
+    const dd = document.getElementById('dot');
+    if (dd) dd.style.display = 'none';
+    return;
+  }
   if (!state.control || !ptr || ptr.up) return;
   const q = layoutPoint(e.clientX, e.clientY);
   const dx = q.x - ptr.x, dy = q.y - ptr.y;
@@ -1384,7 +1442,8 @@ overlay.addEventListener('pointermove', (e) => {
     lastMoveSent = now;
     const p = toScreen(q.x, q.y);
     queue({ t: 'move', x: p.x, y: p.y });
-    showDot(q.x, q.y);
+    hideMouseCur();
+  showDot(q.x, q.y);
   }
 });
 
@@ -1740,10 +1799,9 @@ async function pollStats() {
           // 免得用户看到三千毫秒以为画面很卡、实际却很流畅。
           + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
     } else if (state.mode === 'h264') {
-      hud.textContent = 'H.264 · ' + (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—')
-        + ' · ' + (vfcFps > 0 ? vfcFps.toFixed(1) + ' fps' : '—')
-        + (h264.appended ? ' · ' + h264.appended + ' 段' : '')
-        + (rttMs > 0 ? ' · 链路 ' + rttMs + 'ms' : '');
+      hud.textContent = 'H.264(WebCodecs) · ' + (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')
+        + ' · ' + (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…')
+        + ' · 已解码 ' + h264.frames + ' 帧';
     } else if (state.lowBw) {
       // 省流量不走 MJPEG 流，服务器 out= 恒为 0，显示帧率会误导，这里直接标轮询参数
       hud.textContent = '省流量 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
@@ -1810,10 +1868,11 @@ bindImg(img);
   await postMode({});
   await loadSources(true);
   startSourcesPolling();
-  // 本地/真机验证用：?h264=1 直接进高清模式（正式入口还是点「清晰」）
-  if (new URLSearchParams(location.search).get('h264') === '1' && h264Supported()) {
+  // 默认优先高清（H.264）；不支持或组件缺失时 startH264 会自己回落 MJPEG
+  if (new URLSearchParams(location.search).get('mjpeg') === '1') {
+    restartImg();
+  } else if (h264Supported()) {
     startH264();
-    setStat('高清模式（H.264）');
   } else {
     restartImg();
   }
