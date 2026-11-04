@@ -205,6 +205,8 @@ function applyView() {
     img.style.transform = tf;
     vid.style.transformOrigin = '0 0';
     vid.style.transform = tf;
+    const cvEl = document.getElementById('wccv');
+    if (cvEl) { cvEl.style.transformOrigin = '0 0'; cvEl.style.transform = tf; }
   } catch (e) {}
   if (viewReset) viewReset.style.display = on ? 'block' : 'none';
 }
@@ -233,7 +235,9 @@ function setZoomPop(open) {
   if (!zoomPop || !zoomBtn) return;
   if (open && headerEl) {
     const r = headerEl.getBoundingClientRect();
-    zoomPop.style.top = (r.bottom + 6) + 'px';
+    // 手机：按钮在底部抽屉里，弹层若贴着按钮会掉到屏幕外 → 固定显示在屏幕中上部
+    const inSheet = !!(zoomBtn.closest && zoomBtn.closest('#mobSheet'));
+    zoomPop.style.top = (inSheet ? Math.max(70, Math.round(window.innerHeight * 0.28)) : (r.bottom + 6)) + 'px';
   }
   zoomPop.classList.toggle('on', open);
   zoomBtn.classList.toggle('on', open);
