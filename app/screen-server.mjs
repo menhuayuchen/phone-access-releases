@@ -3234,7 +3234,7 @@ function handler(req, res) {
     res.writeHead(200, { 'content-type': 'application/manifest+json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify({
       name: '电脑画面', short_name: '电脑画面', start_url: '/?k=' + encodeURIComponent(KEY),
-      display: 'standalone', orientation: 'landscape', background_color: '#0b0b0d', theme_color: '#15161a',
+      display: 'fullscreen', orientation: 'landscape', background_color: '#0b0b0d', theme_color: '#15161a',
       icons: [
         { src: '/icon-192.png?v=' + ICON_V, sizes: '192x192', type: 'image/png' },
         { src: '/icon-512.png?v=' + ICON_V, sizes: '512x512', type: 'image/png' },
