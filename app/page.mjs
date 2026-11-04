@@ -724,13 +724,19 @@ async function startH264() {
   }, 5000);
 }function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
+  // MJPEG 流已退役（2026-11-04）：浏览器不支持 WebCodecs 或高清失败时，
+  // 改用低频画面轮询（/frame.jpg），保留"能看见、能点"的基本能力。
   stopH264();
   state.mode = 'mjpeg';
   btnCrisp.classList.add('on');
   btnSmooth.classList.remove('on');
   applyRect();
-  restartImg();
-  setStat('清晰模式');
+  vid.classList.remove('show');
+  img.classList.add('show');
+  state.lowBw = true;
+  btnLow.classList.add('on');
+  startLowBw();
+  setStat('低频画面（当前浏览器不支持高清）');
 }
 // ---- 流畅模式（WebRTC）-----------------------------------------------------
 function stopRtc() {
