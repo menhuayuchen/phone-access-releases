@@ -805,7 +805,7 @@ async function startH264() {
           h264.decoder.configure({ codec: m.codec, description: desc, optimizeForLatency: true });
           h264.streamW = m.width || 0;
           h264.streamH = m.height || 0;
-          h264.configured = true;
+          h264.configured = true; h264.bootTries = 0; h264.errCount = 0;
         } catch (e) {
           console.log('h264 configure failed', e && e.message);
           const cw = Number(m.width) || 0;
@@ -866,7 +866,7 @@ async function startH264() {
             if (init && init.ok && init.description) {
               const d = Uint8Array.from(atob(init.description), function (c) { return c.charCodeAt(0); });
               h264.decoder.configure({ codec: init.codec, description: d, optimizeForLatency: true });
-              h264.streamW = init.width || 0; h264.streamH = init.height || 0; h264.configured = true;
+              h264.streamW = init.width || 0; h264.streamH = init.height || 0; h264.configured = true; h264.bootTries = 0; h264.errCount = 0;
               return;
             }
           } catch (e) { }
