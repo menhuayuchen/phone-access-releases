@@ -3450,7 +3450,7 @@ bindImg(img);
     // 高清串流（H.264）手动设置：分辨率/帧率/码率
     body += setSection('高清串流（H.264）',
       '<div style="display:flex;gap:14px;flex-wrap:wrap;color:#c9ccd1;font-size:12.5px;align-items:center">'
-      + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560</option></select></label>'
+      + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option></select></label>'
       + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option></select></label>'
       + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="15000">15 Mbps</option><option value="20000">20 Mbps</option><option value="30000">30 Mbps</option></select></label>'
       + '</div>'

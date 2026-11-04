@@ -2983,7 +2983,7 @@ function handler(req, res) {
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
       if (Number.isFinite(w) && w >= 640) {
-        H264_W = evenDown(Math.min(CAP_W, Math.round(w)));
+        H264_W = evenDown(Math.min(Math.min(CAP_W, 1920), Math.round(w)));   // 手机解码器对 >1920 宽支持不稳，先封顶 1920
         H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
       }
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
