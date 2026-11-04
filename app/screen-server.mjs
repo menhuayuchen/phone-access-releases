@@ -145,6 +145,7 @@ const FFMPEG_EXE = join(HERE, 'bin', 'ffmpeg.exe');
 const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
 let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
+let H264_RECT = null;   // 指定显示器/窗口时先 crop（屏幕坐标）
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 // 编码器：优先 NVENC（硬编，延迟低、CPU 几乎为 0），不可用时回退 h264_mf（软编）
@@ -435,6 +436,19 @@ function attachH264Rtc(server, key) {
     ws.on('error', () => { });
   });
 }
+function h264Filter() {
+  let vf = '[0:v]hwdownload,format=bgra';
+  if (H264_RECT && H264_RECT.w >= 16 && H264_RECT.h >= 16) {
+    const x = Math.max(0, Math.round(H264_RECT.x / 2) * 2);
+    const y = Math.max(0, Math.round(H264_RECT.y / 2) * 2);
+    const w = Math.max(16, Math.round(H264_RECT.w / 2) * 2);
+    const h = Math.max(16, Math.round(H264_RECT.h / 2) * 2);
+    vf += ',crop=' + w + ':' + h + ':' + x + ':' + y;
+  }
+  vf += ',scale=' + H264_W + ':-2,format=nv12[v]';
+  return vf;
+}
+
 function h264Start() {
   if (!H264_ENABLED || h264.proc) return;
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
@@ -443,7 +457,7 @@ function h264Start() {
     // 低延迟输入：不探测/不缓存
     '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
     '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0`,
-    '-filter_complex', `[0:v]hwdownload,format=bgra,scale=${H264_W}:-2,format=nv12[v]`,
+    '-filter_complex', h264Filter(),
     '-map', '[v]',
     // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
@@ -2964,6 +2978,8 @@ function handler(req, res) {
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
       const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width);
+      if (m.rect && Number(m.rect.w) > 0) H264_RECT = { x: Number(m.rect.x) || 0, y: Number(m.rect.y) || 0, w: Number(m.rect.w), h: Number(m.rect.h) };
+      else if (m.rect === null) H264_RECT = null;
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
       if (Number.isFinite(w) && w >= 640) {
