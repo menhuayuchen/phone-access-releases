@@ -3973,31 +3973,7 @@ bindImg(img);
   }).catch(() => { /* 拿不到许可证信息时不打扰用户：画面照常能看，个性化保持默认 */ });
 })();
 </script>
-<script>
-(function () {
-  try {
-    var ids = ['deskBtn','snd','ctl','kbBtn','lowbw','zoomBtn','cmdBtn'];
-    var bar = document.getElementById('mCrisp').parentNode;
-    var more = document.createElement('button');
-    more.id = 'mobMore';
-    more.textContent = '⋯ 更多';
-    more.style.display = 'none';
-    bar.insertBefore(more, document.getElementById('deskBtn'));
-    var sheet = document.createElement('div');
-    sheet.id = 'mobSheet';
-    sheet.style.cssText = 'display:none;position:fixed;left:0;right:0;bottom:0;z-index:10000;background:#1c1f24;padding:10px;gap:8px;flex-wrap:wrap;border-top:1px solid #333';
-    document.body.appendChild(sheet);
-    var slots = ids.map(function (id) { var b = document.getElementById(id); return b ? { b: b, p: b.parentNode, n: b.nextSibling } : null; }).filter(Boolean);
-    more.onclick = function () { sheet.style.display = (sheet.style.display === 'flex') ? 'none' : 'flex'; };
-    function apply() {
-      if (matchMedia('(max-width:820px)').matches) { more.style.display = ''; }
-      else { more.style.display = 'none'; sheet.style.display = 'none'; }
-    }
-    apply();
-    window.addEventListener('resize', apply);
-  } catch (e) {}
-})();
-</script>
+
 <style>
 @media (max-width: 960px) {
   body { padding-top: 0 !important; }
