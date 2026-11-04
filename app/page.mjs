@@ -1569,7 +1569,7 @@ overlay.addEventListener('pointerdown', (e) => {
   // 画面缩放放大后：单指拖动 = 平移画面（不再发送远程移动）
   if (zoomMode === 'view' && view.scale > 1.001 && e.pointerType !== 'mouse') {
     viewPan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, t: Date.now(), moved: false };
-    try { overlay.setPointerCapture(e.pointerId); } catch (err) {}
+    // 先不 setPointerCapture：否则第二根手指落下时双指手势容易被吞
     return;
   }
   if (!state.control) return;
@@ -1607,7 +1607,10 @@ overlay.addEventListener('pointermove', (e) => {
   // 画面缩放放大后：单指拖动平移本机画面
   if (viewPan && e.pointerId === viewPan.id) {
     const dx = e.clientX - viewPan.x, dy = e.clientY - viewPan.y;
-    if (Math.abs(dx) > 8 || Math.abs(dy) > 8) viewPan.moved = true;
+    if (!viewPan.moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+      viewPan.moved = true;
+      try { overlay.setPointerCapture(e.pointerId); } catch (err) {}
+    }
     if (viewPan.moved) {
       const r = stage.getBoundingClientRect();
       view.tx = Math.min(0, Math.max(r.width * (1 - view.scale), viewPan.tx + dx));
