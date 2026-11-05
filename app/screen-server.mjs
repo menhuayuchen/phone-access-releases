@@ -531,7 +531,8 @@ function attachH264Ws(server, key) {
       socket.destroy();
       return;
     }
-    h264Wss.handleUpgrade(req, socket, head, (ws) => h264Wss.emit('connection', ws, req));
+    try { socket.setNoDelay(true); } catch { }
+    h264Wss.handleUpgrade(req, socket, head, (ws) => { try { ws._socket.setNoDelay(true); } catch { } h264Wss.emit('connection', ws, req); });
   });
   h264Wss.on('connection', (ws) => {
     h264.clients.add(ws);
