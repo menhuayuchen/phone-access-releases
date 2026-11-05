@@ -485,7 +485,7 @@ srcSel.addEventListener('change', async () => {
   await postMode({ monitor: state.monitor, window: state.window });
   setNote('已切换来源');
   buzz(8);
-  if (state.mode === 'mjpeg') startMjpeg(); else if (state.mode === 'h264') { fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rect: state.rect }) }).catch(function () {}); restartH264(); } else restartRtc();
+  if (state.mode === 'mjpeg') startMjpeg(); else if (state.mode === 'h264') { h264.graceUntil = Date.now() + 4000; fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rect: state.rect }) }).catch(function () {}); setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 250); } else restartRtc();
 });
 
 async function postMode(patch) {
@@ -737,10 +737,11 @@ async function startH264() {
       }
       // 偶发解码错误优先重连高清，连续失败才降级到低频画面
       const nowE = Date.now();
-      if (nowE - (h264.lastErrAt || 0) > 20000) h264.errCount = 0;
+      if (Date.now() < (h264.graceUntil || 0)) { setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 300); return; }
+      if (nowE - (h264.lastErrAt || 0) > 30000) h264.errCount = 0;
       h264.lastErrAt = nowE;
       h264.errCount = (h264.errCount || 0) + 1;
-      if (h264.errCount <= 3) {
+      if (h264.errCount <= 6) {
         setNote('高清解码异常，正在重连…', 2500);
         setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 400);
         return;
