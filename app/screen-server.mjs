@@ -146,6 +146,7 @@ const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
 let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
+let wtSrv = null;
 
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
@@ -358,6 +359,7 @@ function processH264Buffer() {
       h264.tsUs = (h264.tsUs || 0) + Math.round(1e6 / H264_FPS);
       for (const ws of h264.clients) h264SendFrame(ws, h264.tsUs, s.key, s.data);
       h264RtcSendFrame({ ts: h264.tsUs, key: s.key, data: s.data });
+      if (wtSrv) { try { h264.frameSeq = (h264.frameSeq || 0) + 1; wtSrv.broadcast({ id: h264.frameSeq, key: s.key, data: s.data }); } catch { } }
     }
     h264.frames += samples.length;
     h264.pending = h264.pending.subarray(mdat.end);
@@ -3061,6 +3063,7 @@ function handler(req, res) {
       fps: H264_FPS,
       kbps: H264_KBPS,
       viewers: h264.clients.size,
+      wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,
       lastError: h264.lastError
     }));
     return;
@@ -3386,7 +3389,22 @@ for (const host of hosts) {
     }
     return true;
   });
-  attachH264Ws(s, KEY);
+  // WebTransport（UDP/QUIC）帧传输：失败不影响 WS 主链路
+  try {
+    if (cfgH264.wt && cfgH264.wt.enabled !== false) {
+      const wtPort = Number(cfgH264.wt.port) || 8444;
+      const wtMod = await import(new URL('./wt/wt-server.mjs', import.meta.url));
+      wtSrv = await wtMod.startWt({
+        port: wtPort,
+        certPath: join(HERE, 'wt', 'cert.pem'),
+        keyPath: join(HERE, 'wt', 'key.pem'),
+        getInit: () => h264.initInfo
+      });
+      console.log('wt: listening udp ' + wtPort);
+    }
+  } catch (e) {
+    console.log('wt: disabled (' + (e && e.message) + ')');
+  }
   attachH264Rtc(s, KEY);
   attachAudioWs(s, KEY);
   s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
