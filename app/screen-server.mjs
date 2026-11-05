@@ -1,4 +1,5 @@
 import { PAGE } from './page.mjs';
+import os from 'node:os';
 // Screen viewer for the phone/tablet: serves the JPEG frames written by capture.exe as a
 // multipart MJPEG stream, bound ONLY to private interfaces (Tailscale / LAN), never 0.0.0.0.
 //
@@ -2417,7 +2418,7 @@ function updatePublicState() {
   };
 }
 
-function handler(req, res) {
+async function handler(req, res) {
   const url = new URL(req.url, 'http://localhost');
 
   // ---- 统一鉴权（2026-10-31 重写：默认必须密钥 + 显式公开白名单）--------------
@@ -3667,6 +3668,90 @@ function handler(req, res) {
       res.end(JSON.stringify(Object.assign({ ok: true }, privacyJson())));
       return;
     }
+  }
+  // ---- 离线模式（没有互联网/Tailscale）：局域网访问 + 电脑热点 --------------------
+  // 网页走 http://<电脑局域网IP>:<port>/?k=KEY；注意 http 不是安全上下文，
+  // WebRTC 不可用（页面会自动走 WS H.264），PWA 安装也会受限。
+  function privateIps() {
+    const out = [];
+    try {
+      const ifs = os.networkInterfaces();
+      for (const name of Object.keys(ifs)) {
+        for (const a of (ifs[name] || [])) {
+          if (!a || a.family !== 'IPv4' || a.internal) continue;
+          const ip = a.address;
+          if (/^100\./.test(ip)) continue;                     // Tailscale 单独显示
+          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(ip)) out.push({ name, ip });
+        }
+      }
+    } catch { }
+    return out;
+  }
+  function runHotspot(args) {
+    return new Promise((resolve) => {
+      const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      const script = join(HERE, 'hotspot-ctl.ps1');
+      if (!fileExists(script)) return resolve({ ok: false, error: '缺少 hotspot-ctl.ps1' });
+      let out = '', done = false;
+      const finish = (obj) => { if (!done) { done = true; resolve(obj); } };
+      const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script].concat(args), { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+      child.stdout.on('data', (d) => { out += String(d); });
+      child.on('exit', () => {
+        try { finish(JSON.parse(out.trim().split(/\r?\n/).filter(Boolean).pop() || '{}')); } catch { finish({ ok: false, error: out.trim().slice(0, 200) || 'no output' }); }
+      });
+      child.on('error', (e) => finish({ ok: false, error: String(e.message || e) }));
+      setTimeout(() => { try { child.kill(); } catch { } finish({ ok: false, error: 'timeout' }); }, 45000);
+    });
+  }
+  if (url.pathname === '/offline-info') {
+    const cfgNow = (() => { try { return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } })();
+    const hs = await runHotspot(['-Action', 'status']);
+    try {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({
+        ok: true,
+        offline: !!(cfgNow.screen && cfgNow.screen.offline),
+        port: Number(cfgNow.ports && cfgNow.ports.screen) || 8660,
+        ips: privateIps(),
+        hotspot: hs
+      }));
+    } catch { }
+    return;
+  }
+  if (url.pathname === '/offline/on' || url.pathname === '/offline/off') {
+    const on = url.pathname === '/offline/on';
+    try {
+      const p = join(HERE, 'product.config.json');
+      const c = JSON.parse(readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
+      if (!c.screen) c.screen = {};
+      c.screen.offline = on;
+      writeFileSync(p, JSON.stringify(c, null, 2), 'utf8');
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, offline: on, restarting: true }));
+    } catch (e) {
+      try { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: String(e.message || e) })); } catch { }
+      return;
+    }
+    // 监听地址要跟着变：让守护进程重启服务（约 10 秒）
+    setTimeout(() => { try { process.exit(0); } catch { } }, 800);
+    return;
+  }
+  if (url.pathname === '/hotspot/on' || url.pathname === '/hotspot/off') {
+    const on = url.pathname === '/hotspot/on';
+    const body = await new Promise((resolve) => {
+      let b = '';
+      req.on('data', (d) => { b += d; if (b.length > 2048) req.destroy(); });
+      req.on('end', () => { try { resolve(JSON.parse(b || '{}')); } catch { resolve({}); } });
+      setTimeout(() => resolve({}), 1500);
+    });
+    const ssid = String(body.ssid || 'PhoneAccess-Offline').slice(0, 32);
+    const pass = String(body.pass || 'phoneaccess').slice(0, 63);
+    const job = await runHotspot(on ? ['-Action', 'start', '-Ssid', ssid, '-Pass', pass] : ['-Action', 'stop']);
+    try {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(Object.assign({ ok: !!job.ok, job: job, ips: privateIps() }, job)));
+    } catch { }
+    return;
   }
   // ---- 诊断导出：把状态和最近日志打包成一份 txt（密钥已打码），给卖家排查 ----
   if (url.pathname === '/diagnose') {

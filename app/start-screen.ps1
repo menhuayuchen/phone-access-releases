@@ -72,11 +72,18 @@ $key = (Get-Content $keyFile -Raw).Trim()
 # （Tailscale 自己会在同一局域网里走直连，速度不受影响）。局域网不带 Tailscale 的连接一律不监听。
 $tsState = Get-TailscaleInfo -TailscaleExe $ts
 $tsIp = $tsState.Ip
+# 离线模式（没有互联网/没有 Tailscale）：允许只靠局域网/电脑热点启动。
+# 开关在 product.config.json → screen.offline，由页面「离线模式」里的开关写入。
+$offlineMode = [bool]($cfg.screen -and $cfg.screen.offline)
 if (-not $tsIp) {
-  Write-Host "[x] Tailscale 没有连上（$($tsState.Note)）。"
-  Write-Host "    出于安全考虑，不提供绕过 Tailscale 的局域网入口；请先登录 Tailscale，再重新启动。"
-  if (-not $Quiet) { Read-Host '按回车退出' }
-  exit 1
+  if ($offlineMode) {
+    Write-Host "[!] Tailscale 没有连上（$($tsState.Note)）：按离线模式继续，只用局域网/热点访问。" -ForegroundColor Yellow
+  } else {
+    Write-Host "[x] Tailscale 没有连上（$($tsState.Note)）。"
+    Write-Host "    出于安全考虑，不提供绕过 Tailscale 的局域网入口；请先登录 Tailscale，再重新启动。"
+    if (-not $Quiet) { Read-Host '按回车退出' }
+    exit 1
+  }
 }
 # 改动（PWA/HTTPS）：额外绑 127.0.0.1。
 # 原因：手机要"安装成 App"必须走 HTTPS（service worker 只在安全上下文可用），
@@ -84,6 +91,19 @@ if (-not $tsIp) {
 # 原来这里只绑 tailnet 地址和局域网地址，serve 转发过来会连接被拒。
 # 绑 127.0.0.1 只对本机可见，不扩大暴露面（局域网和公网仍然进不来）。
 $hosts = @('127.0.0.1', $tsIp) | Where-Object { $_ } | Select-Object -Unique
+# 离线模式：把本机局域网 IPv4（Wi-Fi/以太网/电脑热点 192.168.137.x）也加进监听列表
+if ($offlineMode) {
+  $lanIps = @()
+  try {
+    $lanIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+      Where-Object { $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' -and $_.IPAddress -notmatch '^100\.' } |
+      Select-Object -ExpandProperty IPAddress -Unique)
+  } catch { }
+  if ($lanIps.Count -gt 0) {
+    $hosts = @($hosts + $lanIps) | Where-Object { $_ } | Select-Object -Unique
+    Write-Host ('[i] 离线模式：额外监听 ' + ($lanIps -join ', '))
+  }
+}
 $viewersFile = Join-Path $here 'viewers.count'
 
 # 改动（P0-4）：启动前先查端口冲突。以前绑定失败只在 screen-server.log 里留一行，
