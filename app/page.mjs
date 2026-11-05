@@ -643,6 +643,7 @@ function startWtTransport() {
 //  4. 回前台时如果连接已经死了，自动重连一次（手机锁屏再解锁的常见场景）。
 let rtc264Gen = 0;
 const RTC264 = { pc: null, sid: '', watchdog: null, statsTimer: null, attempts: 0, startedAt: 0, firstVideo: false, busy: false };
+try { window.__rtc264 = RTC264; } catch (e) { }   // 诊断/端到端测试用
 function rtc264Mode() {
   try { return new URLSearchParams(location.search).get('rtc264') === 'relay' ? 'relay' : 'all'; } catch (e) { return 'all'; }
 }
@@ -656,6 +657,8 @@ function stopRtc264() {
   R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
+  try { rtc264AudioStop(); } catch (e) { }
+  R.media = null;
   if (R.pc) {
     try { R.pc.ontrack = null; R.pc.oniceconnectionstatechange = null; R.pc.close(); } catch (e) { }
     R.pc = null;
@@ -693,14 +696,17 @@ async function startRtc264() {
     const pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: mode === 'relay' ? 'relay' : 'all' });
     R.pc = pc;
     window.__pc264 = pc;
+    R.media = new MediaStream();
     pc.ontrack = function (e) {
       try {
         try { if (e.receiver) { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20; if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } } catch (err) { }
-        vid.srcObject = new MediaStream([e.track]);
+        try { R.media.addTrack(e.track); } catch (err) { }
+        vid.srcObject = R.media;
         vid.classList.add('show');
         img.classList.remove('show');
         vid.muted = !state.audio;
         vid.play().catch(function () { });
+        if (state.audio) { try { stopPcmAudio(); } catch (err) { } rtc264AudioStart(); }
       } catch (err) { }
     };
     pc.oniceconnectionstatechange = function () {
@@ -791,6 +797,62 @@ function serverUp264() {
       .then(function (j) { finish(!!(j && j.enabled)); })
       .catch(function () { finish(false); });
   });
+}
+function rtc264AttachAudio(track) {
+  try {
+    const A = RTC264;
+    if (!A.media) A.media = new MediaStream();
+    if (A.audioTrack) { try { A.media.removeTrack(A.audioTrack); } catch (e) { } }
+    A.audioTrack = track;
+    A.media.addTrack(track);
+    vid.srcObject = A.media;
+    vid.muted = !state.audio;
+    if (state.audio) vid.play().catch(function () { });
+  } catch (e) { }
+}
+function rtc264AudioStop() {
+  const A = RTC264;
+  if (A.audioSig) { try { A.audioSig.onclose = null; A.audioSig.onmessage = null; A.audioSig.close(); } catch (e) { } A.audioSig = null; }
+  if (A.audioPc) { try { A.audioPc.ontrack = null; A.audioPc.close(); } catch (e) { } A.audioPc = null; }
+  if (A.audioTrack && A.media) { try { A.media.removeTrack(A.audioTrack); } catch (e) { } }
+  A.audioTrack = null;
+}
+// 清晰模式的音频：走 /rtc?audio=1 的纯音频 WebRTC 连接（复用 rtc.mjs 的 Opus 编码），
+// 比原来 PCM over WebSocket 少一层缓冲，音画更同步。失败就静默退回无声（视频不受影响）。
+async function rtc264AudioStart() {
+  const A = RTC264;
+  if (!A.pc || A.audioPc || !state.audio) return;
+  try {
+    const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const sig = new WebSocket(proto + '//' + location.host + '/rtc?k=' + encodeURIComponent(KEY) + '&audio=1&s=' + SID);
+    const pc = new RTCPeerConnection({ iceServers: [] });
+    A.audioSig = sig;
+    A.audioPc = pc;
+    pc.ontrack = function (e) { rtc264AttachAudio(e.track); };
+    pc.onicecandidate = function (e) { try { if (e.candidate && sig.readyState === 1) sig.send(JSON.stringify({ type: 'ice', candidate: e.candidate })); } catch (err) { } };
+    pc.onconnectionstatechange = function () { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') rtc264AudioStop(); };
+    sig.onopen = async function () {
+      try {
+        const offer = await pc.createOffer({ offerToReceiveAudio: true, offerToReceiveVideo: false });
+        await pc.setLocalDescription(offer);
+        sig.send(JSON.stringify({ type: 'offer', sdp: pc.localDescription.sdp }));
+      } catch (e) { rtc264AudioStop(); }
+    };
+    sig.onmessage = async function (ev) {
+      try {
+        const m = JSON.parse(ev.data);
+        if (m.type === 'answer') await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
+        else if (m.type === 'ice') { try { await pc.addIceCandidate(m.candidate); } catch (e) { } }
+      } catch (e) { }
+    };
+    sig.onclose = function () { if (A.audioPc === pc) { A.audioPc = null; A.audioSig = null; } };
+  } catch (e) { rtc264AudioStop(); }
+}
+function applyRtc264Audio() {
+  if (!RTC264.pc) return;
+  vid.muted = !state.audio;
+  if (state.audio) { rtc264AudioStart(); if (typeof vid.play === 'function') vid.play().catch(function () { }); }
+  else rtc264AudioStop();
 }
 function rtc264Retry(why) {
   const R = RTC264;
@@ -1430,8 +1492,14 @@ btnSnd.addEventListener('click', () => {
     vid.muted = !state.audio;
     if (state.audio) vid.play().catch(() => {});
     setStat(state.audio ? '声音已开（流畅模式）' : '声音已关');
+  } else if (state.mode === 'h264' && RTC264.pc) {
+    // 清晰模式（WebRTC264）：声音走 WebRTC 音频轨（比 PCM over WS 延迟低），
+    // 关掉 PCM 通道避免两路声音叠在一起。
+    stopPcmAudio();
+    applyRtc264Audio();
+    setStat(state.audio ? '声音已开（WebRTC）' : '声音已关');
   } else if (state.audio) {
-    startPcmAudio();               // 清晰模式：PCM over WebSocket
+    startPcmAudio();               // 旧 WS 通道：PCM over WebSocket
   } else {
     stopPcmAudio();
     setStat('声音已关');

@@ -103,7 +103,11 @@ let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低�
 
     wss.on('connection', (ws, req) => {
       const who = (req && req.socket && (req.socket.remoteAddress || '')) + ':' + (req && req.socket ? req.socket.remotePort : '');
-      log('rtc: viewer connected from ' + who);
+      // audio=1：只给音频轨。清晰模式（WebRTC264）的视频走 Pion 侧车，这里这条连接只负责
+      // 把声音改用 WebRTC 送，替代原来 PCM over WebSocket 的高延迟通道。
+      let audioOnly = false;
+      try { audioOnly = new URL(req.url, 'http://x').searchParams.get('audio') === '1'; } catch (e) { }
+      log('rtc: viewer connected from ' + who + (audioOnly ? '（仅音频）' : ''));
       const pc = new RTCPeerConnection({ iceServers: ICE });
       peers.add(pc);
       // 每条连接都要新建 track：一个 MediaStreamTrack 只能挂在一个 RTCPeerConnection 上，
@@ -114,9 +118,11 @@ let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低�
       // 见上面的 prime 参数与 decode.mjs 的 width）喂帧，预置帧也是这个尺寸，因此可以直接建 track。
       // 以前这里要等 "最近 5 秒内有过帧"，服务端刚重启/刚切到流畅时来不及，观众就会
       // 永远只拿到音频（画面一直黑着），现在不存在这个竞态。
-      vTrack = videoSource.createTrack();
-      pc.addTrack(vTrack);
-      log('rtc: video track added, senders=' + pc.getSenders().map((s) => s.track ? s.track.kind : 'null').join(','));
+      if (!audioOnly) {
+        vTrack = videoSource.createTrack();
+        pc.addTrack(vTrack);
+        log('rtc: video track added, senders=' + pc.getSenders().map((s) => s.track ? s.track.kind : 'null').join(','));
+      }
       aTrack = audioSource.createTrack();
       pc.addTrack(aTrack);
       log('rtc: audio track added, senders=' + pc.getSenders().map((s) => s.track ? s.track.kind : 'null').join(','));

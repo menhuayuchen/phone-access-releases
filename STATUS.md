@@ -1413,3 +1413,19 @@ HTTP 全部超时，端口仍在监听所以守护看不出来，用户卡了 6 
 - 顺带修：`/h264-quality` 改参数后原来只在"有 WS 观众"时重启编码器，RTC 会话下会停住不回来；
   现在有 WebRTC 会话也会自动重启。
 - 实测：开自动 → 服务端 20→12 Mbps、下拉框置灰、按钮变「自动·开」；关闭 → 恢复 20 Mbps。
+
+### 42.6 声音走 WebRTC / 缩放 lanczos / GOP 1s（2026-11-05 21:1x，未发布）
+
+**声音（清晰模式）改走 WebRTC**
+- 原来清晰模式的声音是 PCM over WebSocket（独立缓冲，约 100–200ms，音画容易不同步）。
+- 现在 `/rtc?audio=1` 只回音频轨（复用 rtc.mjs 的 Opus 编码），页面在 WebRTC264 视频之外
+  再建一条纯音频连接，把音轨合并进同一个 MediaStream → `<video>` 同时出声，延迟降到 WebRTC 级。
+- 声音按钮在清晰模式改为开关这条 WebRTC 音轨（同时关掉 PCM，避免两路声音）；旧 WS 通道仍用 PCM。
+- 实测（headless Chrome 自动播放）：点声音 → audioPc=connected、5 秒收 245 包/19KB、video 元素含
+  audio+video 两轨、muted=false；再点关闭 → audioPc 断开、muted=true。
+
+**画质**
+- 1920 档缩放从默认 bicubic 改为 `lanczos+accurate_rnd`（文字边缘更锐，延迟不变，CPU 略增）。
+- GOP 0.5 秒 → **1 秒**（`-g fps`）：CBR 下省下 I 帧比特给 P 帧，静态画面更干净。
+  冷开实测 0.8–1.2 秒，没有变慢。
+- 下一批画质项（画质优先档 p3/p4、CQ+maxrate、自动档顺带降帧率）还没做。
