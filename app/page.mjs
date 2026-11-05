@@ -677,13 +677,12 @@ async function startRtc264() {
       if (offer.turnHost && offer.turnHost !== location.hostname) turnUrls.push('turn:' + offer.turnHost + ':' + offer.turnPort + '?transport=udp');
       ice.push({ urls: turnUrls, username: offer.turnUser || '', credential: offer.turnPass || '' });
     }
-    ice.push({ urls: 'stun:stun.cloudflare.com:3478' });
-    const pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: mode === 'relay' ? 'relay' : 'all' });
+    ice.push({ urls: 'stun:stun.cloudflare.com:3478' });    const pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: mode === 'relay' ? 'relay' : 'all' });
     R.pc = pc;
     window.__pc264 = pc;
     pc.ontrack = function (e) {
       try {
-        try { if (e.receiver) { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 40; if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0.04; } } catch (err) { }
+        try { if (e.receiver) { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20; if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } } catch (err) { }
         vid.srcObject = new MediaStream([e.track]);
         vid.classList.add('show');
         img.classList.remove('show');
@@ -725,10 +724,13 @@ async function rtc264Stats() {
   try {
     const st = await pc.getStats();
     const cands = {};
-    let br = 0, fr = 0, fd = 0, path = '';
+    let br = 0, fr = 0, fd = 0, path = '', jb = 0, jbc = 0;
     st.forEach(function (r) { if (r.type === 'local-candidate' || r.type === 'remote-candidate') cands[r.id] = r; });
     st.forEach(function (r) {
-      if (r.type === 'inbound-rtp' && r.kind === 'video') { br = r.bytesReceived || 0; fr = r.framesReceived || 0; fd = r.framesDecoded || 0; }
+      if (r.type === 'inbound-rtp' && r.kind === 'video') {
+        br = r.bytesReceived || 0; fr = r.framesReceived || 0; fd = r.framesDecoded || 0;
+        jb = r.jitterBufferDelay || 0; jbc = r.jitterBufferEmittedCount || 0;
+      }
       if (r.type === 'candidate-pair' && r.state === 'succeeded') { const c = cands[r.localCandidateId]; if (c) path = c.candidateType; }
     });
     const vw = vid.videoWidth || 0;
@@ -737,7 +739,8 @@ async function rtc264Stats() {
       if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
     }
     const how = path === 'relay' ? '中继' : (path === 'srflx' || path === 'prflx' ? '直连(NAT)' : (path === 'host' ? '直连' : pc.iceConnectionState));
-    setStat('WebRTC264 ' + how + ' · ' + (vw ? vw + 'x' + vid.videoHeight : '无画面') + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB');
+    const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
+    setStat('WebRTC264 ' + how + ' · ' + (vw ? vw + 'x' + vid.videoHeight : '无画面') + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB · 缓' + bufMs + 'ms');
   } catch (e) { }
 }
 function rtc264Retry(why) {
@@ -753,12 +756,21 @@ function rtc264Retry(why) {
     if (state.mode === 'h264' && !document.hidden) startRtc264();
   }, 900);
 }
+// B 方案默认开启：没写参数就走 WebRTC264；?rtc264=0 强制旧 WS 通道；?rtc264=1/relay 强制开启/中继测试。
+// h264.rtcEnabled 由 /h264-status 下发（配置开启 + 侧车 exe 存在才算可用）。
+function rtc264Wanted() {
+  let p = null;
+  try { p = new URLSearchParams(location.search).get('rtc264'); } catch (e) { }
+  if (p === '0') return false;
+  if (p === '1' || p === 'relay') return !!window.RTCPeerConnection;
+  return !!(h264.rtcEnabled && window.RTCPeerConnection);
+}
 function rtc264Fallback(why) {
   try { console.log('rtc264 fallback: ' + why); } catch (e) { }
   stopRtc264();
   try {
     const u = new URL(location.href);
-    u.searchParams.delete('rtc264');
+    u.searchParams.set('rtc264', '0');      // 记住这次失败，别在重连循环里反复试 WebRTC
     history.replaceState(null, '', u.toString());
   } catch (e) { }
   setNote('WebRTC 没连上，已回到高清模式', 5000);
@@ -766,9 +778,7 @@ function rtc264Fallback(why) {
 }
 document.addEventListener('visibilitychange', function () {
   if (document.hidden) return;
-  let mode = '';
-  try { mode = new URLSearchParams(location.search).get('rtc264') || ''; } catch (e) { }
-  if (mode !== '1' && mode !== 'relay') return;      // 已经回落成 WS 了，不再插手
+  if (!rtc264Wanted()) return;              // 已回落成 WS 或明确关闭
   if (state.mode !== 'h264') return;
   const R = RTC264;
   if (R.pc && (R.pc.iceConnectionState === 'connected' || R.pc.iceConnectionState === 'completed')) return;
@@ -780,6 +790,7 @@ async function startH264() {
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   h264.wt = (st && st.wt) || null;
+  h264.rtcEnabled = !!(st && st.rtc && st.rtc.enabled);
   if (!st || !st.enabled) { startMjpeg(); return; }
   if (!(window.VideoDecoder && window.EncodedVideoChunk)) { startMjpeg(); return; }   // 没有 WebCodecs 就回落 MJPEG
   stopH264();
@@ -957,7 +968,7 @@ async function startH264() {
     }
   }, 5000);  };
 
-  if ((new URLSearchParams(location.search).get('rtc264') === '1' || new URLSearchParams(location.search).get('rtc264') === 'relay') && window.RTCPeerConnection) { startRtc264(); return; }
+  if (rtc264Wanted()) { startRtc264(); return; }
   const useWt = new URLSearchParams(location.search).get('wt') === '1' && h264.wt && h264.wt.enabled && h264.wt.hash && window.WebTransport;
   if (useWt) { startWtTransport(); return; }
   const useRtc = new URLSearchParams(location.search).get('rtc') === '1' && !!window.RTCPeerConnection;

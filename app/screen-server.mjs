@@ -168,13 +168,17 @@ let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）
 // 编码器：优先 NVENC（硬编，延迟低、CPU 几乎为 0），不可用时回退 h264_mf（软编）
+// 注意（2026-11-05 修）：这里的探测帧原来用 64x64，比 NVENC 的最小尺寸还小，
+// 于是「探测永远失败」→ 所有机器都退回 h264_mf 软编（1920x1200@60 吃满 CPU，延迟也高）。
+// 用 640x480 探测才测得出真实可用性；h264_mf 只在真的没有 N 卡/驱动时兜底。
 let H264_ENCODER = 'mf';
 try {
   if (H264_ENABLED) {
-    execFileSync(FFMPEG_EXE, ['-hide_banner','-loglevel','error','-f','lavfi','-i','color=black:s=64x64:r=1','-t','0.2','-c:v','h264_nvenc','-f','null','-'], { timeout: 8000, stdio: 'ignore' });
+    execFileSync(FFMPEG_EXE, ['-hide_banner','-loglevel','error','-f','lavfi','-i','color=black:s=640x480:r=1','-t','0.2','-c:v','h264_nvenc','-f','null','-'], { timeout: 8000, stdio: 'ignore' });
     H264_ENCODER = 'nvenc';
   }
 } catch { H264_ENCODER = 'mf'; }
+console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）'));
 
 const h264 = {
   proc: null,
@@ -3289,6 +3293,8 @@ function handler(req, res) {
       fps: H264_FPS,
       kbps: H264_KBPS,
       viewers: h264.clients.size,
+      // B 方案（Pion WebRTC H.264）默认通道：页面默认走它，?rtc264=0 可强制旧 WS 通道
+      rtc: { enabled: !!(CFG264.enabled && fileExists(RTC264_EXE)), port: RTC264_PORT, turn: RTC264_TURN_PORT },
       wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,
       lastError: h264.lastError
     }));
