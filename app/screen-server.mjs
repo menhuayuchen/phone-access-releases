@@ -2956,6 +2956,40 @@ function handler(req, res) {
     return;
   }
 
+  if (url.pathname === '/wt-video') {
+    const html = '<!doctype html><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">'
+      + '<body style="margin:0;background:#000;color:#eee;font:14px system-ui">'
+      + '<video id="v" autoplay muted playsinline style="width:100vw;height:auto;display:block"></video>'
+      + '<div id="s" style="position:fixed;left:8px;bottom:8px;background:rgba(0,0,0,.5);padding:4px 8px;border-radius:6px"></div>'
+      + '<script>'
+      + 'const H="' + 'ftYqxxytlicCFp4MsLIlWuNaGOWxXsXZbyxsc/fwxEw=' + '";'
+      + 'const s=document.getElementById("s");let fps=0,fc=0,last=Date.now();'
+      + 'function hb(){const b=atob(H);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}'
+      + 'let dec=null,metaBuf="",metaTotal=0;const parts=new Map();'
+      + 'const canvas=document.createElement("canvas");const ctx=canvas.getContext("2d");'
+      + 'function startDec(m){metaTotal=m.length;metaBuf+=m;try{const j=JSON.parse(metaBuf);'
+      + 'dec=new VideoDecoder({output:(f)=>{if(canvas.width!==f.displayWidth){canvas.width=f.displayWidth;canvas.height=f.displayHeight;}'
+      + 'ctx.drawImage(f,0,0);f.close();fc++;const n=Date.now();if(n-last>=1000){fps=fc*1000/(n-last);fc=0;last=n;s.textContent=(j.width||canvas.width)+"x"+(j.height||canvas.height)+" · "+fps.toFixed(1)+" fps";}},'
+      + 'error:(e)=>{s.textContent="decode err "+e.message;}});'
+      + 'const d=Uint8Array.from(atob(j.description),c=>c.charCodeAt(0));'
+      + 'dec.configure({codec:j.codec,description:d,optimizeForLatency:true});s.textContent="decoder ok";}catch(e){}}'
+      + '(async()=>{try{const wt=new WebTransport("https://"+location.hostname+":8444/video",{serverCertificateHashes:[{algorithm:"sha-256",value:hb()}]});'
+      + 'await wt.ready;s.textContent="wt ready";const rd=wt.datagrams.readable.getReader();'
+      + 'while(true){const r=await rd.read();if(r.done)break;const b=new Uint8Array(r.value);if(b.length<4)continue;'
+      + 'const magic=(b[0]<<8)|b[1];'
+      + 'if(magic===0xFFFF){const off=(b[2]<<8)|b[3];const txt=new TextDecoder().decode(b.subarray(4));'
+      + 'if(off===0){metaBuf="";}startDec(txt);continue;}'
+      + 'const id=(b[0]<<24|b[1]<<16|b[2]<<8|b[3])>>>0;const idx=(b[4]<<8)|b[5];const tot=(b[6]<<8)|b[7];const key=b[8]===1;const totalLen=(b[9]<<24|b[10]<<16|b[11]<<8|b[12])>>>0;'
+      + 'let e=parts.get(id);if(!e){e={total:tot,got:0,buf:new Uint8Array(totalLen),key};parts.set(id,e);}'
+      + 'const pay=b.subarray(14);if(idx*1100+pay.length>e.buf.length)continue;e.buf.set(pay,idx*1100);e.got++;'
+      + 'if(e.got>=e.total){parts.delete(id);if(parts.size>30)parts.clear();'
+      + 'if(dec){try{dec.decode(new EncodedVideoChunk({type:e.key?"key":"delta",timestamp:id*20,data:e.buf}));}catch(err){}}}}'
+      + '}catch(e){s.textContent="wt fail "+e.message;}})();'
+      + '</scr'+'ipt></body>';
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(html);
+    return;
+  }
   if (url.pathname === '/wt-test') {
     const html = '<!doctype html><meta charset="utf-8"><body style="background:#111;color:#eee;font:16px system-ui;padding:20px">'
       + '<h3>WebTransport 测试</h3><div id="o">连接中…</div><div id="o2" style="opacity:.7;margin-top:12px"></div>'
