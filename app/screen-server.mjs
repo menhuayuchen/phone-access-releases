@@ -2787,7 +2787,9 @@ function handler(req, res) {
             });
             if (!best) throw new Error('没有产品发行版');
             const gExe = pickExeAsset(best.rel && best.rel.assets);
-            if (!gExe) throw new Error('最新发行版里没有安装包');
+            const gAssets = (best.rel && best.rel.assets) || [];
+            const gParts = gAssets.filter((a) => /\.part\d+$/i.test(String((a && a.name) || '')));
+            if (!gExe && !gParts.length) throw new Error('最新发行版里没有安装包');
             const gBody = String((best.rel && best.rel.body) || '');
             // 发版约定：发行版正文里写 SHA256：xxxx；有它就能在下载后校验（Gitee API 不给 asset digest）
             const gSha = (gBody.match(/SHA256[^\r\n]{0,12}?([0-9a-fA-F]{64})/i) || [])[1] || '';
@@ -2796,7 +2798,9 @@ function handler(req, res) {
               notes: gBody.length > 900 ? (gBody.slice(0, 900) + '…') : gBody,
               url: String((gExe && gExe.browser_download_url) || ''),
               sha256: gSha.toLowerCase(),
-              page: 'https://gitee.com/' + gt.owner + '/' + gt.repo + '/releases/tag/v' + best.version
+              page: 'https://gitee.com/' + gt.owner + '/' + gt.repo + '/releases/tag/v' + best.version,
+              split: !gExe && gParts.length > 0,
+              splitParts: (!gExe && gParts.length) ? gParts.map((a) => ({ name: a.name, url: a.browser_download_url })) : []
             };
             srcTag = 'gitee';
           } catch (e) {
