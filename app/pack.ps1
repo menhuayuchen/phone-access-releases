@@ -503,6 +503,19 @@ if (Test-Path -LiteralPath $ffmpegExe) {
   Write-WarnLine '没有网页端 H.264 组件（未找到 app\bin\ffmpeg.exe）：网页端继续用 MJPEG'
 }
 
+# 可选组件：B 方案侧车（Pion WebRTC H.264，2026-11-05）。
+# app\rtc-h264\rtc-h264.exe 是本地 Go 构建产物（不进仓库）；存在就带上，没有只少一条低延迟通道。
+# 用 realtime 通道的前提：product.config.json 里 screen.h264.rtc264.enabled=true，页面 ?rtc264=1。
+$rtcExe = Join-Path $AppDir 'rtc-h264\rtc-h264.exe'
+if (Test-Path -LiteralPath $rtcExe) {
+  $rtcDst = Join-Path $stage 'rtc-h264'
+  if (-not (Test-Path -LiteralPath $rtcDst)) { $null = New-Item -ItemType Directory -Path $rtcDst -Force }
+  Copy-Item -LiteralPath $rtcExe -Destination (Join-Path $rtcDst 'rtc-h264.exe') -Force
+  Write-OkLine ('B 方案侧车已带上（rtc-h264.exe，' + (Format-Mb (Get-Item -LiteralPath $rtcExe).Length) + '）')
+} else {
+  Write-WarnLine '没有 B 方案侧车（未找到 app\rtc-h264\rtc-h264.exe）：rtc264 通道不可用，网页模式照常'
+}
+
 $runtimeDst = Join-Path $stage 'runtime'
 if (-not (Test-Path -LiteralPath $runtimeDst)) { $null = New-Item -ItemType Directory -Path $runtimeDst -Force }
 Copy-Item -LiteralPath $nodeChosen -Destination (Join-Path $runtimeDst 'node.exe') -Force

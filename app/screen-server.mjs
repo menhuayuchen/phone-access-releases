@@ -28,7 +28,7 @@ process.on('unhandledRejection', (e) => {
 });
 import http, { createServer } from 'node:http';
 import https from 'node:https';
-import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream, createWriteStream } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream, createWriteStream, openSync, closeSync } from 'node:fs';
 import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
@@ -481,8 +481,8 @@ function h264Start() {
     // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
-      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']
-      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']),
+      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS / 2)), '-bf', '0']
+      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS / 2)), '-bf', '0']),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
     '-frag_duration', '5000', '-flush_packets', '1',
@@ -562,37 +562,150 @@ function spsPpsPrefix() {
   return Buffer.concat(out);
 }
 function feed264(key, data) {
-  if (!conn264) return;
+  if (!conn264 || conn264.destroyed || !conn264.writable) return;
+  // 侧车写不动（进程卡住/系统卡）时丢帧，绝不让 Node 的内存无限涨
+  if (conn264.writableLength > 4 * 1024 * 1024) { rtc264FeedDrops++; return; }
   try {
     const payload = key ? Buffer.concat([spsPpsPrefix(), annxB(data)]) : annxB(data);
     const head = Buffer.alloc(5);
     head.writeUInt32BE(payload.length, 0);
     head[4] = key ? 1 : 0;
     conn264.write(Buffer.concat([head, payload]));
+    rtc264Frames++;
   } catch { }
 }
-function start264() {
-  if (!CFG264.enabled) return;
-  const exe = join(HERE, 'rtc-h264', 'rtc-h264.exe');
-  if (!fileExists(exe)) { console.log('rtc264: exe missing, disabled'); return; }
-  const port = Number(CFG264.port) || 9800;
-  const feedPort = Number(CFG264.feedPort) || 9900;
-  try {
-    side264 = spawn(exe, ['-port', String(port), '-tcp', '127.0.0.1:' + feedPort], { stdio: 'ignore', windowsHide: true });
-    console.log('rtc264: sidecar started');
-  } catch (e) { console.log('rtc264: spawn failed ' + e.message); return; }
-  const connect = () => {
-    const c = net.connect(feedPort, '127.0.0.1');
-    conn264 = c;
-    c.on('connect', () => { console.log('rtc264: feed connected'); conn264Retry = 0; });
-    c.on('error', () => { });
-    c.on('close', () => {
-      conn264 = null;
-      if (side264 && conn264Retry < 100) { conn264Retry++; setTimeout(connect, 1500); }
-    });
-  };
-  setTimeout(connect, 800);
+
+// ---- B 方案侧车进程管理（2026-11-05 稳定性改造）-----------------------------
+// 旧版问题：Node 被 supervisor 重启时子进程不会跟着退，新进程再去 bind 同一个端口失败，
+// 留下一个"旧版本、旧 TURN 凭据"的侧车在服侍新页面。现在先请残留进程自己退出，再拉起。
+const RTC264_PORT = Number(CFG264.port) || 9800;
+const RTC264_FEED_PORT = Number(CFG264.feedPort) || 9900;
+const RTC264_EXE = join(HERE, 'rtc-h264', 'rtc-h264.exe');
+const RTC264_TURN_PORT = CFG264.turn === false ? 0 : (Number(CFG264.turnPort) || 3478);
+let rtc264Spawning = false;
+let rtc264FeedDrops = 0;
+let rtc264Frames = 0;
+let rtc264IdleSince = 0;
+let rtc264RestartAt = 0;
+const rtc264Status = { at: 0, ok: false, sessions: 0, pending: 0, lastFrameMs: -1, framesIn: 0, turnOk: false, version: '' };
+
+function rtc264Alive() {
+  return rtc264Status.ok && rtc264Status.sessions > 0 && Date.now() - rtc264Status.at < 15000;
 }
+
+function http264(reqPath, method, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1', port: RTC264_PORT, path: reqPath, method: method || 'GET',
+      headers: body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}
+    }, (res) => {
+      let d = '';
+      res.on('data', (c) => { d += c; if (d.length > 65536) { try { req.destroy(); } catch { } } });
+      res.on('end', () => { try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs || 3000, () => { try { req.destroy(); } catch { } reject(new Error('timeout')); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+async function shutdownStale264() {
+  try {
+    const j = await http264('/health', 'GET', null, 1200);
+    if (!j || !j.ok) return;
+    try { await http264('/shutdown', 'POST', '{}', 1200); } catch { }
+    await new Promise((r) => setTimeout(r, 600));
+  } catch { }
+}
+
+function start264() {
+  if (!CFG264.enabled || side264 || rtc264Spawning) return;
+  if (!fileExists(RTC264_EXE)) { console.log('rtc264: 侧车 exe 不存在，已停用'); return; }
+  rtc264Spawning = true;
+  shutdownStale264().finally(() => {
+    rtc264Spawning = false;
+    if (side264) return;
+    const args = ['-port', String(RTC264_PORT), '-tcp', '127.0.0.1:' + RTC264_FEED_PORT];
+    if (RTC264_TURN_PORT > 0) args.push('-turn-port', String(RTC264_TURN_PORT));
+    const logPath = join(HERE, 'rtc-h264', 'sidecar.log');
+    try { if (statSync(logPath).size > 1024 * 1024) renameSync(logPath, logPath + '.1'); } catch { }
+    let outFd = -1;
+    try { outFd = openSync(logPath, 'a'); } catch { outFd = -1; }
+    try {
+      side264 = spawn(RTC264_EXE, args, { stdio: ['ignore', outFd >= 0 ? outFd : 'ignore', outFd >= 0 ? outFd : 'ignore'], windowsHide: true });
+      console.log('rtc264: 侧车已拉起 pid=' + side264.pid + ' port=' + RTC264_PORT + ' turn=' + RTC264_TURN_PORT);
+    } catch (e) {
+      console.log('rtc264: 拉起失败 ' + e.message);
+      try { if (outFd >= 0) closeSync(outFd); } catch { }
+      return;
+    }
+    const child = side264;
+    child.on('exit', (code) => {
+      console.log('rtc264: 侧车退出 code=' + code + '，2 秒后重启');
+      try { if (outFd >= 0) closeSync(outFd); } catch { }
+      if (side264 === child) side264 = null;
+      if (conn264) { try { conn264.destroy(); } catch { } conn264 = null; }
+      rtc264Status.ok = false;
+      if (CFG264.enabled) setTimeout(start264, 2000);
+    });
+    connect264Feed();
+  });
+}
+
+function connect264Feed() {
+  if (!side264 || conn264) return;
+  const c = net.connect(RTC264_FEED_PORT, '127.0.0.1');
+  conn264 = c;
+  try { c.setNoDelay(true); } catch { }
+  c.on('connect', () => { conn264Retry = 0; console.log('rtc264: 帧输入已连接'); });
+  c.on('error', () => { });
+  c.on('close', () => {
+    if (conn264 === c) conn264 = null;
+    if (side264 && conn264Retry < 600) {
+      conn264Retry++;
+      setTimeout(connect264Feed, Math.min(400 * conn264Retry, 5000));
+    }
+  });
+}
+
+// 侧车 /health 轮询：按会话数启停编码器，并在"有会话但长时间没帧"时重启编码器。
+function poll264() {
+  if (!CFG264.enabled) return;
+  http264('/health', 'GET', null, 2500).then((j) => {
+    if (!j || !j.ok) { rtc264Status.ok = false; return; }
+    rtc264Status.ok = true;
+    rtc264Status.at = Date.now();
+    rtc264Status.sessions = Number(j.sessions) || 0;
+    rtc264Status.pending = Number(j.pending) || 0;
+    rtc264Status.lastFrameMs = typeof j.lastFrameMs === 'number' ? j.lastFrameMs : -1;
+    rtc264Status.framesIn = Number(j.framesIn) || 0;
+    rtc264Status.turnOk = !!j.turnOk;
+    rtc264Status.version = String(j.version || '');
+    onHealth264();
+  }).catch(() => { rtc264Status.ok = false; });
+}
+
+function onHealth264() {
+  const now = Date.now();
+  if (rtc264Status.sessions > 0) {
+    rtc264IdleSince = 0;
+    h264Start();                       // 幂等：已经在编码就直接返回
+    if (rtc264Status.lastFrameMs > 5000 && now - rtc264RestartAt > 20000) {
+      rtc264RestartAt = now;
+      console.log('rtc264: 有 ' + rtc264Status.sessions + ' 路会话但 ' + rtc264Status.lastFrameMs + 'ms 没帧，重启编码器');
+      h264Stop();
+      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Start(); }, 500);
+    }
+    return;
+  }
+  if (!rtc264IdleSince) rtc264IdleSince = now;
+  if (now - rtc264IdleSince > 15000 && h264.clients.size === 0 && h264.proc) {
+    console.log('rtc264: 没有 WebRTC 会话也没有 WS 观众，停编码器');
+    h264Stop();
+  }
+}
+if (CFG264.enabled) setInterval(poll264, 5000);
 function attachH264Ws(server, key) {
   server.on('upgrade', (req, socket, head) => {
     let url;
@@ -625,7 +738,7 @@ function attachH264Ws(server, key) {
       h264.clients.delete(ws);
       console.log('h264: viewer closed (' + h264.clients.size + ')');
       if (h264.clients.size === 0) {
-        h264.stopTimer = setTimeout(() => { if (h264.clients.size === 0) h264Stop(); }, 15000);
+        h264.stopTimer = setTimeout(() => { if (h264.clients.size === 0 && !rtc264Alive()) h264Stop(); }, 15000);
       }
     });
     ws.on('error', () => { });
@@ -3090,20 +3203,30 @@ function handler(req, res) {
     res.end(html);
     return;
   }
-  // ---- B 方案：Pion 侧车测试页/信令代理（同源，避免混合内容）--------------
-  // 侧车默认监听 127.0.0.1:9800；只有 ?rtc264=1 的页面会用到，未启动侧车时返回 502 不影响主链路。
-  if (url.pathname === '/rtc264/offer' || url.pathname === '/rtc264/answer') {
-    const targetPath = url.pathname === '/rtc264/offer' ? '/offer' : '/answer';
-    if (targetPath === '/offer') { try { h264Start(); } catch { } }   // 页面只走 WebRTC 时也要启动编码器
+  // ---- B 方案：Pion 侧车信令代理（同源，避免混合内容）----------------------
+  // 侧车只监听 127.0.0.1；页面 /rtc264/{offer,answer,close} 一律经这里转发。
+  // offer 走 POST（每条会话一个新 sid），answer/close 带 JSON body 原样透传。
+  if (url.pathname === '/rtc264/offer' || url.pathname === '/rtc264/answer' || url.pathname === '/rtc264/close') {
+    const targetPath = url.pathname === '/rtc264/offer' ? '/offer' : (url.pathname === '/rtc264/answer' ? '/answer' : '/close');
+    if (targetPath === '/offer') {
+      try { start264(); } catch { }     // 侧车没起来/挂掉时顺便拉一把
+      try { h264Start(); } catch { }    // 页面只走 WebRTC 时也要启动编码器
+    }
     const chunks = [];
-    req.on('data', (c) => { chunks.push(c); if (chunks.reduce((a, b) => a + b.length, 0) > 1 << 20) req.destroy(); });
+    let bodyLen = 0;
+    req.on('data', (c) => { chunks.push(c); bodyLen += c.length; if (bodyLen > 1 << 20) req.destroy(); });
     req.on('end', () => {
       const body = Buffer.concat(chunks);
-      const r = http.request({ host: '127.0.0.1', port: Number(CFG264.port) || 9800, path: targetPath, method: req.method, headers: { 'content-type': 'application/json', 'content-length': body.length } }, (resp) => {
+      const r = http.request({
+        host: '127.0.0.1', port: RTC264_PORT, path: targetPath,
+        method: targetPath === '/offer' ? 'POST' : (req.method || 'POST'),
+        headers: { 'content-type': 'application/json', 'content-length': body.length }
+      }, (resp) => {
         res.writeHead(resp.statusCode || 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         resp.pipe(res);
       });
-      r.on('error', () => { try { res.writeHead(502); res.end('sidecar unavailable'); } catch { } });
+      r.on('error', () => { try { res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"error":"sidecar unavailable"}'); } catch { } });
+      r.setTimeout(8000, () => { try { r.destroy(); } catch { } });
       if (body.length) r.write(body);
       r.end();
     });
