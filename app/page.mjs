@@ -581,9 +581,58 @@ function stopH264() {
   try { vid.removeAttribute('src'); } catch (e) { }
   try { vid.srcObject = null; } catch (e) { }
 }
+function startWtTransport() {
+  const cfg = h264.wt;
+  const u = Uint8Array.from(atob(cfg.hash), function (c) { return c.charCodeAt(0); });
+  const wt = new WebTransport('https://' + location.hostname + ':' + cfg.port + '/video', { serverCertificateHashes: [{ algorithm: 'sha-256', value: u }] });
+  h264.wtConn = wt;
+  setStat('WT 连接中…');
+  (async () => {
+    await wt.ready;
+    setStat('WT 已连接');
+    const streams = wt.incomingUnidirectionalStreams.getReader();
+    while (true) {
+      const s = await streams.read();
+      if (s.done) break;
+      (async () => {
+        const rd = s.value.getReader();
+        let buf = new Uint8Array(0);
+        while (true) {
+          const r = await rd.read();
+          if (r.done) break;
+          const chunk = r.value;
+          const merged = new Uint8Array(buf.length + chunk.length);
+          merged.set(buf, 0); merged.set(chunk, buf.length); buf = merged;
+          while (buf.length >= 10) {
+            const len = ((buf[1] << 24) | (buf[2] << 16) | (buf[3] << 8) | buf[4]) >>> 0;
+            if (buf.length < 10 + len) break;
+            const type = buf[0], isKey = buf[5] === 1;
+            const payload = buf.slice(10, 10 + len);
+            buf = buf.slice(10 + len);
+            if (type === 2) {
+              try {
+                const j = JSON.parse(new TextDecoder().decode(payload));
+                const d = Uint8Array.from(atob(j.description), function (c) { return c.charCodeAt(0); });
+                h264.decoder.configure({ codec: j.codec, description: d, optimizeForLatency: true });
+                h264.streamW = j.width || 0; h264.streamH = j.height || 0; h264.configured = true;
+                setStat('WT 解码器就绪 ' + (j.width || 0) + 'x' + (j.height || 0));
+              } catch (e) { }
+            } else if (type === 1) {
+              if (!h264.wtKey) { if (!isKey) continue; h264.wtKey = true; }
+              h264.wtFrames = (h264.wtFrames || 0) + 1;
+              if (h264.wtFrames % 30 === 0) setStat('WT f=' + h264.wtFrames + ' e=' + (h264.wtErr || 0) + ' k=1');
+              try { h264.decoder.decode(new EncodedVideoChunk({ type: isKey ? 'key' : 'delta', timestamp: h264.wtFrames * 16, data: payload })); } catch (err) { h264.wtErr = (h264.wtErr || 0) + 1; }
+            }
+          }
+        }
+      })().catch(function () { });
+    }
+  })().catch(function (e) { console.log('wt failed: ' + (e && e.message)); startMjpeg(); });
+}
 async function startH264() {
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
+  h264.wt = (st && st.wt) || null;
   if (!st || !st.enabled) { startMjpeg(); return; }
   if (!(window.VideoDecoder && window.EncodedVideoChunk)) { startMjpeg(); return; }   // 没有 WebCodecs 就回落 MJPEG
   stopH264();
@@ -759,6 +808,8 @@ async function startH264() {
     }
   }, 5000);  };
 
+  const useWt = new URLSearchParams(location.search).get('wt') === '1' && h264.wt && h264.wt.enabled && h264.wt.hash && window.WebTransport;
+  if (useWt) { startWtTransport(); return; }
   const useRtc = new URLSearchParams(location.search).get('rtc') === '1' && !!window.RTCPeerConnection;
   if (useRtc) {
     try {
