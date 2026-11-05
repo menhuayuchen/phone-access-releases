@@ -578,6 +578,7 @@ function stopH264() {
     h264.ws = null;
   }
   h264.sb = null; h264.ms = null; h264.queue = []; h264.appended = 0; h264.okAt = 0; h264.configured = false;
+  h264.wsKey = false;
   try { vid.removeAttribute('src'); } catch (e) { }
   try { vid.srcObject = null; } catch (e) { }
 }
@@ -686,6 +687,7 @@ async function startH264() {
   h264.gen = (h264.gen || 0) + 1;
   const myGen = h264.gen;
   h264.configured = false;
+  h264.wsKey = false;
   h264.pendingFrames = [];
   h264.frames = 0;
   h264.fps = 0; h264.fpsAt = Date.now(); h264.fpsN = 0;
@@ -785,6 +787,7 @@ async function startH264() {
     if (!h264.configured) return;
     const ts = new DataView(ev.data).getInt32(0);
     const key = buf[4] === 1;
+    if (!h264.wsKey) { if (!key) return; h264.wsKey = true; }
     const len = new DataView(ev.data).getUint32(5);
     if (len <= 0 || buf.length < 9 + len) return;
     try {
@@ -2122,8 +2125,7 @@ async function pollStats() {
     } else if (state.mode === 'h264') {
       hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
         + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'))
-        + ' · 已解码 ' + h264.frames + ' 帧';
-    } else if (state.lowBw) {
+        + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'));
       // 省流量不走 MJPEG 流，服务器 out= 恒为 0，显示帧率会误导，这里直接标轮询参数
       hud.textContent = '省流量 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
     } else if (out) {
