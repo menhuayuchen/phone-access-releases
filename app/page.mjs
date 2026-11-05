@@ -3303,6 +3303,17 @@ bindImg(img);
     let selectedId = '';
     let lastSig = '';
     let lastStatus = null;
+    let ssCreds = null;
+    let ssCredsTried = false;
+    const loadCreds = () => {
+      if (ssCredsTried) return;
+      ssCredsTried = true;
+      fetch('/sunshine-creds?_=' + Date.now(), { cache: 'no-store' })
+        .then((r) => r.json())
+        .then((j) => { if (j && j.ok) { ssCreds = j; lastStatus && render(lastStatus, lastPairings || []); } })
+        .catch(() => { });
+    };
+    let lastPairings = [];
     const setMsg = (t, c) => { if (msgEl) { msgEl.textContent = t; msgEl.style.color = c || '#868c96'; } };
     const stop = () => { if (timer) { clearInterval(timer); timer = 0; } };
     const step = (n, text) => '<div style="display:flex;gap:8px;margin:4px 0;font-size:12.5px;color:#aeb3bb;line-height:1.75">'
@@ -3379,7 +3390,9 @@ bindImg(img);
     };
     const render = (s, pairings) => {
       lastStatus = s;
-      const sig = JSON.stringify([s.installed, s.webUp, s.credentialsSet, s.licensed, (pairings || []).map((p) => p.id)]);
+      lastPairings = pairings || [];
+      if (s && s.installed && s.webUp) loadCreds();
+      const sig = JSON.stringify([s.installed, s.webUp, s.credentialsSet, s.licensed, (pairings || []).map((p) => p.id), ssCreds ? 1 : 0]);
       if (sig === lastSig) return;
       lastSig = sig;
       const prevPin = (bodyEl.querySelector('#ssPin') || {}).value || '';
@@ -3443,7 +3456,12 @@ bindImg(img);
           + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
           + '<div style="color:#aeb3bb;font-size:12.5px">游戏要在这里加：<a id="ssAdmin" target="_blank" rel="noopener" style="color:#8fb6ff">打开 Sunshine 管理页</a>'
           + '<span id="ssAdminMsg" style="font-size:11.5px;color:#6b7078;margin-left:6px"></span></div>'
-          + '<div style="color:#6b7078;font-size:11px;margin-top:4px">管理页是电脑本机的 https 页面；第一次打开浏览器会提示证书不安全，选「继续」即可（只在你自己的 tailnet 内）。</div>'
+          + '<div style="margin-top:8px;color:#c9ccd1;font-size:12px;line-height:1.9">管理页登录框要填：账号 <code style="color:#8fb6ff">' + (ssCreds ? escHtml(ssCreds.username) : '读取中…') + '</code>'
+          + (ssCreds ? ' <button id="ssCopyUser" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">复制账号</button>' : '')
+          + '<br>密码 <code style="color:#8fb6ff">' + (ssCreds ? escHtml(ssCreds.password) : '读取中…') + '</code>'
+          + (ssCreds ? ' <button id="ssCopyPw" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">复制密码</button>' : '')
+          + '</div>'
+          + '<div style="color:#6b7078;font-size:11px;margin-top:4px">管理页是电脑本机的 https 页面；第一次打开浏览器会提示证书不安全，选「继续」，再填上面的账号密码（只在你自己的 tailnet 内）。</div>'
           + '</div>'
           + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
           + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">清空配对（连不上时用）</button></div>';
@@ -3481,14 +3499,22 @@ bindImg(img);
         ev.preventDefault();
         const msgEl = bodyEl.querySelector('#ssAdminMsg');
         try {
-          const c = await fetch('/sunshine-creds?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
-          if (!c || !c.ok) { if (msgEl) msgEl.textContent = '还没初始化账号（重启一次电脑）'; return; }
+          const c = ssCreds || await fetch('/sunshine-creds?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+          if (!c || !c.ok) { if (msgEl) msgEl.textContent = '还没初始化账号（点上面的「一键初始化」）'; return; }
           try { await navigator.clipboard.writeText(c.password); } catch (e) { }
           if (msgEl) msgEl.textContent = '账号 ' + c.username + ' · 密码已复制到剪贴板';
           window.open('https://' + location.hostname + ':47990/', '_blank', 'noopener');
         } catch (e) {
           if (msgEl) msgEl.textContent = '打开失败：' + (e && e.message);
         }
+      });
+      const copyUser = bodyEl.querySelector('#ssCopyUser');
+      if (copyUser) copyUser.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(ssCreds.username); copyUser.textContent = '已复制'; } catch (e) { }
+      });
+      const copyPw = bodyEl.querySelector('#ssCopyPw');
+      if (copyPw) copyPw.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(ssCreds.password); copyPw.textContent = '已复制'; } catch (e) { }
       });
     };
     const poll = async () => {
