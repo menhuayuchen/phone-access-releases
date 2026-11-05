@@ -3919,6 +3919,10 @@ bindImg(img);
     const del = box.querySelector('#prvImgDel');
     const file = box.querySelector('#prvImgFile');
     const imgMsg = box.querySelector('#prvImgMsg');
+    const lockCb = box.querySelector('#prvLock');
+    let lockOn = true;
+    try { lockOn = localStorage.getItem('prv.lock') !== '0'; } catch (e) { }
+    if (lockCb) lockCb.checked = lockOn;
     let dev = '';
     try {
       dev = localStorage.getItem('pa-dev') || '';
@@ -3946,7 +3950,8 @@ bindImg(img);
         tog.disabled = active && !mine;
       }
       if (imgMsg) imgMsg.textContent = st && st.hasImage ? '当前：自定义图' : '当前：纯黑';
-      if (mine) { setMsg('已开启（电脑本机已遮住' + (st && st.hotkeys ? '，快捷键已拦' : '') + '）', '#8CE58C'); startBeat(); }
+      if (lockCb && active && mine) lockCb.checked = st.lockInput !== false;
+      if (mine) { setMsg('已开启（电脑本机已遮住' + (st && st.lockInput ? '，键盘鼠标已锁' : (st && st.hotkeys ? '，仅拦快捷键' : '')) + '）', '#8CE58C'); startBeat(); }
       else if (active) setMsg('另一台设备已开启（以先开的为准）', '#ffb454');
       else setMsg('');
       try { window.__prvActive = active; window.__prvMine = mine; } catch (e) { }
@@ -3957,10 +3962,28 @@ bindImg(img);
       tog.disabled = true;
       try {
         if (window.__prvMine) { await post('/privacy/off', { sid: dev }); stopBeat(); }
-        else { const r = await post('/privacy/on', { sid: dev }); if (r && r.ok && r.owner) startBeat(); }
+        else { const r = await post('/privacy/on', { sid: dev, lock: lockOn }); if (r && r.ok && r.owner) startBeat(); }
         await refresh();
       } catch (e) { setMsg('操作失败：' + (e && e.message), '#ff9d9d'); }
       tog.disabled = false;
+    });
+    // 「锁住电脑前的键盘和鼠标」：默认开；开着的时候改选项 → 重启一次遮罩让它生效
+    if (lockCb) lockCb.addEventListener('change', async () => {
+      lockOn = !!lockCb.checked;
+      try { localStorage.setItem('prv.lock', lockOn ? '1' : '0'); } catch (e) { }
+      if (window.__prvMine) {
+        try {
+          setMsg('正在应用新设置…');
+          await post('/privacy/off', { sid: dev });
+          stopBeat();
+          await new Promise(function (r) { setTimeout(r, 1200); });
+          await post('/privacy/on', { sid: dev, lock: lockOn });
+          startBeat();
+          await refresh();
+        } catch (e) { setMsg('应用失败：' + (e && e.message), '#ff9d9d'); }
+      } else {
+        setMsg(lockOn ? '下次开启时会锁住键盘和鼠标' : '下次开启只拦快捷键');
+      }
     });
     if (pick && file) pick.addEventListener('click', () => file.click());
     if (file) file.addEventListener('change', async () => {
@@ -4149,7 +4172,10 @@ bindImg(img);
       + 'padding:7px 12px;font-size:12.5px;cursor:pointer">恢复纯黑</button>'
       + '<input type="file" id="prvImgFile" accept="image/png,image/jpeg,image/webp" style="display:none">'
       + '<span id="prvImgMsg" style="font-size:12px;color:#6b7078"></span>'
-      + '</div>');
+      + '</div>'
+      + '<label style="display:flex;gap:8px;align-items:center;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
+      + '<input type="checkbox" id="prvLock" checked> 同时锁住电脑前的键盘和鼠标（更彻底，推荐）</label>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:4px">关掉则只拦 Win/Alt+Tab 这类能绕过遮罩的快捷键；手机上的操作始终不受影响。</div>');
 
     // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
     body += setSection('诊断',

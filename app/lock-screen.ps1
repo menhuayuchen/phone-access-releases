@@ -22,6 +22,7 @@ param(
     [int]$MaxMinutes = 480,
     [switch]$DisableExclude,
     [switch]$BlockHotkeys,
+    [switch]$LockInput,
     [string]$HookFile = ''
 )
 
@@ -30,6 +31,22 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } 
 
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
+
+# 遮罩窗口的"鼠标穿透"：WM_NCHITTEST 一律回 HTTRANSPARENT(-1)，
+# 让鼠标消息落到**下面真正的窗口**上。实测只设 WS_EX_TRANSPARENT 不够
+# （WindowFromPoint 仍然命中遮罩，表现为"只能看不能操作"）。
+if (-not ('CoverForm' -as [type])) {
+    Add-Type -ReferencedAssemblies 'System.Windows.Forms', 'System.Drawing' -TypeDefinition @"
+using System;
+using System.Windows.Forms;
+public class CoverForm : Form {
+    protected override void WndProc(ref Message m) {
+        if (m.Msg == 0x0084) { m.Result = (IntPtr)(-1); return; }   // WM_NCHITTEST -> HTTRANSPARENT
+        base.WndProc(ref m);
+    }
+}
+"@
+}
 
 if (-not ('LockWinApi' -as [type])) {
     Add-Type @"
@@ -42,25 +59,35 @@ public static class LockWinApi {
     public static extern int ShowCursor(bool bShow);
     [DllImport("kernel32.dll")]
     public static extern uint SetThreadExecutionState(uint esFlags);
+    [DllImport("user32.dll")]
+    public static extern int GetWindowLong(IntPtr hWnd, int nIndex);
+    [DllImport("user32.dll")]
+    public static extern int SetWindowLong(IntPtr hWnd, int nIndex, int dwNewLong);
+    [DllImport("user32.dll", SetLastError = true)]
+    public static extern bool SetLayeredWindowAttributes(IntPtr hWnd, uint crKey, byte bAlpha, uint dwFlags);
 }
 "@
 }
 
-# 防窥屏期间拦掉"能从遮罩里逃出去"的快捷键：所有 Win 组合、Alt+Tab、Alt+Esc、Alt+F4、Ctrl+Esc、Ctrl+Shift+Esc。
-# 关键：只拦**物理键盘**。远端注入的按键（SendInput）带 LLKHF_INJECTED 标志，必须放行，
-# 否则手机上的 Alt+Tab 等快捷键会被自己拦掉。Ctrl+Alt+Del 是系统级安全序列，钩子拦不住，属正常。
+# 防窥屏期间的输入拦截，分两档：
+#  ① 基础（始终）：拦"能从遮罩里逃出去"的物理快捷键——所有 Win 组合、Alt+Tab/Esc/F4、Ctrl+Esc、Ctrl+Shift+Esc；
+#  ② 加强（-LockInput，设置里可关）：把电脑前的**物理键盘和鼠标**全部吞掉，本机彻底动不了。
+# 关键：只拦**物理**输入。远端注入（SendInput）带 INJECTED 标志，一律放行，
+# 否则手机上的鼠标/快捷键会被自己的钩子拦掉。Ctrl+Alt+Del 是系统安全序列，拦不住，属正常。
 if (-not ('HotkeyGuard' -as [type])) {
     Add-Type @"
 using System;
 using System.Runtime.InteropServices;
 public static class HotkeyGuard {
     private const int WH_KEYBOARD_LL = 13;
+    private const int WH_MOUSE_LL = 14;
     private const int WM_KEYDOWN = 0x0100;
     private const int WM_SYSKEYDOWN = 0x0104;
     private const int LLKHF_INJECTED = 0x10;
-    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    private const int LLMHF_INJECTED = 0x01;
+    private delegate IntPtr LowLevelProc(int nCode, IntPtr wParam, IntPtr lParam);
     [DllImport("user32.dll", SetLastError = true)]
-    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelProc lpfn, IntPtr hMod, uint dwThreadId);
     [DllImport("user32.dll", SetLastError = true)]
     private static extern bool UnhookWindowsHookEx(IntPtr hhk);
     [DllImport("user32.dll")]
@@ -71,27 +98,36 @@ public static class HotkeyGuard {
     private static extern short GetAsyncKeyState(int vKey);
     [StructLayout(LayoutKind.Sequential)]
     private struct KBDLLHOOKSTRUCT { public int vkCode; public int scanCode; public int flags; public int time; public IntPtr dwExtraInfo; }
-    private static IntPtr hook = IntPtr.Zero;
-    private static LowLevelKeyboardProc proc = HookCallback;
+    [StructLayout(LayoutKind.Sequential)]
+    private struct MSLLHOOKSTRUCT { public int ptX; public int ptY; public int mouseData; public int flags; public int time; public IntPtr dwExtraInfo; }
+    private static IntPtr kbHook = IntPtr.Zero;
+    private static IntPtr msHook = IntPtr.Zero;
+    private static LowLevelProc kbProc = KeyboardCallback;
+    private static LowLevelProc msProc = MouseCallback;
     private static bool enabled = false;
+    private static bool lockAll = false;
     public static bool Enabled { get { return enabled; } }
-    public static bool Start() {
-        if (hook != IntPtr.Zero) return true;
-        hook = SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(null), 0);
-        enabled = hook != IntPtr.Zero;
+    public static bool Start(bool lockEverything) {
+        lockAll = lockEverything;
+        if (kbHook == IntPtr.Zero) kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, kbProc, GetModuleHandle(null), 0);
+        if (lockAll && msHook == IntPtr.Zero) msHook = SetWindowsHookEx(WH_MOUSE_LL, msProc, GetModuleHandle(null), 0);
+        enabled = kbHook != IntPtr.Zero && (!lockAll || msHook != IntPtr.Zero);
         return enabled;
     }
     public static void Stop() {
-        if (hook != IntPtr.Zero) { UnhookWindowsHookEx(hook); hook = IntPtr.Zero; enabled = false; }
+        if (kbHook != IntPtr.Zero) { UnhookWindowsHookEx(kbHook); kbHook = IntPtr.Zero; }
+        if (msHook != IntPtr.Zero) { UnhookWindowsHookEx(msHook); msHook = IntPtr.Zero; }
+        enabled = false;
     }
     private static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
-    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+    private static IntPtr KeyboardCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         try {
             if (nCode >= 0 && enabled) {
-                int msg = (int)wParam;
-                if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
-                    KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
-                    if ((k.flags & LLKHF_INJECTED) == 0) {
+                KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                if ((k.flags & LLKHF_INJECTED) == 0) {
+                    if (lockAll) return (IntPtr)1;
+                    int msg = (int)wParam;
+                    if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
                         int vk = k.vkCode;
                         bool win = Down(0x5B) || Down(0x5C);
                         bool alt = Down(0x12);
@@ -107,15 +143,24 @@ public static class HotkeyGuard {
                 }
             }
         } catch { }
-        return CallNextHookEx(hook, nCode, wParam, lParam);
+        return CallNextHookEx(kbHook, nCode, wParam, lParam);
+    }
+    private static IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+        try {
+            if (nCode >= 0 && enabled && lockAll) {
+                MSLLHOOKSTRUCT m = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
+                if ((m.flags & LLMHF_INJECTED) == 0) return (IntPtr)1;
+            }
+        } catch { }
+        return CallNextHookEx(msHook, nCode, wParam, lParam);
     }
 }
 "@
 }
 
 $hookStarted = $false
-if ($BlockHotkeys) {
-    try { $hookStarted = [HotkeyGuard]::Start() } catch { $hookStarted = $false }
+if ($BlockHotkeys -or $LockInput) {
+    try { $hookStarted = [HotkeyGuard]::Start([bool]$LockInput) } catch { $hookStarted = $false }
     if ($HookFile) { try { Set-Content -LiteralPath $HookFile -Value ($(if ($hookStarted) { 'ok' } else { 'fail' })) -Encoding ASCII } catch { } }
 }
 
@@ -141,7 +186,7 @@ $forms = @()
 $hiddenCursor = 0
 try {
     foreach ($screen in [System.Windows.Forms.Screen]::AllScreens) {
-        $f = New-Object System.Windows.Forms.Form
+        $f = New-Object CoverForm
         $f.FormBorderStyle = [System.Windows.Forms.FormBorderStyle]::None
         $f.StartPosition = [System.Windows.Forms.FormStartPosition]::Manual
         $f.Bounds = $screen.Bounds
@@ -160,13 +205,22 @@ try {
         $f.Add_FormClosing({ param($s, $e) if (-not $global:lockScreenAllowClose) { $e.Cancel = $true } })
         $f.Show()
         if (-not $DisableExclude) {
+            # 点击穿透 + 不抢焦点：远端注入的鼠标必须落到下面真正的窗口上，
+            # 否则遮罩一开就只能看、不能操作（2026-11-05 用户实测的 bug）。
+            try {
+                $GWL_EXSTYLE = -20
+                $WS_EX_TRANSPARENT = 0x20
+                $WS_EX_NOACTIVATE = 0x08000000
+                $WS_EX_LAYERED = 0x00080000
+                $st = [LockWinApi]::GetWindowLong($f.Handle, $GWL_EXSTYLE)
+                # WS_EX_TRANSPARENT 必须配合 WS_EX_LAYERED 才能把鼠标放给**其他进程**的窗口
+                # （HTTRANSPARENT 只在同线程内转发）。分层窗口默认 alpha=0 不可见，显式设 255。
+                [void][LockWinApi]::SetWindowLong($f.Handle, $GWL_EXSTYLE, ($st -bor $WS_EX_TRANSPARENT -bor $WS_EX_NOACTIVATE -bor $WS_EX_LAYERED))
+                [void][LockWinApi]::SetLayeredWindowAttributes($f.Handle, 0, 255, 0x2)
+            } catch { }
             try { [void][LockWinApi]::SetWindowDisplayAffinity($f.Handle, [uint32]$WDA_EXCLUDEFROMCAPTURE) } catch { }
         }
         $forms += $f
-    }
-    if ($forms.Count -gt 0) {
-        try { [void]$forms[0].Activate() } catch { }
-        try { [void]$forms[0].Focus() } catch { }
     }
     for ($i = 0; $i -lt 8; $i++) { if ([LockWinApi]::ShowCursor($false) -lt 0) { $hiddenCursor++; break } else { $hiddenCursor++ } }
 

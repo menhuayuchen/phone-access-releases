@@ -776,7 +776,7 @@ if (CFG264.enabled) setInterval(poll264, 5000);
 // 还在更新、没超最长时长"，任何一条不满足就撤窗口；服务端崩溃/被杀也会在几秒内自动解锁。
 const PRIVACY_STOP = join(HERE, 'privacy.stop');
 const PRIVACY_BEAT = join(HERE, 'privacy.beat');
-const privacy = { proc: null, owner: '', image: '', startedAt: 0, lastBeat: 0 };
+const privacy = { proc: null, owner: '', image: '', startedAt: 0, lastBeat: 0, lockInput: true };
 // 启动时清掉上一代残留（崩溃/被杀可能留下 stop/beat/hook 文件；留着会让新遮罩立刻退出或误报）
 for (const f of ['privacy.stop', 'privacy.beat', 'privacy.hook']) { try { unlinkSync(join(HERE, f)); } catch { } }
 
@@ -796,6 +796,7 @@ function privacyJson() {
     since: privacy.startedAt || 0,
     hasImage: !!privacyPicPath(),
     hotkeys: !!privacy.proc && hot,
+    lockInput: !!privacy.lockInput,
     imageUrl: '/privacy/image'
   };
 }
@@ -814,13 +815,14 @@ function privacyStop(reason) {
   }, 1000);
   console.log('privacy: 关闭（' + reason + '）');
 }
-function privacyStart(sid) {
+function privacyStart(sid, lockInput) {
   if (privacy.proc) {
     return { ok: true, active: true, owner: privacy.owner === sid, note: '另一台设备已开启防窥屏（以先开的为准）' };
   }
   const script = join(HERE, 'lock-screen.ps1');
   if (!fileExists(script)) return { ok: false, error: 'lock-screen.ps1 缺失' };
   privacy.image = privacyPicPath();
+  privacy.lockInput = lockInput !== false;      // 默认锁键盘鼠标；设置里可关
   try { unlinkSync(PRIVACY_STOP); } catch { }
   try { writeFileSync(PRIVACY_BEAT, String(Date.now())); } catch { }
   const hookFile = join(HERE, 'privacy.hook');
@@ -828,6 +830,7 @@ function privacyStart(sid) {
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
     '-StopFile', PRIVACY_STOP, '-BeatFile', PRIVACY_BEAT, '-ParentPid', String(process.pid), '-MaxMinutes', '480',
     '-BlockHotkeys', '-HookFile', hookFile];
+  if (privacy.lockInput) args.push('-LockInput');
   if (privacy.image) args.push('-ImagePath', privacy.image);
   let child = null;
   try {
@@ -3417,7 +3420,7 @@ function handler(req, res) {
       let m = {}; try { m = JSON.parse(String(b) || '{}'); } catch { }
       const sid = String(m.sid || '').slice(0, 40);
       if (!sid) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"ok":false,"error":"missing sid"}'); return; }
-      const r = privacyStart(sid);
+      const r = privacyStart(sid, m.lock !== false);
       res.writeHead(r.ok ? 200 : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(JSON.stringify(Object.assign({}, r, privacyJson())));
     });
@@ -3483,7 +3486,8 @@ function handler(req, res) {
         const owner = privacy.owner;
         if (privacy.proc && owner) {
           privacyStop('换锁屏图');
-          setTimeout(() => { try { privacyStart(owner); } catch { } }, 1500);
+          const lockKeep = privacy.lockInput !== false;
+          setTimeout(() => { try { privacyStart(owner, lockKeep); } catch { } }, 1500);
         }
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         res.end(JSON.stringify(Object.assign({ ok: true, bytes: buf.length }, privacyJson())));
@@ -3494,7 +3498,7 @@ function handler(req, res) {
       for (const e of ['png', 'jpg', 'webp']) { try { unlinkSync(join(HERE, 'privacy-lock.' + e)); } catch { } }
       privacy.image = '';
       const owner = privacy.owner;
-      if (privacy.proc && owner) { privacyStop('恢复纯黑'); setTimeout(() => { try { privacyStart(owner); } catch { } }, 1500); }
+      if (privacy.proc && owner) { privacyStop('恢复纯黑'); const lockKeep = privacy.lockInput !== false; setTimeout(() => { try { privacyStart(owner, lockKeep); } catch { } }, 1500); }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(JSON.stringify(Object.assign({ ok: true }, privacyJson())));
       return;

@@ -1447,3 +1447,29 @@ HTTP 全部超时，端口仍在监听所以守护看不出来，用户卡了 6 
 
 **待办**：删掉坏的 `?rtc=1` 旧路径；画质优先档（p3/p4、CQ）；单窗口抓取；24 小时浸泡
 （看 supervisor.log 的 ws= 心跳）。
+
+### 42.8 防窥屏修复：鼠标穿透 + 输入锁做成选项（2026-11-05 21:4x，未发布）
+
+用户实测："开防窥屏后只能看画面、无法操控"。
+
+**根因**：遮罩窗口只设了 `WS_EX_TRANSPARENT`，这**不足以**让鼠标消息跨进程穿透
+（HTTRANSPARENT 只在同线程内转发；实测 WindowFromPoint 仍命中遮罩），
+于是远端注入的点击/拖动全被遮罩吃掉。
+
+**修法**：
+- 遮罩改成分层窗口：`WS_EX_LAYERED | WS_EX_TRANSPARENT | WS_EX_NOACTIVATE` +
+  `SetLayeredWindowAttributes(alpha=255)`（不设 alpha 会整窗不可见），并在 `CoverForm`
+  里对 `WM_NCHITTEST` 回 `HTTRANSPARENT` 双保险。
+- 实测验证（privacy 开启、lockInput=true）：遮罩 hwnd 存在且 visible、style 134807592；
+  `WindowFromPoint` 在 (853,533)/(20,20)/(1500,900) 三个点命中的都是下面真实窗口
+  （SysListView32 桌面等），不是遮罩 → 注入的点击能到应用。
+
+**输入锁做成设置项**：
+- 设置 → 防窥屏新增勾选「同时锁住电脑前的键盘和鼠标（更彻底，推荐）」，默认开、状态存本机。
+  - 开：物理键盘+鼠标全部吞掉（只放行注入输入），本机彻底动不了；
+  - 关：只拦 Win/Alt+Tab 等能绕过遮罩的快捷键。
+- `/privacy/on` 支持 `lock` 参数；`/privacy/status` 返回 `lockInput`；换锁屏图/恢复纯黑重启遮罩时
+  保留原来的锁定选项（之前会悄悄重置成默认开）。
+
+**其它检查**：多显示器逐屏盖窗口、DPI 虚拟化下仍铺满整屏（rect 0,0,1707,1067 = 150% 缩放下的全屏）、
+遮挡窗口不抢焦点、Ctrl+Alt+Del 拦不住（系统限制）、服务端退出/超时自动解锁（此前已验证 0.5 秒）。
