@@ -146,7 +146,7 @@ const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
 let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
-let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）   // 指定显示器/窗口时先 crop（屏幕坐标）
+
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）
