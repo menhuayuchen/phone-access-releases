@@ -775,7 +775,7 @@ async function rtc264Stats() {
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
     const res = vw ? vw + 'x' + vid.videoHeight : '无画面';
     // 手机端 #stat 是隐藏的，HUD 才是用户看到的；两边都写同一份文案
-    RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · 帧' + fr + '/解' + fd + ' · 缓' + bufMs + 'ms';
+    RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · 帧' + fr + '/解' + fd + ' · 缓' + bufMs + 'ms' + autoqTag();
     setStat(RTC264.hudText + ' · 收' + Math.round(br / 1024) + 'KB');
   } catch (e) { }
 }
@@ -2974,13 +2974,80 @@ bindImg(img);
   }
   // ---- 小文件传输（2026-11-03，A5 第二步）--------------------------------------
   // 上传：XHR 原始字节流 POST /file?name=…（带进度）；列表/下载：GET /files、GET /file?name=…
+  // ---- 码率自动（可选，默认关）---------------------------------------------
+  // 设计：设置里「自动」按钮，默认不开启；开启后按 WebRTC 丢包自动升降码率
+  // （6–20 Mbps），只在 WebRTC264 通道生效。手动码率永远优先——用户一选固定值就退出自动。
+  const AUTOQ = { on: false, kbps: 12000, lastApply: 0, badStreak: 0, goodStreak: 0, lastLost: 0, lastRecv: 0 };
+  try { AUTOQ.on = localStorage.getItem('hqAuto') === '1'; AUTOQ.kbps = Number(localStorage.getItem('hqAutoKbps')) || 12000; } catch (e) { }
+  function autoqTag() { return AUTOQ.on ? (' · 自动' + Math.round(AUTOQ.kbps / 1000) + 'M') : ''; }
+  async function autoqApply(kbps) {
+    AUTOQ.kbps = Math.max(6000, Math.min(20000, Math.round(Number(kbps) || 12000)));
+    AUTOQ.lastApply = Date.now();
+    try { localStorage.setItem('hqAutoKbps', String(AUTOQ.kbps)); } catch (e) { }
+    try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: AUTOQ.kbps }) }); } catch (e) { }
+  }
+  function autoqTick() {
+    if (!AUTOQ.on) return;
+    const pc = RTC264.pc;
+    if (!pc || state.mode !== 'h264' || document.hidden) return;
+    pc.getStats().then(function (st) {
+      let lost = 0, recv = 0, rtt = 0;
+      st.forEach(function (r) {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') { lost = r.packetsLost || 0; recv = r.packetsReceived || 0; }
+        if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime) rtt = r.currentRoundTripTime;
+      });
+      const dLost = lost - AUTOQ.lastLost, dRecv = recv - AUTOQ.lastRecv;
+      AUTOQ.lastLost = lost; AUTOQ.lastRecv = recv;
+      const total = dLost + dRecv;
+      if (total < 30) return;
+      const loss = dLost / total;
+      if (loss > 0.03) { AUTOQ.badStreak++; AUTOQ.goodStreak = 0; }
+      else if (loss < 0.005) { AUTOQ.goodStreak++; AUTOQ.badStreak = 0; }
+      else { AUTOQ.goodStreak = 0; }
+      const now = Date.now();
+      if (now - AUTOQ.lastApply < 15000) return;      // 降/升之间至少隔 15 秒，避免编码器反复重启
+      if (AUTOQ.badStreak >= 2 && AUTOQ.kbps > 6000) { autoqApply(AUTOQ.kbps * 0.65); AUTOQ.badStreak = 0; return; }
+      if (AUTOQ.goodStreak >= 5 && rtt < 0.15 && AUTOQ.kbps < 20000) { autoqApply(AUTOQ.kbps * 1.25); AUTOQ.goodStreak = 0; }
+    }).catch(function () { });
+  }
+  setInterval(function () { try { autoqTick(); } catch (e) { } }, 4000);
+  try { if (AUTOQ.on) setTimeout(function () { autoqApply(AUTOQ.kbps); }, 1500); } catch (e) { }
+
   function h264QualityBind(box) {
     const wSel = box.querySelector('#hqW');
     const fpsSel = box.querySelector('#hqFps');
     const kSel = box.querySelector('#hqKbps');
+    const autoBtn = box.querySelector('#hqAuto');
     const msg = box.querySelector('#hqMsg');
     if (!wSel || !fpsSel || !kSel) return;
     const setMsg = (s, c) => { if (msg) { msg.textContent = s; msg.style.color = c || '#868c96'; } };
+    const paintAuto = () => {
+      if (autoBtn) {
+        autoBtn.style.background = AUTOQ.on ? '#2f6f3f' : '#2a2d36';
+        autoBtn.style.color = AUTOQ.on ? '#e8ffe9' : '#c9ccd1';
+        autoBtn.textContent = AUTOQ.on ? '自动·开' : '自动';
+      }
+      if (kSel) kSel.disabled = AUTOQ.on;
+    };
+    paintAuto();
+    if (autoBtn) autoBtn.addEventListener('click', async () => {
+      if (AUTOQ.on) {
+        AUTOQ.on = false;
+        try { localStorage.setItem('hqAuto', '0'); } catch (e) { }
+        paintAuto();
+        const k = Number(kSel.value) || 20000;
+        try {
+          await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: k }) });
+          setMsg('自动已关闭，恢复手动 ' + Math.round(k / 1000) + ' Mbps');
+        } catch (e) { setMsg('自动已关闭'); }
+        return;
+      }
+      AUTOQ.on = true;
+      try { localStorage.setItem('hqAuto', '1'); } catch (e) { }
+      paintAuto();
+      await autoqApply(AUTOQ.kbps || 12000);
+      setMsg('自动已开启：现在 ' + Math.round(AUTOQ.kbps / 1000) + ' Mbps，丢包自动降、稳定再升（6–20 Mbps）', '#8CE58C');
+    });
     (async () => {
       try {
         const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
@@ -2994,8 +3061,8 @@ bindImg(img);
     })();
     const updateFlow = () => {
       const el = box.querySelector('#hqFlow');
-      const k = Number(kSel.value) || 0;
-      if (el && k) el.textContent = '当前码率约 ' + (k / 1000).toFixed(0) + ' Mbps，满速约 ' + ((k * 3600) / 8 / 1024 / 1024).toFixed(1) + ' GB/小时（按编码码率估算，实际以流量为准）';
+      const k = AUTOQ.on ? AUTOQ.kbps : (Number(kSel.value) || 0);
+      if (el && k) el.textContent = (AUTOQ.on ? '自动当前约 ' : '当前码率约 ') + (k / 1000).toFixed(0) + ' Mbps，满速约 ' + ((k * 3600) / 8 / 1024 / 1024).toFixed(1) + ' GB/小时（按编码码率估算，实际以流量为准）';
     };
     const apply = async () => {
       setMsg('正在应用…');
@@ -3973,6 +4040,7 @@ bindImg(img);
       + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560（原生·需设备支持）</option></select></label>'
       + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option></select></label>'
       + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps（≈3.4 GB/时）</option><option value="12000">12 Mbps（≈5.3 GB/时）</option><option value="15000">15 Mbps（≈6.7 GB/时）</option><option value="20000">20 Mbps（≈8.9 GB/时）</option><option value="30000">30 Mbps（≈13.4 GB/时）</option></select></label>'
+      + '<button id="hqAuto" title="按网络自动调码率：丢包就降、稳定再升" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer">自动</button>'
       + '</div>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
       + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。</div>'

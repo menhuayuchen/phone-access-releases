@@ -3524,10 +3524,11 @@ function handler(req, res) {
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       if (!H264_NATIVE && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
       H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;
-      // 重启编码器让新参数生效（页面会重新连接）
+      // 重启编码器让新参数生效。RTC264 会话没有 WS 观众，也必须重启，
+      // 否则调码率后编码器停着不回来（以前只在有 WS 观众时重启）。
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
       h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
-      if (h264.clients.size > 0) setTimeout(() => { if (!h264.proc) h264Start(); }, 300);
+      if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
       qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS });
     });
     return;
