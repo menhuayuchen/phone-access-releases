@@ -4028,6 +4028,77 @@ bindImg(img);
   // ---- 防窥屏（privacy mode）页面侧 ------------------------------------------
   // 服务端负责真的盖住电脑本机屏幕；页面只负责开关、心跳（证明控制端还在）和换图。
   // 设备 id 存 localStorage：同一台手机刷新页面后仍是"第一个开的"那台，能自己关掉。
+  // ---- 离线模式（没有互联网 / 没有 Tailscale）--------------------------------
+  // 电脑开热点（Windows Mobile Hotspot）或手机开热点让电脑连；产品在局域网 IP 上监听，
+  // 手机打开 http://<电脑IP>:<port>/?k=KEY 即可。注意 http 不是安全上下文：WebRTC 不可用。
+  const HOTSPOT_SSID = 'PhoneAccess-Offline';
+  const HOTSPOT_PASS = 'phoneaccess';
+  function offlineBind(box) {
+    const bodyEl = box.querySelector('#offBody');
+    if (!bodyEl) return;
+    let info = null;
+    const esc = (s) => String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+    const paint = (j) => {
+      if (!j || !j.ok) { bodyEl.innerHTML = '<span style="color:#ffb454">读不到状态</span>'; return; }
+      info = j;
+      const on = !!j.offline;
+      const hs = j.hotspot || {};
+      let h = '<label style="display:flex;align-items:center;gap:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
+        + '<input type="checkbox" id="offToggle" ' + (on ? 'checked' : '') + '> 开启局域网访问（会重启画面服务，约 10 秒）</label>';
+      if (on) {
+        h += '<div style="margin-top:12px;color:#e8eaee;font-size:12.5px">手机打开（同一 Wi-Fi / 热点）：</div>';
+        if (!j.ips || !j.ips.length) {
+          h += '<div style="color:#ffb454;font-size:12px;margin-top:4px">没检测到局域网 IP（先连上 Wi-Fi 或开热点）</div>';
+        } else {
+          for (const it of j.ips) {
+            const url = 'http://' + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
+            h += '<div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">'
+              + '<code style="color:#8fb6ff;font-size:12px">' + esc(url) + '</code>'
+              + '<button class="offCopy" data-url="' + esc(url) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer">复制</button>'
+              + '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span></div>';
+          }
+        }
+        const hsOn = hs.state === 'On';
+        h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
+          + '<div style="color:#c9ccd1;font-size:12.5px">电脑热点：' + (hsOn ? '已开启' : (hs.capability === 'Enabled' ? '已关闭' : (hs.capability ? ('不可用（' + esc(hs.capability) + '）') : '未知'))) + '</div>'
+          + '<div style="margin-top:6px;color:#6b7078;font-size:11px">手机连 Wi-Fi「' + HOTSPOT_SSID + '」，密码「' + HOTSPOT_PASS + '」；连上后电脑的地址通常是 192.168.137.1</div>'
+          + '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          + '<button id="hsToggle" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 14px;font-size:12.5px;cursor:pointer">' + (hsOn ? '关闭电脑热点' : '开启电脑热点') + '</button>'
+          + '<span id="hsMsg" style="font-size:12px;color:#868c96"></span></div></div>';
+      }
+      bodyEl.innerHTML = h;
+      const tog = bodyEl.querySelector('#offToggle');
+      if (tog) tog.addEventListener('change', async () => {
+        const want = tog.checked;
+        tog.disabled = true;
+        try { await fetch('/offline/' + (want ? 'on' : 'off'), { method: 'POST' }); } catch (e) { }
+        bodyEl.innerHTML = '<span style="color:#8CE58C">已保存，正在重启画面服务（约 10 秒）；之后重新打开这个设置</span>';
+      });
+      bodyEl.querySelectorAll('.offCopy').forEach((btn) => btn.addEventListener('click', async () => {
+        try { await navigator.clipboard.writeText(btn.getAttribute('data-url')); btn.textContent = '已复制'; } catch (e) { }
+      }));
+      const hsBtn = bodyEl.querySelector('#hsToggle');
+      if (hsBtn) hsBtn.addEventListener('click', async () => {
+        const hsNow = (info && info.hotspot) || {};
+        const wantOn = hsNow.state !== 'On';
+        hsBtn.disabled = true;
+        const msg = bodyEl.querySelector('#hsMsg');
+        if (msg) msg.textContent = wantOn ? '正在开热点…' : '正在关热点…';
+        try {
+          const r = await fetch('/hotspot/' + (wantOn ? 'on' : 'off'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ssid: HOTSPOT_SSID, pass: HOTSPOT_PASS }) }).then((x) => x.json());
+          if (msg) msg.textContent = r && r.ok ? (wantOn ? '已开启，手机连 Wi-Fi「' + HOTSPOT_SSID + '」' : '已关闭') : ('失败：' + ((r && (r.error || (r.job && r.job.error))) || '未知'));
+        } catch (e) {
+          if (msg) msg.textContent = '失败：' + (e && e.message);
+        }
+        fetch('/offline-info?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => { });
+      });
+    };
+    const refresh = () => fetch('/offline-info?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => {
+      bodyEl.innerHTML = '<span style="color:#ffb454">检测失败</span>';
+    });
+    refresh();
+  }
+
   function privacyBind(box) {
     const tog = box.querySelector('#prvToggle');
     const msg = box.querySelector('#prvMsg');
@@ -4302,6 +4373,13 @@ bindImg(img);
       + '<input type="checkbox" id="prvLock" checked> 同时锁住电脑前的键盘和鼠标（更彻底，推荐）</label>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:4px">关掉则只拦 Win/Alt+Tab 这类能绕过遮罩的快捷键；手机上的操作始终不受影响。</div>');
 
+    // 离线模式（没有互联网 / 没有 Tailscale）：局域网访问 + 电脑热点
+    body += setSection('离线模式（没有网络 / Tailscale）',
+      '<div id="offBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
+      + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
+      + '没有互联网、也没装 Tailscale 时：电脑开热点（或手机开热点让电脑连），手机连上同一个网络后打开这里的地址。'
+      + '局域网是 http 地址，WebRTC 用不了，会自动走 WS H.264；「添加到主屏幕」也会受限。</div>');
+
     // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
     body += setSection('诊断',
       '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">画面/声音/连接出问题时，导出这份报告发给卖家。里面是编码参数、链路状态和最近日志，访问密钥已打码。</div>'
@@ -4339,6 +4417,7 @@ bindImg(img);
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
     privacyBind(box);
+    offlineBind(box);
     // 状态数值开关（与 HUD 共用 localStorage 'hudvis'）
     const hudT = box.querySelector('#hudToggle');
     if (hudT) {

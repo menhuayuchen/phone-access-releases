@@ -83,17 +83,20 @@ const PRIVATE_V4 = [
   /^127\./,                                     // 回环
   /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./    // Tailscale / CGNAT（100.64.0.0/10）
 ];
+// 离线模式（product.config.json → screen.offline）：没有互联网/Tailscale 时允许绑 RFC1918 局域网/热点地址
+const OFFLINE_MODE = !!(cfgScreen && cfgScreen.offline === true);
+const LAN_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/;
 const badHosts = [];
 const hosts = hostsArg.split(',').map((h) => h.trim()).filter(Boolean).filter((h) => {
   const isV4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
   if (!isV4) { badHosts.push(h + '(非 IPv4)'); return false; }
   if (h === '0.0.0.0') { badHosts.push(h + '(通配全部网卡)'); return false; }
-  if (!PRIVATE_V4.some((re) => re.test(h))) { badHosts.push(h + '(非回环/非 Tailscale)'); return false; }
+  if (!PRIVATE_V4.some((re) => re.test(h)) && !(OFFLINE_MODE && LAN_V4.test(h))) { badHosts.push(h + '(非回环/非 Tailscale/离线模式未开)'); return false; }
   return true;
 });
 if (badHosts.length) {
   console.error('screen-server: [安全] 拒绝绑定这些地址：' + badHosts.join('、'));
-  console.error('screen-server: 只允许回环 127.0.0.1 和 Tailscale 的 100.64.0.0/10 网段；局域网地址不再允许。');
+  console.error('screen-server: 只允许回环 127.0.0.1 和 Tailscale 的 100.64.0.0/10；局域网地址需要先开启「离线模式」（screen.offline=true）。');
 }
 if (hosts.length === 0) {
   console.error('screen-server: [安全] 没有可绑定的地址了（原始入参：' + hostsArgRaw + '），退出。');
@@ -1670,9 +1673,11 @@ setInterval(() => { if (!pipeOk) loadFrame(); }, 100);
 
 
 function sourceAllowed(req) {
-  const ra = String((req.socket && req.socket.remoteAddress) || '').replace(/^::ffff:/, '');
+  const ra = String((req.socket && req.socket.remoteAddress) || ').replace(/^::ffff:/, ');
   if (ra === '127.0.0.1' || ra === '::1') return true;
-  return /^100\.(6[4-9]|[7-9]\\d|1[01]\\d|12[0-7])\\./.test(ra);
+  // 离线模式：允许同一局域网/电脑热点里的设备（仍需带访问密钥）
+  if (OFFLINE_MODE && LAN_V4.test(ra)) return true;
+  return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ra);
 }
 
 function authorized(req, url) {
@@ -2432,10 +2437,12 @@ async function handler(req, res) {
   // 这样即使以后误把局域网地址加回监听，同一 Wi-Fi 的其它设备也进不来；同一 Wi-Fi 下想更快，
   // 由 Tailscale 自己选直连路径，而不是绕过 Tailscale。
   const fromTailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ra);
-  if (ra !== '127.0.0.1' && ra !== '::1' && !fromTailnet) {
+  // 离线模式：允许同一局域网/电脑热点里的设备（仍需带访问密钥）
+  const fromLanOffline = OFFLINE_MODE && LAN_V4.test(ra);
+  if (ra !== '127.0.0.1' && ra !== '::1' && !fromTailnet && !fromLanOffline) {
     try {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
-      res.end('只接受 Tailscale 访问：请先在手机上打开 Tailscale 并连接，再用电脑上显示的地址打开。');
+      res.end('只接受 Tailscale 访问：请先在手机上打开 Tailscale 并连接，再用电脑上显示的地址打开；没有网络时打开设置里的「离线模式」。');
     } catch { }
     return;
   }
@@ -3677,6 +3684,7 @@ async function handler(req, res) {
     try {
       const ifs = os.networkInterfaces();
       for (const name of Object.keys(ifs)) {
+        if (/vmware|virtualbox|vEthernet|loopback|tailscale/i.test(name)) continue;
         for (const a of (ifs[name] || [])) {
           if (!a || a.family !== 'IPv4' || a.internal) continue;
           const ip = a.address;
@@ -3751,6 +3759,10 @@ async function handler(req, res) {
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(JSON.stringify(Object.assign({ ok: !!job.ok, job: job, ips: privateIps() }, job)));
     } catch { }
+    // 热点刚起来时 192.168.137.1 还不在监听列表里：让守护重启一次服务，把新网卡地址绑上。
+    if (on && job && job.ok && OFFLINE_MODE) {
+      setTimeout(() => { try { process.exit(0); } catch { } }, 1500);
+    }
     return;
   }
   // ---- 诊断导出：把状态和最近日志打包成一份 txt（密钥已打码），给卖家排查 ----

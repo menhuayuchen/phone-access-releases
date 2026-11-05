@@ -1587,3 +1587,27 @@ e2e 首帧 0.4 秒、画面正常；关 → 恢复 p1；UI 勾选与 `/h264-qual
 
 实测：🎮 按钮在右中 (367,396)、点击后（未就绪）自动打开设置并滚动到该节；
 该节显示「待初始化 + 一键初始化高性能模式」，无 JS 报错。
+
+### 42.15 离线模式（无互联网 / 无 Tailscale）实测通过（2026-11-05 23:2x，未发布）
+
+**场景**：没有外网、没装/没连 Tailscale，电脑和手机靠局域网/电脑热点互通。
+
+**实现**：
+- `product-config.ps1`：screen 对象加 `offline` 字段（读 product.config.json → screen.offline）。
+- `start-screen.ps1`：offline=true 时允许没有 Tailscale 启动；把本机私有 IPv4（Wi-Fi/以太网/热点）
+  加进监听列表（原来只允许回环+tailnet）。
+- `screen-server.mjs`：offline=true 时绑定白名单放行 RFC1918；`sourceAllowed()` 与 handler 的
+  Tailscale 强制检查都加离线例外（仍需访问密钥）；新增 `/offline-info`、`/offline/on|off`
+  （写配置后让守护重启）、`/hotspot/on|off/status`；开启热点后自动重启一次把 192.168.137.1 绑上。
+- `hotspot-ctl.ps1`：Windows Mobile Hotspot（WinRT）start/stop/status。
+- 页面：设置 →「离线模式（没有网络 / Tailscale）」：局域网访问开关、地址列表+复制、电脑热点开关。
+
+**实测（本机）**：
+- 本机 Wi-Fi 网卡（MediaTek MT7925）**不支持旧式 netsh hosted network**（Hosted network supported: No），
+  但 Windows Mobile Hotspot **capability=Enabled**，start 成功、热点 IP 192.168.137.1；
+- 开离线模式 → 监听 127.0.0.1/100.108.92.22/10.120.169.250，`http://10.120.169.250:8660/?k=…` 页面 200；
+- 开电脑热点 → 服务自动重启并绑定 192.168.137.1，`http://192.168.137.1:8660/?k=…` 页面 200；
+- 关热点/关离线模式 → 恢复只监听 127.0.0.1 + tailnet（安全默认），tailnet 访问正常。
+
+**限制**：局域网是 http（非安全上下文）→ WebRTC 不可用，自动走 WS H.264；PWA 安装受限；
+完全没有任何网络连接配置时 Windows 热点 API 可能不可用（此时用手机热点/USB 共享）。

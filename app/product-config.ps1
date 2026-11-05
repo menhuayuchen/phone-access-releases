@@ -139,6 +139,8 @@ function Get-ProductConfig {
       captureHeight   = [int](Get-ConfigValue $raw @('screen', 'captureHeight') 0)
       rtcWidth        = [int](Get-ConfigValue $raw @('screen', 'rtcWidth') 0)
       maxCaptureWidth = [int](Get-ConfigValue $raw @('screen', 'maxCaptureWidth') 2560)
+      # 离线模式（无互联网/无 Tailscale）：允许只绑局域网/热点（2026-11-05）
+      offline         = [bool](Get-ConfigValue $raw @('screen', 'offline') $false)
     }
   }
   $cfg.Warnings = $warnings.ToArray()

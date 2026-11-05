@@ -114,6 +114,8 @@ $appFiles = @(
   'licence-state.ps1',
   # 高性能模式（Moonlight/Sunshine）安装与卸载（2026-11-03）：可选组件，见 docs/B1-参考Moonlight-方案。
   'sunshine-integration.ps1',
+  # 离线模式：电脑热点开关（Windows Mobile Hotspot / WinRT，2026-11-05）
+  'hotspot-ctl.ps1',
   # 7 天试用锚点（2026-10-30）：licence-state.ps1 会 dot-source 它，缺了会退回"试用不可用"。
   'trial.ps1',
   'https-setup.ps1',
