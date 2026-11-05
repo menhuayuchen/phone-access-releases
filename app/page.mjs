@@ -103,17 +103,27 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   #bar, .bar, header { font-size: 12px !important; padding: 2px 6px !important; }
 }
 @media (max-width: 960px) {
-  #bar, .bar, header { flex-wrap: nowrap !important; overflow-x: auto !important; padding: 2px 6px !important; }
+  #bar, .bar, header { flex-wrap: wrap !important; padding: 2px 6px !important; }
   #bar button, #bar .btn, .bar button, header button { padding: 5px 8px !important; font-size: 12px !important; }
   #hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
 #mobSheet button{padding:8px 12px;border-radius:9px;background:#2a2e35;color:#e6e8eb;border:0;font-size:13px;}@media (max-width: 960px) {
-  #bar, .bar, header { display: flex; align-items: center; flex-wrap: nowrap !important; gap: 6px; padding: 4px 6px !important; overflow: visible !important; }
+  /* 2026-11-05 修：原来是 flex-wrap:nowrap + overflow:visible，窄屏（手机竖屏）时
+     顶栏按钮会一路挤出屏幕右侧、点不到（用户实测截图）。改成允许换行，
+     同时把占位的 spacer 隐藏（#stat 已隐藏、#hud 已 fixed），避免多余空行。 */
+  #bar, .bar, header { display: flex; align-items: center; flex-wrap: wrap !important; gap: 6px; padding: 4px 6px !important; overflow: visible !important; }
   #bar button, .bar button, header button { flex: 0 0 auto; white-space: nowrap; padding: 6px 10px !important; font-size: 13px !important; }
   #bar select, .bar select { flex: 1 1 auto; min-width: 0; }
+  #spacer { display: none !important; }
   #stat { display: none !important; }
   #hint { display: none !important; }
   #hud { position: fixed; left: 8px; bottom: 8px; z-index: 9998; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px !important; background: rgba(0,0,0,.55); padding: 3px 6px; border-radius: 6px; }
+}
+@media (max-width: 480px) {
+  /* 更窄的竖屏手机：按钮和间距再收一点，保证两行内放得下 */
+  #bar, .bar, header { gap: 4px !important; }
+  #bar button, .bar button, header button { padding: 5px 8px !important; font-size: 12.5px !important; }
+  #bar select, .bar select { font-size: 12.5px !important; padding: 4px 6px !important; }
 }
 </style>
 </head><body>
@@ -644,7 +654,7 @@ function stopRtc264() {
   if (R.statsTimer) { clearInterval(R.statsTimer); R.statsTimer = null; }
   if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
   const sid = R.sid;
-  R.sid = ''; R.firstVideo = false; R.startedAt = 0;
+  R.sid = ''; R.firstVideo = false; R.startedAt = 0; R.hudText = '';
   if (R.pc) {
     try { R.pc.ontrack = null; R.pc.oniceconnectionstatechange = null; R.pc.close(); } catch (e) { }
     R.pc = null;
@@ -740,7 +750,10 @@ async function rtc264Stats() {
     }
     const how = path === 'relay' ? '中继' : (path === 'srflx' || path === 'prflx' ? '直连(NAT)' : (path === 'host' ? '直连' : pc.iceConnectionState));
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
-    setStat('WebRTC264 ' + how + ' · ' + (vw ? vw + 'x' + vid.videoHeight : '无画面') + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB · 缓' + bufMs + 'ms');
+    const res = vw ? vw + 'x' + vid.videoHeight : '无画面';
+    // 手机端 #stat 是隐藏的，HUD 才是用户看到的；两边都写同一份文案
+    RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · 帧' + fr + '/解' + fd + ' · 缓' + bufMs + 'ms';
+    setStat(RTC264.hudText + ' · 收' + Math.round(br / 1024) + 'KB');
   } catch (e) { }
 }
 function rtc264Retry(why) {
@@ -2284,6 +2297,10 @@ async function pollStats() {
           // （host 候选直连），和这条轮询链路不是同一条路，所以只标「链路」，
           // 免得用户看到三千毫秒以为画面很卡、实际却很流畅。
           + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
+    } else if (state.mode === 'h264' && RTC264.pc) {
+      // WebRTC264 通道：HUD 显示真实的 RTC 状态（直连/中继、帧数、接收缓冲），
+      // 不要再显示 WebCodecs 那套（RTC 模式下 h264.dispFps 是旧的，会误导成 20fps）
+      hud.textContent = RTC264.hudText || 'WebRTC264 连接中…';
     } else if (state.mode === 'h264') {
       hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
         + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'));
