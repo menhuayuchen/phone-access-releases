@@ -124,7 +124,7 @@ function setDeliveryWidth(w) {
 // RTC 轨道尺寸建连时锁定，所以取启动时的档位；之后切画质不影响流畅模式（避免黑屏）。
 const evenDown = (n) => Math.max(2, n - (n % 2));
 const cfgRtcW = Number(cfgScreen.rtcWidth) || 0;
-const RTC_W = cfgRtcW >= 320 ? evenDown(cfgRtcW) : evenDown(Math.max(320, Math.round(CAP_W / 2)));
+const RTC_W = cfgRtcW >= 320 ? evenDown(cfgRtcW) : evenDown(Math.max(320, Math.round(CAP_W * 0.625)));   // 流畅模式默认 1600 宽（原 1280）
 const RTC_H = evenDown(Math.max(180, Math.round(RTC_W * CAP_H / CAP_W)));
 
 let rawStamp = 0;

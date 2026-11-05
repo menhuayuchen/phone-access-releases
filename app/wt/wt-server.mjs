@@ -45,8 +45,8 @@ export async function startWt({ port = 8444, certPath, keyPath, getInit }) {
           sessions.add(s);
           sendInit(w);
           session.closed.then(() => sessions.delete(s)).catch(() => sessions.delete(s));
-        } catch (e) { }
-      }).catch(() => { });
+        } catch (e) { console.log("wt stream err: " + (e && e.message)); }
+      }).catch((e) => { console.log('wt session err: ' + (e && e.message)); });
     }
   })();
 
