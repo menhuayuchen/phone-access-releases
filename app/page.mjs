@@ -928,10 +928,11 @@ async function rtcLossAdapt() {
   if (!pc || state.mode !== 'raw') return;
   try {
     const st = await pc.getStats();
-    let lost = 0, recv = 0;
+    let lost = 0, recv = 0, fpsNow = 0;
     st.forEach((r) => {
       if (r.type === 'inbound-rtp' && r.kind === 'video') {
         lost = r.packetsLost || 0;
+        fpsNow = r.framesPerSecond || 0;
         recv = r.packetsReceived || 0;
       }
     });
@@ -939,6 +940,11 @@ async function rtcLossAdapt() {
     rtcLastLost = lost; rtcLastRecv = recv;
     if (dRecv + dLost < 40) return;
     const rate = dLost / (dRecv + dLost);
+    // 帧率长期过低（编码/解码积压）：主动重连一次，别让画面越拖越慢
+    if (fpsNow < 5 && dRecv > 10) {
+      h264.__lowFps = (h264.__lowFps || 0) + 1;
+      if (h264.__lowFps >= 3) { h264.__lowFps = 0; if (rtcRetry < 3) { rtcRetry++; restartRtc(); } }
+    } else h264.__lowFps = 0;
     if (rate > 0.05 && Date.now() - rtcQAt > 25000) {
       const next = { kbps: Math.max(600, Math.round(lastQ.kbps * 0.6)), fps: Math.max(10, Math.round(lastQ.fps * 0.8)) };
       try { await fetch('/rtc-quality?kbps=' + next.kbps + '&fps=' + next.fps, { method: 'POST' }); } catch (e) { }
@@ -994,6 +1000,7 @@ async function restartRtc() {
     vid.play().catch(() => {});
   };
   pc.onconnectionstatechange = () => {
+    if (pc.connectionState === 'failed' || pc.connectionState === 'disconnected') { if (rtcRetry < 3) { rtcRetry++; setTimeout(function () { if (state.mode === 'raw') restartRtc(); }, 1500); } }
     setStat('WebRTC ' + pc.connectionState);
     if (pc.connectionState === 'connected') {
       // 连上就等于服务端已经加上视频轨了（rtc.mjs 现在总是加 video 轨），
