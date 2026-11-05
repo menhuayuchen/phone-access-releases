@@ -20,7 +20,7 @@
 
 注意（2026-10-31 起）：产品默认就只监听 Tailscale，不再提供局域网入口；这个脚本只是额外加固。
 手机上必须用 Tailscale 地址（同一 Wi-Fi 下 Tailscale 也是直连，速度不会比局域网差）：
-  http://100.108.92.22:8642/go?k=<屏幕密钥>
+  http://<本机Tailscale地址>:8642/go?k=<屏幕密钥>
 #>
 param([switch]$Undo)
 
@@ -71,7 +71,7 @@ foreach ($port in 8642, 8660) {
 Write-Host ''
 Write-Host '完成。现在的效果：' -ForegroundColor Green
 Write-Host '  127.0.0.1       照常（本机）'
-Write-Host '  Tailscale 段    照常（手机用 http://100.108.92.22:8642/go?k=...）'
+Write-Host '  Tailscale 段    照常（手机用 http://<本机Tailscale地址>:8642/go?k=...）'
 Write-Host '  校园/家庭局域网 被拒绝'
 Write-Host ''
 Write-Host '验证（在手机上）：局域网链接应打不开、Tailscale 链接应正常。'

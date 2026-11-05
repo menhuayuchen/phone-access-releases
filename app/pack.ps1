@@ -21,7 +21,7 @@
 
 param(
   [string]$AppDir = '',        # 产品代码目录（默认=本脚本所在目录）
-  [string]$ProdDir = 'C:\Users\ccj\Documents\deepseek-harness\default-workspace\phone-access',  # 生产目录（只读）
+  [string]$ProdDir = '',  # 生产目录（只读，留空表示不对比）
   [string]$OutDir = '',        # 输出目录（默认=<产品根>\dist）
   [string]$NodeExe = '',       # 指定 node.exe（默认自动找 v24.21.0 那一份）
   [string]$ExpectedNodeVersion = 'v24.21.0',

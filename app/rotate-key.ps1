@@ -48,4 +48,4 @@ Write-Host ''
 Write-Host '新的长期入口（旧链接已全部失效）：' -ForegroundColor Green
 $login = Join-Path $here 'login-url.txt'
 if (Test-Path $login) { Write-Host ("  {0}" -f (Get-Content $login -Raw).Trim()) }
-else { Write-Host ("  http://100.108.92.22:8642/go?k=" + $new) }
+else { Write-Host ("  http://<本机Tailscale地址>:8642/go?k=" + $new) }
