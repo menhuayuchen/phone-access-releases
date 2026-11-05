@@ -1350,12 +1350,13 @@ async function postEvents(evs) {
 let sendQueue = [], sendTimer = null, lastMoveSent = 0;
 function queue(ev) {
   sendQueue.push(ev);
+  // 点击/按下/抬起/滚轮立刻发：输入延迟优先，不再等批处理
+  if (ev && (ev.t === 'click' || ev.t === 'down' || ev.t === 'up' || ev.t === 'wheel')) { flushQueue(); return; }
   if (sendTimer) return;
   sendTimer = setTimeout(() => {
     sendTimer = null;
-    const evs = sendQueue; sendQueue = [];
-    postEvents(evs);
-  }, 25);
+    flushQueue();
+  }, 8);
 }
 
 // ============================================================================
