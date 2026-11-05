@@ -7,7 +7,7 @@
 | 场景 | 地址 | 速度 |
 |---|---|---|
 | 异地 / 流量（按名字） | `http://dsh-laptop.tailb9b4f0.ts.net/`（需要 MagicDNS 能解析） | 快（P2P） |
-| 异地 / 流量（**不依赖 DNS**） | `http://100.108.92.22:8642/` ← 平板/设备解析不了名字时用这个 | 快（P2P） |
+| 异地 / 流量（**不依赖 DNS**） | `http://<本机Tailscale地址>:8642/` ← 平板/设备解析不了名字时用这个 | 快（P2P） |
 | 同一 Wi-Fi | 仍然走 Tailscale（同一 Wi-Fi 下 Tailscale 自动直连），**没有绕过 Tailscale 的 LAN 入口** | 最快 |
 
 - 登录二维码：`phone-qr.png`（名字入口）、`qr-tailip.png`（IP 入口）；对应地址 `phone-url.txt`、
@@ -31,7 +31,7 @@ authority 签名 cookie**。所以外面三扇门都先经过 `tunnel-proxy.mjs`
 
 ```
 设备 ──WireGuard──> tailscaled ──serve :80──> 127.0.0.1:8650 ┐
-设备 ──WireGuard───────────────> 100.108.92.22:8642 ────────┤
+设备 ──WireGuard───────────────> <本机Tailscale地址>:8642 ────────┤
 设备 ──Wi-Fi──────────────────> 10.120.215.45:8642 ─────────┤
                                                             └─> 127.0.0.1:8642 (DSH)
 ```
@@ -48,7 +48,7 @@ DSH 每次启动都会生成新的一次性 token，所以带 token 的 URL/二�
 **永久的登录门**：
 
 ```
-http://100.108.92.22:8642/go?k=<screen.key>      ← login-url.txt / qr-login.png
+http://<本机Tailscale地址>:8642/go?k=<screen.key>      ← login-url.txt / qr-login.png
 http://10.120.215.45:8642/go?k=<screen.key>
 http://dsh-laptop.tailb9b4f0.ts.net/go?k=<screen.key>
 ```
@@ -91,7 +91,7 @@ supervisor 每 8 秒检查一次：
 
 | 场景 | 地址 |
 |---|---|
-| 异地（tailnet 直连 IP，不依赖 DNS） | `http://100.108.92.22:8660/?k=<key>` ← `screen-url.txt` / `screen-qr.png` |
+| 异地（tailnet 直连 IP，不依赖 DNS） | `http://<本机Tailscale地址>:8660/?k=<key>` ← `screen-url.txt` / `screen-qr.png` |
 | 同一 Wi-Fi | 仍然走 Tailscale（自动直连）；`screen-url-lan.txt` 已废弃，不再生成 |
 
 组成：
@@ -114,7 +114,7 @@ screen-server.mjs（只绑 Tailscale IP 与 127.0.0.1）──> MJPEG 网页 ─
 - **画面这条不需要 `/go`，因为它比 DSH 更稳**：DSH 的 token 每次重启都变，而这里用的是
   **固定的 `screen.key`（不轮换）**，所以带 `?k=` 的地址和二维码**永久有效**；
   cookie（`screen-key`）只是"以后不用带参数"的便利，有效期 **1 年**。
-  书签就存 `http://100.108.92.22:8660/?k=<screen.key>`，一辈子不用重扫。
+  书签就存 `http://<本机Tailscale地址>:8660/?k=<screen.key>`，一辈子不用重扫。
 - 想轮换密钥：停画面服务 → 删掉 `screen.key` → 跑 `start-screen.cmd`
   （会生成新 key，`screen-url*.txt` / `screen-qr*.png` / `login-url.txt` / `qr-login.png`
   随之更新，旧链接和旧 cookie 立即失效）。
@@ -228,7 +228,7 @@ MJPEG 最大的坑是**延迟会随时间累积**：客户端解不动时，帧�
 - 页面 HUD 每 2 秒轮询 `/health`，显示 `out` fps + 当前档位上限 + 丢帧数。
 - `check-health.ps1` 新增「实际帧率」一行，直接读 `out=`。
 
-自查方法：`curl http://100.108.92.22:8660/health` → `out=` 就是你这台设备**真的**在收的帧率。
+自查方法：`curl http://<本机Tailscale地址>:8660/health` → `out=` 就是你这台设备**真的**在收的帧率。
 注意这个数是"服务端已经写进 socket"的帧数；如果设备解码跟不上，它仍然会低于 `cap` 对应的上限。
 
 ## 无窗口运行（不再弹一堆黑框）
@@ -865,7 +865,7 @@ function layoutPoint(cx, cy) {
 
 ### 一个真实坑：http:// 下 AudioWorklet 不可用
 
-第一版用的是 `AudioWorklet`（延迟更低、跑在音频线程），实测报 `Cannot read properties of undefined (reading 'addModule')`——因为页面是 `http://100.108.92.22:8660`，**AudioWorklet 只在安全上下文（https/localhost）可用**。于是改成 `ScriptProcessor`（已废弃但到处都能用，iOS Safari 也支持）。如果哪天上了 HTTPS，可以再切回 worklet。
+第一版用的是 `AudioWorklet`（延迟更低、跑在音频线程），实测报 `Cannot read properties of undefined (reading 'addModule')`——因为页面是 `http://<本机Tailscale地址>:8660`，**AudioWorklet 只在安全上下文（https/localhost）可用**。于是改成 `ScriptProcessor`（已废弃但到处都能用，iOS Safari 也支持）。如果哪天上了 HTTPS，可以再切回 worklet。
 
 ### 验证数据
 
@@ -1296,7 +1296,7 @@ $OutputEncoding=[System.Text.Encoding]::UTF8;
 
 2. **RDP 进客户机**（要图形界面时最稳）：客户机里开「远程桌面」→
    VMware 虚拟网络编辑器 VMnet8 → NAT 设置 → 端口转发 主机 `13389` → 客户机 `3389` →
-   手机装 Microsoft Remote Desktop 连 `100.108.92.22:13389`。这样输入不再经过 VMware 控制台。
+   手机装 Microsoft Remote Desktop 连 `<本机Tailscale地址>:13389`。这样输入不再经过 VMware 控制台。
 
 ## UAC 弹窗：为什么"看得见、点不动"（2026-10-23）
 
@@ -1442,7 +1442,7 @@ cd 'C:\Users\ccj\Documents\deepseek-harness\default-workspace\phone-access'
 .\rotate-key.ps1 -Force         # 换密钥=立刻吊销所有旧链接 + 所有 cookie
 ```
 
-### 手机最省事的入口：只用 `http://100.108.92.22:8642/`（不带 k）
+### 手机最省事的入口：只用 `http://<本机Tailscale地址>:8642/`（不带 k）
 
 2026-10-26 手机上报「访问密钥不对」，`door.log` 里看得很清楚：
 
@@ -1454,7 +1454,7 @@ cd 'C:\Users\ccj\Documents\deepseek-harness\default-workspace\phone-access'
 
 所以不是门坏了，是链接里的 `k=` 变成了 `…`。现在 `/go` 遇到占位符直接回 **400**「这个链接不完整」。
 
-更省事的办法：书签只存 `http://100.108.92.22:8642/`（不带 `k=`）
+更省事的办法：书签只存 `http://<本机Tailscale地址>:8642/`（不带 `k=`）
 
 | 情况 | 行为 |
 |---|---|
