@@ -47,14 +47,14 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
               padding:5px 9px; font:inherit; font-weight:600; }
 #stage { flex:1; position:relative; overflow:hidden; background:#000; touch-action:none; }
 /* 全屏按钮：贴在左边缘垂直居中，平时半透明，按住/悬停变亮（不挡画面又能找到） */
-#fsBtn { position:fixed; left:0; top:50%; transform:translateY(-50%); z-index:10001; width:28px; height:70px;
-         border:1px solid rgba(255,255,255,.18); border-left:0; border-radius:0 12px 12px 0;
-         background:rgba(20,20,24,.55); color:rgba(255,255,255,.9);
-         font-size:16px; padding:0; cursor:pointer; opacity:.6; transition:opacity .2s, background .2s;
-         backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); }
-#fsBtn:hover, #fsBtn:active { opacity:1; background:rgba(40,40,46,.85); }
-body.fs #fsBtn { opacity:.45; background:rgba(0,0,0,.55); }
-body.fs #fsBtn:hover, body.fs #fsBtn:active { opacity:.95; background:rgba(40,40,46,.85); }
+#fsBtn { position:fixed; left:0; top:50%; transform:translateY(-50%); z-index:10001; width:24px; height:60px;
+         border:1px solid rgba(255,255,255,.14); border-left:0; border-radius:0 12px 12px 0;
+         background:rgba(24,24,28,.22); color:rgba(255,255,255,.85);
+         font-size:14px; padding:0; cursor:pointer; opacity:.38; transition:opacity .2s, background .2s;
+         backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px); }
+#fsBtn:hover, #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
+body.fs #fsBtn { opacity:.30; background:rgba(10,10,12,.20); }
+body.fs #fsBtn:hover, body.fs #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
 body.fs header, body.fs #hint, body.fs #hud, body.fs #stat { display:none !important; }
 body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:9996; }
 #img, #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
