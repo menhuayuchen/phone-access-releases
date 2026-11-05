@@ -555,10 +555,8 @@ function abortStream() {
 const H264_CODECS = ['video/mp4; codecs="avc1.4D4032"', 'video/mp4; codecs="avc1.640032"', 'video/mp4; codecs="avc1.4D4028"', 'video/mp4; codecs="avc1.42E01E"'];
 function h264Supported() {
   if (h264.supported !== null) return h264.supported;
-  try {
-    h264.mime = (window.MediaSource && H264_CODECS.find(function (m) { return MediaSource.isTypeSupported(m); })) || null;
-  } catch (e) { h264.mime = null; }
-  h264.supported = !!h264.mime;
+  // 用 WebCodecs 能力判断（真实播放路径），不依赖 MSE 的 codec 列表
+  h264.supported = !!(window.VideoDecoder && window.EncodedVideoChunk);
   return h264.supported;
 }
 function h264Jump() {
