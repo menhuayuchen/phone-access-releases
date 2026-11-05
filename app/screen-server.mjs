@@ -149,6 +149,7 @@ let H264_RECT = null;
 let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）   // 指定显示器/窗口时先 crop（屏幕坐标）
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）
 // 编码器：优先 NVENC（硬编，延迟低、CPU 几乎为 0），不可用时回退 h264_mf（软编）
 let H264_ENCODER = 'mf';
 try {
