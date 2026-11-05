@@ -30,3 +30,4 @@ app/rtc-h264/*.exe
 app/rtc-h264/*.bin
 app/rtc-h264/sidecar.out
 app/bin/win-capture.exe
+app/bin/sources.exe

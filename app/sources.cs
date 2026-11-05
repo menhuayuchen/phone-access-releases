@@ -37,6 +37,10 @@ static class Program
     [DllImport("dwmapi.dll")]
     static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out RECT rect, int size);
 
+    // DWMWA_CLOAKED（DWORD）用的重载
+    [DllImport("dwmapi.dll")]
+    static extern int DwmGetWindowAttribute(IntPtr hwnd, int attr, out int value, int size);
+
     static readonly List<string> monitors = new List<string>();
     static readonly List<string> windows = new List<string>();
 
@@ -72,7 +76,11 @@ static class Program
         // skip tool windows and cloaked windows
         int ex = GetWindowLong(hWnd, -20);          // GWL_EXSTYLE
         if ((ex & 0x00000080) != 0) return true;    // WS_EX_TOOLWINDOW
-        if ((ex & 0x00040000) != 0) return true;    // WS_EX_APPWINDOW is fine; skip owned? keep
+        // 注意：**不要**跳过 WS_EX_APPWINDOW（0x40000）—— 绝大多数普通应用的顶层窗口都带这个样式
+        // （实测 WinForms 窗口 ex=0x50108），跳过它会让主屏/副屏上的应用窗口从列表里消失。
+        int cloaked = 0;
+        try { if (DwmGetWindowAttribute(hWnd, 14, out cloaked, Marshal.SizeOf(typeof(int))) != 0) cloaked = 0; } catch { cloaked = 0; }  // DWMWA_CLOAKED
+        if (cloaked != 0) return true;              // UWP 隐藏/已关闭但句柄还在的窗口
 
         RECT r;
         int dwm = DwmGetWindowAttribute(hWnd, 9, out r, Marshal.SizeOf(typeof(RECT)));  // DWMWA_EXTENDED_FRAME_BOUNDS
