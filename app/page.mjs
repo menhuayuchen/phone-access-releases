@@ -767,6 +767,18 @@ async function rtc264Stats() {
     if (vw > 0) {
       R.firstVideo = true; R.attempts = 0;
       if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
+      // 首次出画面后给一次流量提醒（每台设备只提示一次）：清晰模式默认 20Mbps ≈ 8.9GB/时
+      if (!R.flowHinted) {
+        R.flowHinted = true;
+        try {
+          if (localStorage.getItem('hint.flow') !== '1') {
+            localStorage.setItem('hint.flow', '1');
+            setTimeout(function () {
+              try { setNote('提示：清晰模式约 8.9GB/小时；用手机流量可在设置里调低码率，或点「流畅」', 9000); } catch (e) { }
+            }, 6000);
+          }
+        } catch (e) { }
+      }
     }
     // 冻结自愈：前台时 framesReceived 不再增长（服务端重启/链路假死）就主动重连。
     // 注意不能用 video.currentTime 判断——MediaStream 的 currentTime 是照播的，
@@ -3934,7 +3946,7 @@ bindImg(img);
         tog.disabled = active && !mine;
       }
       if (imgMsg) imgMsg.textContent = st && st.hasImage ? '当前：自定义图' : '当前：纯黑';
-      if (mine) { setMsg('已开启（电脑本机已遮住）', '#8CE58C'); startBeat(); }
+      if (mine) { setMsg('已开启（电脑本机已遮住' + (st && st.hotkeys ? '，快捷键已拦' : '') + '）', '#8CE58C'); startBeat(); }
       else if (active) setMsg('另一台设备已开启（以先开的为准）', '#ffb454');
       else setMsg('');
       try { window.__prvActive = active; window.__prvMine = mine; } catch (e) { }
@@ -4139,6 +4151,14 @@ bindImg(img);
       + '<span id="prvImgMsg" style="font-size:12px;color:#6b7078"></span>'
       + '</div>');
 
+    // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
+    body += setSection('诊断',
+      '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">画面/声音/连接出问题时，导出这份报告发给卖家。里面是编码参数、链路状态和最近日志，访问密钥已打码。</div>'
+      + '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+      + '<button id="diagBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:9px 14px;font-size:13px;cursor:pointer">导出诊断报告</button>'
+      + '<span id="diagMsg" style="font-size:12.5px;color:#868c96"></span></div>');
+
 
     // 版本与更新
     body += setSection('版本与更新',
@@ -4168,6 +4188,25 @@ bindImg(img);
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
     privacyBind(box);
+    // 诊断导出
+    const diagBtn = box.querySelector('#diagBtn');
+    if (diagBtn) diagBtn.addEventListener('click', async () => {
+      const dm = box.querySelector('#diagMsg');
+      diagBtn.disabled = true;
+      try {
+        const r = await fetch('/diagnose?k=' + encodeURIComponent(KEY), { cache: 'no-store' });
+        const t = await r.text();
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(new Blob([t], { type: 'text/plain;charset=utf-8' }));
+        a.download = 'phoneaccess-diagnose.txt';
+        document.body.appendChild(a); a.click(); a.remove();
+        setTimeout(function () { try { URL.revokeObjectURL(a.href); } catch (e) { } }, 5000);
+        if (dm) dm.textContent = '已导出（' + Math.round(t.length / 1024) + 'KB）';
+      } catch (e) {
+        if (dm) dm.textContent = '导出失败：' + (e && e.message);
+      }
+      diagBtn.disabled = false;
+    });
     bindLicencePaste(box);
     // 连接体检（Tailscale）：打开设置时自动检测一次，可手动重测/一键拉起安装包
     tsBind(box);

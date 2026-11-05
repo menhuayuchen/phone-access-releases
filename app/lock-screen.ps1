@@ -20,7 +20,9 @@ param(
     [string]$TestColor = '',
     [int]$HoldSeconds = 0,
     [int]$MaxMinutes = 480,
-    [switch]$DisableExclude
+    [switch]$DisableExclude,
+    [switch]$BlockHotkeys,
+    [string]$HookFile = ''
 )
 
 $ErrorActionPreference = 'Stop'
@@ -42,6 +44,79 @@ public static class LockWinApi {
     public static extern uint SetThreadExecutionState(uint esFlags);
 }
 "@
+}
+
+# 防窥屏期间拦掉"能从遮罩里逃出去"的快捷键：所有 Win 组合、Alt+Tab、Alt+Esc、Alt+F4、Ctrl+Esc、Ctrl+Shift+Esc。
+# 关键：只拦**物理键盘**。远端注入的按键（SendInput）带 LLKHF_INJECTED 标志，必须放行，
+# 否则手机上的 Alt+Tab 等快捷键会被自己拦掉。Ctrl+Alt+Del 是系统级安全序列，钩子拦不住，属正常。
+if (-not ('HotkeyGuard' -as [type])) {
+    Add-Type @"
+using System;
+using System.Runtime.InteropServices;
+public static class HotkeyGuard {
+    private const int WH_KEYBOARD_LL = 13;
+    private const int WM_KEYDOWN = 0x0100;
+    private const int WM_SYSKEYDOWN = 0x0104;
+    private const int LLKHF_INJECTED = 0x10;
+    private delegate IntPtr LowLevelKeyboardProc(int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern IntPtr SetWindowsHookEx(int idHook, LowLevelKeyboardProc lpfn, IntPtr hMod, uint dwThreadId);
+    [DllImport("user32.dll", SetLastError = true)]
+    private static extern bool UnhookWindowsHookEx(IntPtr hhk);
+    [DllImport("user32.dll")]
+    private static extern IntPtr CallNextHookEx(IntPtr hhk, int nCode, IntPtr wParam, IntPtr lParam);
+    [DllImport("kernel32.dll", CharSet = CharSet.Auto)]
+    private static extern IntPtr GetModuleHandle(string lpModuleName);
+    [DllImport("user32.dll")]
+    private static extern short GetAsyncKeyState(int vKey);
+    [StructLayout(LayoutKind.Sequential)]
+    private struct KBDLLHOOKSTRUCT { public int vkCode; public int scanCode; public int flags; public int time; public IntPtr dwExtraInfo; }
+    private static IntPtr hook = IntPtr.Zero;
+    private static LowLevelKeyboardProc proc = HookCallback;
+    private static bool enabled = false;
+    public static bool Enabled { get { return enabled; } }
+    public static bool Start() {
+        if (hook != IntPtr.Zero) return true;
+        hook = SetWindowsHookEx(WH_KEYBOARD_LL, proc, GetModuleHandle(null), 0);
+        enabled = hook != IntPtr.Zero;
+        return enabled;
+    }
+    public static void Stop() {
+        if (hook != IntPtr.Zero) { UnhookWindowsHookEx(hook); hook = IntPtr.Zero; enabled = false; }
+    }
+    private static bool Down(int vk) { return (GetAsyncKeyState(vk) & 0x8000) != 0; }
+    private static IntPtr HookCallback(int nCode, IntPtr wParam, IntPtr lParam) {
+        try {
+            if (nCode >= 0 && enabled) {
+                int msg = (int)wParam;
+                if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
+                    KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
+                    if ((k.flags & LLKHF_INJECTED) == 0) {
+                        int vk = k.vkCode;
+                        bool win = Down(0x5B) || Down(0x5C);
+                        bool alt = Down(0x12);
+                        bool ctrl = Down(0x11);
+                        bool shift = Down(0x10);
+                        bool blocked = false;
+                        if (win) blocked = true;
+                        else if (alt && (vk == 0x09 || vk == 0x1B || vk == 0x73)) blocked = true;
+                        else if (ctrl && vk == 0x1B) blocked = true;
+                        else if (ctrl && shift && vk == 0x1B) blocked = true;
+                        if (blocked) return (IntPtr)1;
+                    }
+                }
+            }
+        } catch { }
+        return CallNextHookEx(hook, nCode, wParam, lParam);
+    }
+}
+"@
+}
+
+$hookStarted = $false
+if ($BlockHotkeys) {
+    try { $hookStarted = [HotkeyGuard]::Start() } catch { $hookStarted = $false }
+    if ($HookFile) { try { Set-Content -LiteralPath $HookFile -Value ($(if ($hookStarted) { 'ok' } else { 'fail' })) -Encoding ASCII } catch { } }
 }
 
 $WDA_EXCLUDEFROMCAPTURE = 0x00000011
@@ -118,6 +193,7 @@ try {
     }
 } finally {
     $global:lockScreenAllowClose = $true
+    try { if ($hookStarted) { [HotkeyGuard]::Stop() } } catch { }
     for ($i = 0; $i -lt $hiddenCursor; $i++) { [void][LockWinApi]::ShowCursor($true) }
     foreach ($f in $forms) { try { $f.Hide(); $f.Close(); $f.Dispose() } catch { } }
     if ($lockImage) { try { $lockImage.Dispose() } catch { } }

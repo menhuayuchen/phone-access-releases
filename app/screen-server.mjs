@@ -777,6 +777,8 @@ if (CFG264.enabled) setInterval(poll264, 5000);
 const PRIVACY_STOP = join(HERE, 'privacy.stop');
 const PRIVACY_BEAT = join(HERE, 'privacy.beat');
 const privacy = { proc: null, owner: '', image: '', startedAt: 0, lastBeat: 0 };
+// 启动时清掉上一代残留（崩溃/被杀可能留下 stop/beat/hook 文件；留着会让新遮罩立刻退出或误报）
+for (const f of ['privacy.stop', 'privacy.beat', 'privacy.hook']) { try { unlinkSync(join(HERE, f)); } catch { } }
 
 function privacyPicPath() {
   for (const ext of ['png', 'jpg', 'webp']) {
@@ -786,11 +788,14 @@ function privacyPicPath() {
   return '';
 }
 function privacyJson() {
+  let hot = false;
+  try { hot = readFileSync(join(HERE, 'privacy.hook'), 'utf8').trim() === 'ok'; } catch { hot = false; }
   return {
     active: !!privacy.proc,
     owner: privacy.owner || '',
     since: privacy.startedAt || 0,
     hasImage: !!privacyPicPath(),
+    hotkeys: !!privacy.proc && hot,
     imageUrl: '/privacy/image'
   };
 }
@@ -801,6 +806,7 @@ function privacyStop(reason) {
   privacy.startedAt = 0;
   privacy.lastBeat = 0;
   try { writeFileSync(PRIVACY_STOP, '1'); } catch { }
+  try { unlinkSync(join(HERE, 'privacy.hook')); } catch { }
   setTimeout(() => {
     try { if (proc) proc.kill(); } catch { }
     try { unlinkSync(PRIVACY_STOP); } catch { }
@@ -817,8 +823,11 @@ function privacyStart(sid) {
   privacy.image = privacyPicPath();
   try { unlinkSync(PRIVACY_STOP); } catch { }
   try { writeFileSync(PRIVACY_BEAT, String(Date.now())); } catch { }
+  const hookFile = join(HERE, 'privacy.hook');
+  try { unlinkSync(hookFile); } catch { }
   const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
-    '-StopFile', PRIVACY_STOP, '-BeatFile', PRIVACY_BEAT, '-ParentPid', String(process.pid), '-MaxMinutes', '480'];
+    '-StopFile', PRIVACY_STOP, '-BeatFile', PRIVACY_BEAT, '-ParentPid', String(process.pid), '-MaxMinutes', '480',
+    '-BlockHotkeys', '-HookFile', hookFile];
   if (privacy.image) args.push('-ImagePath', privacy.image);
   let child = null;
   try {
@@ -837,8 +846,9 @@ function privacyStart(sid) {
     }
     try { unlinkSync(PRIVACY_STOP); } catch { }
     try { unlinkSync(PRIVACY_BEAT); } catch { }
+    try { unlinkSync(join(HERE, 'privacy.hook')); } catch { }
   });
-  console.log('privacy: 开启（owner=' + sid + '，图=' + (privacy.image || '纯黑') + '）');
+  console.log('privacy: 开启（owner=' + sid + '，图=' + (privacy.image || '纯黑') + '，快捷键拦截）');
   return { ok: true, active: true, owner: true };
 }
 // 心跳：3 秒刷一次 beat 文件（窗口靠它判断服务端还活着）；owner 120 秒没心跳自动关
@@ -3489,6 +3499,45 @@ function handler(req, res) {
       res.end(JSON.stringify(Object.assign({ ok: true }, privacyJson())));
       return;
     }
+  }
+  // ---- 诊断导出：把状态和最近日志打包成一份 txt（密钥已打码），给卖家排查 ----
+  if (url.pathname === '/diagnose') {
+    const scrub = (s) => String(s || '').split(KEY).join('***');
+    const tail = (p, n) => {
+      try { const lines = readFileSync(p, 'utf8').split(/\r?\n/); return scrub(lines.slice(-n).join('\n')); } catch (e) { return '(无法读取: ' + (e && e.message) + ')'; }
+    };
+    let beat = '';
+    try { beat = readFileSync(join(HERE, 'supervisor.heartbeat'), 'utf8').trim(); } catch (e) { beat = '(无)'; }
+    const out = [
+      '== 手机远程 · 诊断报告 ==',
+      '时间: ' + new Date().toISOString(),
+      '',
+      '== 编码/画面 ==',
+      JSON.stringify({
+        enabled: H264_ENABLED, encoder: H264_ENCODER, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS,
+        viewers: h264.clients.size, lastError: h264.lastError, native: H264_NATIVE, rect: H264_RECT
+      }),
+      '',
+      '== WebRTC264 ==',
+      JSON.stringify({ enabled: !!(CFG264.enabled && fileExists(RTC264_EXE)), port: RTC264_PORT, feedPort: RTC264_FEED_PORT, turnPort: RTC264_TURN_PORT }),
+      'status=' + JSON.stringify(rtc264Status),
+      '',
+      '== 防窥屏 ==',
+      JSON.stringify(privacyJson()),
+      '',
+      '== 守护 ==',
+      'heartbeat=' + beat,
+      '',
+      '== screen-server.log 末尾 40 行 ==',
+      tail(join(HERE, 'screen-server.log'), 40),
+      '',
+      '== rtc-h264/sidecar.log 末尾 30 行 ==',
+      tail(join(HERE, 'rtc-h264', 'sidecar.log'), 30),
+      ''
+    ].join('\n');
+    res.writeHead(200, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store', 'content-disposition': 'attachment; filename="phoneaccess-diagnose.txt"' });
+    res.end(out);
+    return;
   }
   if (url.pathname === '/h264-init') {
     const info = h264.initInfo;
