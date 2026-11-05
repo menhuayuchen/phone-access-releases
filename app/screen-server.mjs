@@ -2987,7 +2987,7 @@ function handler(req, res) {
         H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
       }
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
-      if (H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;
+      if (!H264_NATIVE && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
       H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;
       // 重启编码器让新参数生效（页面会重新连接）
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
