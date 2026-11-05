@@ -3418,6 +3418,7 @@ for (const host of hosts) {
   } catch (e) {
     console.log('wt: disabled (' + (e && e.message) + ')');
   }
+  attachH264Ws(s, KEY);
   attachH264Rtc(s, KEY);
   attachAudioWs(s, KEY);
   s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
