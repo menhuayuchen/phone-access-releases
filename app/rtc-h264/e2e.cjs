@@ -38,9 +38,15 @@ function req(method, p) {
 
 class CDP {
   constructor(ws) {
-    this.ws = ws; this.id = 0; this.pending = new Map();
+    this.ws = ws; this.id = 0; this.pending = new Map(); this.logs = [];
     ws.onmessage = (ev) => {
       let m; try { m = JSON.parse(typeof ev.data === 'string' ? ev.data : Buffer.from(ev.data).toString()); } catch (e) { return; }
+      if (m.method === 'Runtime.consoleAPICalled') {
+        try {
+          const txt = (m.params.args || []).map((a) => (a.value !== undefined ? String(a.value) : (a.description || ''))).join(' ');
+          this.logs.push({ t: Date.now(), type: m.params.type, txt });
+        } catch (e) { }
+      }
       if (m.id && this.pending.has(m.id)) { this.pending.get(m.id)(m); this.pending.delete(m.id); }
     };
   }
@@ -87,7 +93,9 @@ async function openTarget(url) {
   if (!t || !t.webSocketDebuggerUrl) throw new Error('拿不到 target ws');
   const ws = new WebSocket(t.webSocketDebuggerUrl);
   await new Promise((res, rej) => { ws.onopen = res; ws.onerror = () => rej(new Error('cdp ws error')); });
-  return { id: t.id, cdp: new CDP(ws), ws };
+  const cdp = new CDP(ws);
+  try { await cdp.send('Runtime.enable'); } catch (e) { }
+  return { id: t.id, cdp, ws };
 }
 
 async function main() {
@@ -123,15 +131,26 @@ async function main() {
   }
   const firstOk = !!(ctAt);
   let soakOk = null, soakBad = 0, soakSamples = 0, soakCt0 = 0;
+  let stallLongest = 0, recoverMs = 0;
   if (SOAK > 0 && last) {
     // 稳定性浸泡：持续观察画面是否还在走（videoWidth 不归零、currentTime 继续前进）
     soakCt0 = last.ct;
+    let prevCt = last.ct, stallStart = 0;
     const t2 = Date.now();
     while (Date.now() - t2 < SOAK * 1000) {
       await sleep(2000);
       const p = await target.cdp.eval(PROBE).catch(() => null);
       soakSamples++;
-      if (!p || !p.vw || !(p.ct > soakCt0)) { soakBad++; if (!last || p) last = p || last; }
+      const ct = p ? p.ct : -1;
+      if (!p || !p.vw || !(ct > prevCt + 0.02)) {
+        soakBad++;
+        if (!stallStart) stallStart = Date.now();
+        const d = Date.now() - stallStart;
+        if (d > stallLongest) stallLongest = d;
+      } else {
+        if (stallStart) { recoverMs = Date.now() - stallStart; stallStart = 0; }
+        prevCt = ct;
+      }
       if (p) last = p;
     }
     const p2 = await target.cdp.eval(PROBE).catch(() => null);
@@ -143,6 +162,8 @@ async function main() {
     text: last && last.text, ice: last && last.ice, param: last && last.param,
     firstVideoMs: firstVideoAt, playingMs: ctAt,
     soakOk: soakOk, soakBad: soakBad, soakSamples: soakSamples,
+    stallLongestMs: stallLongest, recoverMs: recoverMs,
+    consoleLogs: (target.cdp.logs || []).filter((l) => /rtc264|WebRTC|h264|fallback|等待|重连/i.test(l.txt)).slice(-40).map((l) => Math.round(l.t - t0) + 'ms ' + l.txt),
     reloadOk: null, seconds: Number(((Date.now() - t0) / 1000).toFixed(1))
   };
 

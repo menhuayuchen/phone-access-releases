@@ -251,7 +251,7 @@ if (-not $lockFree -and $beatAge -gt 3) {
 }
 
 if ($lockFree) {
-  Write-Host '[i] starting supervisor (health check every 8s)'
+  Write-Host '[i] starting supervisor (health check every 3s)'
   $supCmd = "powershell.exe -NoProfile -WindowStyle Hidden -ExecutionPolicy Bypass -File `"$here\supervise.ps1`""
   Start-Detached $supCmd | Out-Null
 } else {

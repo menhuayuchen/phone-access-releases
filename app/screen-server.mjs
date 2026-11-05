@@ -188,7 +188,10 @@ const h264 = {
   bytes: 0,
   frames: 0,
   stopTimer: null,
-  lastError: ''
+  lastError: '',
+  startedAt: 0,
+  killPending: false,
+  startQueued: false
 };
 
 function h264SendInit(ws) {
@@ -334,6 +337,13 @@ function h264SendFrame(ws, tsUs, key, data) {
   } catch { }
 }
 function processH264Buffer() {
+  // 安全阀（2026-11-05）：fMP4 分片很小，正常不会堆到几 MB；一旦解析卡住，
+  // Buffer.concat 会让内存 O(n²) 涨上去（实测把 node 吃到 1.5GB 后接口全超时）。
+  if (h264.pending && h264.pending.length > 8 * 1024 * 1024) {
+    h264.pending = Buffer.alloc(0);
+    h264.initInfo = null;
+    console.log('h264: 解析缓冲异常堆积（>8MB），已重置');
+  }
   for (;;) {
     if (!h264.pending || h264.pending.length < 8) return;
     const boxes = mp4Boxes(h264.pending, 0, h264.pending.length);
@@ -474,7 +484,9 @@ function h264Filter() {
 }
 
 function h264Start() {
-  if (!H264_ENABLED || h264.proc) return;
+  // killPending：上一只 ffmpeg 还没退干净。**这时绝不能再 spawn**，
+  // 否则会同时跑多只编码器、共用一个解析缓冲（2026-11-05 晚就是这样卡死 node 的）。
+  if (!H264_ENABLED || h264.proc || h264.killPending) return;
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
@@ -498,38 +510,74 @@ function h264Start() {
   h264.bytes = 0;
   h264.tsUs = 0;
   h264.frames = 0;
+  let proc = null;
   try {
-    h264.proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
   } catch (e) {
     h264.lastError = String(e.message || e);
     console.log('h264: spawn failed ' + h264.lastError);
     h264.proc = null;
     return;
   }
-  h264.proc.stdout.on('data', (d) => {
+  h264.proc = proc;
+  h264.startedAt = Date.now();
+  // 旧进程的输出一律丢掉：它们和当前 h264.pending 混在一起会把 fMP4 解析搅烂
+  const isCurrent = () => h264.proc === proc;
+  proc.stdout.on('data', (d) => {
+    if (!isCurrent()) return;
     h264.bytes += d.length;
     h264.pending = Buffer.concat([h264.pending, d]);
     processH264Buffer();
   });
-  h264.proc.stderr.on('data', (d) => {
+  proc.stderr.on('data', (d) => {
+    if (!isCurrent()) return;
     const s = String(d).trim();
     if (s) { h264.lastError = s.split('\n').slice(-1)[0]; }
   });
-  h264.proc.on('exit', (code) => {
-    console.log('h264: ffmpeg exit ' + code);
-    h264.proc = null;
-    h264.init = null;
-    if (h264.clients.size > 0) setTimeout(() => { if (h264.clients.size > 0) h264Start(); }, 1500);
+  proc.on('exit', (code) => {
+    const wasCurrent = isCurrent();
+    if (wasCurrent) { h264.proc = null; h264.killPending = false; }
+    console.log('h264: ffmpeg exit ' + code + (wasCurrent ? '' : '（旧进程，忽略）'));
+    if (!wasCurrent) return;                    // 被 h264Stop 脱钩的进程：不触发重启
+    if (h264.clients.size > 0 || rtc264Alive()) {
+      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Start(); }, 1500);
+    }
   });
-  h264.proc.on('error', (e) => { h264.lastError = String(e.message || e); });
+  proc.on('error', (e) => { if (isCurrent()) h264.lastError = String(e.message || e); });
 }
 
 function h264Stop() {
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
-  if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
+  const proc = h264.proc;
+  if (proc) {
+    // 先脱钩：这只进程的输出/退出都不再影响状态；等它真退出了才允许再 spawn
+    h264.proc = null;
+    h264.killPending = true;
+    try { proc.kill(); } catch { }
+    const t = setTimeout(() => {
+      if (!h264.killPending) return;
+      try { proc.kill('SIGKILL'); } catch { }
+      h264.killPending = false;
+      if (h264.startQueued) { h264.startQueued = false; h264Start(); }
+    }, 2500);
+    proc.once('exit', () => {
+      clearTimeout(t);
+      h264.killPending = false;
+      if (h264.startQueued) { h264.startQueued = false; h264Start(); }
+    });
+  }
   h264.initInfo = null;
   h264.pending = Buffer.alloc(0);
-  console.log('h264: stopped');
+  console.log('h264: stopped' + (proc ? '（等进程退出）' : ''));
+}
+
+// 需要"保证在编码"时统一走这里：上一只还没退干净就排队，等它退完立刻起，
+// 不要盲目 spawn（多只 ffmpeg 同时喂一个解析器 = 2026-11-05 晚的卡死）。
+function h264Ensure() {
+  if (!H264_ENABLED) return;
+  if (h264.proc) return;
+  if (h264.killPending) { h264.startQueued = true; return; }
+  h264Start();
 }
 
 const h264Wss = new WebSocketServer({ noServer: true });
@@ -694,12 +742,17 @@ function onHealth264() {
   const now = Date.now();
   if (rtc264Status.sessions > 0) {
     rtc264IdleSince = 0;
-    h264Start();                       // 幂等：已经在编码就直接返回
-    if (rtc264Status.lastFrameMs > 5000 && now - rtc264RestartAt > 20000) {
+    h264Ensure();                     // 有会话就必须有编码器（上一只在退就排队）
+    // 帧输入断了先补帧输入：重启 ffmpeg 也喂不进侧车，只会白折腾
+    if ((!conn264 || conn264.destroyed) && side264) connect264Feed();
+    const feedOk = !!conn264 && !conn264.destroyed && conn264.writable;
+    const ranFor = h264.startedAt ? now - h264.startedAt : 0;
+    if (feedOk && h264.proc && ranFor > 15000 && rtc264Status.lastFrameMs > 8000 && now - rtc264RestartAt > 30000) {
       rtc264RestartAt = now;
-      console.log('rtc264: 有 ' + rtc264Status.sessions + ' 路会话但 ' + rtc264Status.lastFrameMs + 'ms 没帧，重启编码器');
+      console.log('rtc264: ' + rtc264Status.sessions + ' 路会话但 ' + rtc264Status.lastFrameMs + 'ms 没帧（编码器已跑 ' + Math.round(ranFor / 1000) + 's），重启编码器');
       h264Stop();
-      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Start(); }, 500);
+      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Ensure(); }, 1200);
+      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Ensure(); }, 4000);
     }
     return;
   }
@@ -3218,7 +3271,7 @@ function handler(req, res) {
     const targetPath = url.pathname === '/rtc264/offer' ? '/offer' : (url.pathname === '/rtc264/answer' ? '/answer' : '/close');
     if (targetPath === '/offer') {
       try { start264(); } catch { }     // 侧车没起来/挂掉时顺便拉一把
-      try { h264Start(); } catch { }    // 页面只走 WebRTC 时也要启动编码器
+      try { h264Ensure(); } catch { }   // 页面只走 WebRTC 时也要启动编码器
     }
     const chunks = [];
     let bodyLen = 0;

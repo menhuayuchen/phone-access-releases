@@ -188,6 +188,7 @@ $fails = 0
 $inputHungRounds = 0
 $notListeningRounds = 0
 $probeFailRounds = 0
+$screenProbeFails = 0
 $maintenanceLogged = $false
 $lastBeat = Get-Date
 
@@ -310,6 +311,25 @@ while ($true) {
     $capProc = Get-Process capture -ErrorAction SilentlyContinue
     $captureOk = [bool]$capProc
     $screenOk = [bool](Get-NetTCPConnection -State Listen -LocalPort $screenPort -ErrorAction SilentlyContinue)
+    # 2026-11-05：光看端口 listening 不够。node 的事件循环卡死时端口照样在监听、
+    # 但所有 HTTP 请求都超时（实测卡死 6 分钟没被发现，用户只能手动重启）。
+    # 必须让 /health 在 3 秒内答出内容才算活着；连续 2 轮不通才重启，避免误杀。
+    if ($screenOk) {
+      $healthText0 = ''
+      try { $healthText0 = (& curl.exe -s --max-time 3 "http://${screenIp}:${screenPort}/health") -join '' } catch { }
+      if (-not $healthText0.Trim()) {
+        $screenProbeFails++
+        if ($screenProbeFails -ge 2) {
+          $screenOk = $false
+          $screenProbeFails = 0
+          Log ("/health 连续 2 轮无响应（端口还在监听）：按服务卡死处理")
+        }
+      } else {
+        $screenProbeFails = 0
+      }
+    } else {
+      $screenProbeFails = 0
+    }
     $capFat = $capProc -and ($capProc.WorkingSet64 -gt 300MB)
     # 声音采集 / 输入注入器是独立进程，任何一个掉线都重新走一次 start-screen.ps1 补齐
     $helperDown = -not (Get-Process audio -ErrorAction SilentlyContinue) -or -not (Get-Process input -ErrorAction SilentlyContinue)
@@ -438,5 +458,8 @@ while ($true) {
     Log "supervisor loop error: $($_.Exception.Message)"
   }
 
-  Start-Sleep -Seconds 8
+  # 2026-11-05：8 秒 → 3 秒。用户反馈"重启后要等很久才能看"：
+  # 画面服务被杀之后，守护全靠这一轮循环发现，8 秒轮询 + 启动脚本 ≈ 10–20 秒空窗；
+  # 缩到 3 秒后实测空窗 ~5–6 秒。每轮的检查都是本机进程/端口查询，开销可以忽略。
+  Start-Sleep -Seconds 3
 }

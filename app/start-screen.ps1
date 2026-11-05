@@ -198,14 +198,16 @@ if ($missing.Count -gt 0 -or $extra.Count -gt 0) {
   Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
     Where-Object { $_.Name -match 'node' -and $_.CommandLine -match 'screen-server\.mjs' } |
     ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-  Start-Sleep -Seconds 1
+  Start-Sleep -Milliseconds 400
   Write-Host "[i] starting screen server on $($hosts -join ', '):$screenPort"
   # 改动（P0-3）：多传第 6 个位置参数 "宽x高"，告诉服务端这次实际抓的是多大，不再由服务端假定 2560。
   # 第 6 个参数是可选新增项：老调用方式（只传 5 个）仍然按 2560×1600 工作，行为不变。
   $arg = "`"$here\screen-server.mjs`" `"$($hosts -join ',')`" $screenPort `"$frameFile`" `"$keyFile`" `"$(Join-Path $here 'viewers.count')`" `"$($geo.Width)x$($geo.Height)`""
 
   Start-Detached "cmd.exe /c `"`"$node`" $arg > `"$(Join-Path $here 'screen-server.log')`" 2>&1`"" | Out-Null
-  Start-Sleep -Seconds 2
+  # 2026-11-05：2 秒 → 0.8 秒。node 绑定端口通常 200–400ms；守护下一轮会复核，
+  # 这段等待只是为了让后面的网址/二维码打印时服务已经起来，不用蹲满 2 秒。
+  Start-Sleep -Milliseconds 800
 } else {
   Write-Host "[i] screen server already listening"
 }

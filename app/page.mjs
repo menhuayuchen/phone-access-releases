@@ -655,6 +655,9 @@ function stopRtc264() {
   if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
   const sid = R.sid;
   R.sid = ''; R.firstVideo = false; R.startedAt = 0; R.hudText = '';
+  R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0;
+  if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
+  if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
   if (R.pc) {
     try { R.pc.ontrack = null; R.pc.oniceconnectionstatechange = null; R.pc.close(); } catch (e) { }
     R.pc = null;
@@ -682,12 +685,14 @@ async function startRtc264() {
     R.sid = offer.sid;
     const ice = [];
     if (offer.turnOk && offer.turnPort) {
-      // 手机走 MagicDNS 域名不一定每次都能解析，再补一条 tailnet IP 的 TURN 地址
-      const turnUrls = ['turn:' + location.hostname + ':' + offer.turnPort + '?transport=udp'];
-      if (offer.turnHost && offer.turnHost !== location.hostname) turnUrls.push('turn:' + offer.turnHost + ':' + offer.turnPort + '?transport=udp');
-      ice.push({ urls: turnUrls, username: offer.turnUser || '', credential: offer.turnPass || '' });
+      // 只用 tailnet IP 的 TURN（不用域名：省掉 MagicDNS 解析时间，避免收候选变慢）；
+      // 也不用公网 STUN：PC 宣告的是 tailnet 地址，手机的 srflx 帮不上忙，
+      // 反而会因为它连不通（国内）拖慢 ICE 收集——实测这一条就慢 2 秒多。
+      ice.push({ urls: ['turn:' + (offer.turnHost || location.hostname) + ':' + offer.turnPort + '?transport=udp'], username: offer.turnUser || '', credential: offer.turnPass || '' });
+    } else {
+      ice.push({ urls: 'stun:stun.cloudflare.com:3478' });   // 没有 TURN 时留一条兜底
     }
-    ice.push({ urls: 'stun:stun.cloudflare.com:3478' });    const pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: mode === 'relay' ? 'relay' : 'all' });
+    const pc = new RTCPeerConnection({ iceServers: ice, iceTransportPolicy: mode === 'relay' ? 'relay' : 'all' });
     R.pc = pc;
     window.__pc264 = pc;
     pc.ontrack = function (e) {
@@ -703,6 +708,16 @@ async function startRtc264() {
     pc.oniceconnectionstatechange = function () {
       setStat('WebRTC264 ' + pc.iceConnectionState);
       if (pc.iceConnectionState === 'failed') rtc264Retry('ice-failed');
+      // 服务端重启/切网时 Chrome 要过 10–30 秒才把 disconnected 判成 failed，中间一直是冻结画面。
+      // 这里 4 秒不回来就主动重连，别让用户对着暂停的画面干等。
+      if (pc.iceConnectionState === 'disconnected') {
+        if (R.discTimer) clearTimeout(R.discTimer);
+        R.discTimer = setTimeout(function () {
+          if (R.pc !== pc) return;
+          if (pc.iceConnectionState === 'connected' || pc.iceConnectionState === 'completed') return;
+          rtc264Retry('ice-disconnected');
+        }, 4000);
+      } else if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
     };
     await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
     const ans = await pc.createAnswer();
@@ -719,9 +734,10 @@ async function startRtc264() {
     })).json();
     if (my !== rtc264Gen) return;
     if (!ar || !ar.ok) throw new Error('answer failed');
+    try { console.log('rtc264: answer ok sid=' + R.sid); } catch (e) { }
     state.mode = 'h264';
     setStat('WebRTC264 连接中');
-    R.statsTimer = setInterval(rtc264Stats, 2000);
+    R.statsTimer = setInterval(rtc264Stats, 1000);   // 1 秒一次：冻结/重启后能更快发现
     R.watchdog = setTimeout(function () { if (!R.firstVideo) rtc264Retry('no-video'); }, 12000);
   } catch (e) {
     if (my !== rtc264Gen) return;
@@ -748,6 +764,15 @@ async function rtc264Stats() {
       R.firstVideo = true; R.attempts = 0;
       if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
     }
+    // 冻结自愈：前台时 framesReceived 不再增长（服务端重启/链路假死）就主动重连。
+    // 注意不能用 video.currentTime 判断——MediaStream 的 currentTime 是照播的，
+    // 服务端死了它也照涨（上一版就踩了这个坑，画面冻结 20 秒都没重连）。
+    const nowMs = Date.now();
+    if (!document.hidden && vw > 0) {
+      if (fr > (R.lastFr || 0) || br > (R.lastBr || 0)) { R.lastFr = fr; R.lastBr = br; R.frozenSince = 0; }
+      else if (!R.frozenSince) { R.frozenSince = nowMs; }
+      else if (nowMs - R.frozenSince > 2500) { R.frozenSince = 0; R.lastFr = fr; R.lastBr = br; try { console.log('rtc264: 画面冻结（帧不再增长），主动重连'); } catch (e) { } rtc264Retry('frozen'); return; }
+    } else { R.lastFr = fr; R.lastBr = br; R.frozenSince = 0; }
     const how = path === 'relay' ? '中继' : (path === 'srflx' || path === 'prflx' ? '直连(NAT)' : (path === 'host' ? '直连' : pc.iceConnectionState));
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
     const res = vw ? vw + 'x' + vid.videoHeight : '无画面';
@@ -756,17 +781,47 @@ async function rtc264Stats() {
     setStat(RTC264.hudText + ' · 收' + Math.round(br / 1024) + 'KB');
   } catch (e) { }
 }
+function serverUp264() {
+  // 2 秒超时：服务端在重启时 TCP 直接拒绝（很快失败），卡死时也不会把这里拖住
+  return new Promise(function (resolve) {
+    let done = false;
+    const finish = (v) => { if (!done) { done = true; resolve(v); } };
+    const ctl = window.AbortController ? new AbortController() : null;
+    if (ctl) setTimeout(function () { try { ctl.abort(); } catch (e) { } }, 2000);
+    fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store', signal: ctl ? ctl.signal : undefined })
+      .then(function (r) { return r.ok ? r.json() : null; })
+      .then(function (j) { finish(!!(j && j.enabled)); })
+      .catch(function () { finish(false); });
+  });
+}
 function rtc264Retry(why) {
   const R = RTC264;
   if (R.busy) return;
+  try { console.log('rtc264: retry(' + why + ') attempts=' + R.attempts); } catch (e) { }
   R.busy = true;
   stopRtc264();
   R.busy = false;
-  if (R.attempts >= 2) { rtc264Fallback(why); return; }
-  R.attempts++;
-  setStat('WebRTC264 重连中 ' + R.attempts + '/2');
-  setTimeout(function () {
-    if (state.mode === 'h264' && !document.hidden) startRtc264();
+  clearTimeout(R.retryTimer);
+  // 先分辨是"电脑端在重启"还是"链路不通"：
+  // 服务端重启时（supervisor 6–20 秒回来）盲目重试/回落 WS 都只会白折腾，
+  // 实测那样要 22 秒才恢复；改成先等它回来，回来立刻建会话。
+  R.retryTimer = setTimeout(async function () {
+    if (state.mode !== 'h264' || document.hidden) return;
+    let up = false;
+    for (let i = 0; i < 30; i++) {
+      up = await serverUp264();
+      if (up) { try { console.log('rtc264: 电脑端恢复（等了 ' + (i + 1) + 's）'); } catch (e) { } break; }
+      if (i % 3 === 0) { try { console.log('rtc264: 等电脑端 ' + (i + 1) + 's'); } catch (e) { } }
+      setStat('等待电脑端恢复… ' + (i + 1) + 's');
+      setNote('电脑端在重启，画面马上回来…', 4000);
+      await new Promise(function (r) { setTimeout(r, 1000); });
+      if (R.pc) return;                     // 期间别的地方已经连上了
+    }
+    if (!up) { rtc264Fallback('server-unreachable'); return; }
+    if (R.attempts >= 3) { rtc264Fallback(why); return; }
+    R.attempts++;
+    setStat('WebRTC264 重连中 ' + R.attempts + '/3');
+    startRtc264();
   }, 900);
 }
 // B 方案默认开启：没写参数就走 WebRTC264；?rtc264=0 强制旧 WS 通道；?rtc264=1/relay 强制开启/中继测试。
