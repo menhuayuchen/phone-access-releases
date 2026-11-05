@@ -627,6 +627,50 @@ function startWtTransport() {
     }
   })().catch(function (e) { console.log('wt failed: ' + (e && e.message)); startMjpeg(); });
 }
+// ---- B 方案：Pion WebRTC H.264（?rtc264=1，失败自动回落 WS）---------------
+async function startRtc264() {
+  try {
+    const offer = await (await fetch('/rtc264/offer', { cache: 'no-store' })).json();
+    if (!offer || !offer.sdp) throw new Error('no offer');
+    // 手机侧必须能拿到 srflx 候选（Chrome 会把 host 候选伪装成 .local，Pion 服务端解析不了），否则 ICE 永远连不上
+    const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.cloudflare.com:3478' }, { urls: 'stun:stun.l.google.com:19302' }] });
+    window.__pc264 = pc;
+    pc.ontrack = (e) => {
+      try {
+        vid.srcObject = new MediaStream([e.track]);
+        vid.classList.add('show');
+        img.classList.remove('show');
+        vid.muted = !state.audio;
+        vid.play().catch(function () { });
+      } catch (err) { }
+    };
+    pc.oniceconnectionstatechange = function () {
+      setStat('WebRTC264 ' + pc.iceConnectionState);
+      if (pc.iceConnectionState === 'failed') fallback264();
+    };
+    await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+    const ans = await pc.createAnswer();
+    await pc.setLocalDescription(ans);
+    await new Promise(function (r) {
+      if (pc.iceGatheringState === 'complete') return r();
+      pc.onicegatheringstatechange = function () { if (pc.iceGatheringState === 'complete') r(); };
+      setTimeout(r, 2000);
+    });
+    await fetch('/rtc264/answer', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pc.localDescription) });
+    state.mode = 'h264';
+    setStat('WebRTC264 连接中');
+  } catch (e) {
+    fallback264();
+  }
+}
+function fallback264() {
+  try {
+    const u = new URL(location.href);
+    u.searchParams.delete('rtc264');
+    history.replaceState(null, '', u.toString());
+  } catch (e) { }
+  startH264();
+}
 async function startH264() {
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
@@ -808,6 +852,7 @@ async function startH264() {
     }
   }, 5000);  };
 
+  if (new URLSearchParams(location.search).get('rtc264') === '1' && window.RTCPeerConnection) { startRtc264(); return; }
   const useWt = new URLSearchParams(location.search).get('wt') === '1' && h264.wt && h264.wt.enabled && h264.wt.hash && window.WebTransport;
   if (useWt) { startWtTransport(); return; }
   const useRtc = new URLSearchParams(location.search).get('rtc') === '1' && !!window.RTCPeerConnection;

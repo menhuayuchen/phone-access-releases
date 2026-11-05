@@ -1,0 +1,12 @@
+const WebSocket=require('ws');
+const fs=require('fs');
+const out=process.argv[3];
+const fd=fs.openSync(out,'w');
+let n=0,keys=0;
+const ws=new WebSocket('ws://127.0.0.1:8660/ws-h264?k='+encodeURIComponent(process.argv[2]));
+ws.on('message',(d)=>{ if(typeof d==='string')return; const b=Buffer.from(d); if(b.length<10)return;
+  const key=b[4]===1; const len=b.readUInt32BE(5); if(len<=0||b.length<9+len)return;
+  const head=Buffer.alloc(5); head.writeUInt32BE(len,0); head[4]=key?1:0;
+  fs.writeSync(fd, head); fs.writeSync(fd, b.subarray(9,9+len)); n++; if(key)keys++;
+});
+setTimeout(()=>{ try{fs.closeSync(fd)}catch(e){}; console.log('recorded frames='+n+' keys='+keys+' bytes='+fs.statSync(out).size); process.exit(0); },6000);

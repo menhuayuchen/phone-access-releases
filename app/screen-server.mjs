@@ -160,6 +160,9 @@ let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
 let wtSrv = null;
+// B 方案：Pion 侧车（可选，默认关闭；开启后把帧转 Annex-B 通过 TCP 喂侧车）
+const CFG264 = (cfgH264.rtc264 || {});
+let side264 = null, conn264 = null, conn264Retry = 0;
 
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
@@ -373,6 +376,7 @@ function processH264Buffer() {
       for (const ws of h264.clients) h264SendFrame(ws, h264.tsUs, s.key, s.data);
       h264RtcSendFrame({ ts: h264.tsUs, key: s.key, data: s.data });
       if (wtSrv) { try { h264.frameSeq = (h264.frameSeq || 0) + 1; wtSrv.broadcast({ id: h264.frameSeq, key: s.key, data: s.data }); } catch { } }
+      feed264(s.key, s.data);
     }
     h264.frames += samples.length;
     h264.pending = h264.pending.subarray(mdat.end);
@@ -526,6 +530,69 @@ function h264Stop() {
 
 const h264Wss = new WebSocketServer({ noServer: true });
 
+// ---- B 方案：把帧转 Annex-B 并喂给 Pion 侧车 -------------------------------
+function annxB(avcc) {
+  const parts = [];
+  let o = 0;
+  while (o + 4 <= avcc.length) {
+    const n = avcc.readUInt32BE(o);
+    o += 4;
+    if (n <= 0 || o + n > avcc.length) break;
+    parts.push(Buffer.from([0, 0, 0, 1]));
+    parts.push(avcc.subarray(o, o + n));
+    o += n;
+  }
+  return Buffer.concat(parts);
+}
+function spsPpsPrefix() {
+  const b = h264.initInfo && h264.initInfo.avcC;
+  if (!b || b.length < 8) return Buffer.alloc(0);
+  const out = [];
+  let o = 5;
+  const ns = b[o] & 0x1f; o += 1;
+  for (let i = 0; i < ns; i++) {
+    const l = b.readUInt16BE(o); o += 2;
+    out.push(Buffer.from([0, 0, 0, 1])); out.push(b.subarray(o, o + l)); o += l;
+  }
+  const np = b[o]; o += 1;
+  for (let i = 0; i < np; i++) {
+    const l = b.readUInt16BE(o); o += 2;
+    out.push(Buffer.from([0, 0, 0, 1])); out.push(b.subarray(o, o + l)); o += l;
+  }
+  return Buffer.concat(out);
+}
+function feed264(key, data) {
+  if (!conn264) return;
+  try {
+    const payload = key ? Buffer.concat([spsPpsPrefix(), annxB(data)]) : annxB(data);
+    const head = Buffer.alloc(5);
+    head.writeUInt32BE(payload.length, 0);
+    head[4] = key ? 1 : 0;
+    conn264.write(Buffer.concat([head, payload]));
+  } catch { }
+}
+function start264() {
+  if (!CFG264.enabled) return;
+  const exe = join(HERE, 'rtc-h264', 'rtc-h264.exe');
+  if (!fileExists(exe)) { console.log('rtc264: exe missing, disabled'); return; }
+  const port = Number(CFG264.port) || 9800;
+  const feedPort = Number(CFG264.feedPort) || 9900;
+  try {
+    side264 = spawn(exe, ['-port', String(port), '-tcp', '127.0.0.1:' + feedPort], { stdio: 'ignore', windowsHide: true });
+    console.log('rtc264: sidecar started');
+  } catch (e) { console.log('rtc264: spawn failed ' + e.message); return; }
+  const connect = () => {
+    const c = net.connect(feedPort, '127.0.0.1');
+    conn264 = c;
+    c.on('connect', () => { console.log('rtc264: feed connected'); conn264Retry = 0; });
+    c.on('error', () => { });
+    c.on('close', () => {
+      conn264 = null;
+      if (side264 && conn264Retry < 100) { conn264Retry++; setTimeout(connect, 1500); }
+    });
+  };
+  setTimeout(connect, 800);
+}
 function attachH264Ws(server, key) {
   server.on('upgrade', (req, socket, head) => {
     let url;
@@ -3023,6 +3090,25 @@ function handler(req, res) {
     res.end(html);
     return;
   }
+  // ---- B 方案：Pion 侧车测试页/信令代理（同源，避免混合内容）--------------
+  // 侧车默认监听 127.0.0.1:9800；只有 ?rtc264=1 的页面会用到，未启动侧车时返回 502 不影响主链路。
+  if (url.pathname === '/rtc264/offer' || url.pathname === '/rtc264/answer') {
+    const targetPath = url.pathname === '/rtc264/offer' ? '/offer' : '/answer';
+    if (targetPath === '/offer') { try { h264Start(); } catch { } }   // 页面只走 WebRTC 时也要启动编码器
+    const chunks = [];
+    req.on('data', (c) => { chunks.push(c); if (chunks.reduce((a, b) => a + b.length, 0) > 1 << 20) req.destroy(); });
+    req.on('end', () => {
+      const body = Buffer.concat(chunks);
+      const r = http.request({ host: '127.0.0.1', port: Number(CFG264.port) || 9800, path: targetPath, method: req.method, headers: { 'content-type': 'application/json', 'content-length': body.length } }, (resp) => {
+        res.writeHead(resp.statusCode || 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        resp.pipe(res);
+      });
+      r.on('error', () => { try { res.writeHead(502); res.end('sidecar unavailable'); } catch { } });
+      if (body.length) r.write(body);
+      r.end();
+    });
+    return;
+  }
   if (url.pathname === '/h264-init') {
     const info = h264.initInfo;
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -3418,6 +3504,7 @@ for (const host of hosts) {
   } catch (e) {
     console.log('wt: disabled (' + (e && e.message) + ')');
   }
+  start264();
   attachH264Ws(s, KEY);
   attachH264Rtc(s, KEY);
   attachAudioWs(s, KEY);
