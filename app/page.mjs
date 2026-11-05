@@ -135,7 +135,6 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   <button id="snd">声音</button>
   <button id="ctl">控制</button>
   <button id="kbBtn">输入</button>
-  <button id="lowbw">省流量</button>
   <button id="zoomBtn" title="三指及以上手势的缩放方式">缩放</button>
   <button id="cmdBtn">命令</button>
   <span id="spacer"></span>
@@ -345,7 +344,6 @@ const btnSnd = document.getElementById('snd');
 const btnCtl = document.getElementById('ctl');
 const btnDesk = document.getElementById('deskBtn');
 const btnKb = document.getElementById('kbBtn');
-const btnLow = document.getElementById('lowbw');
 const kbbar = document.getElementById('kbbar');
 const kbtext = document.getElementById('kbtext');
 const kbsend = document.getElementById('kbsend');
@@ -979,6 +977,7 @@ async function startH264() {
   h264.ws = sock;
   sock.binaryType = 'arraybuffer';
   sock.onmessage = function (ev) {
+    try { if (ev && ev.data && typeof ev.data !== 'string') { window.__net = window.__net || { ws: 0, rtc: 0, mjpeg: 0 }; window.__net.ws += (ev.data.byteLength || 0) + 9; } } catch (e) { }
     if (typeof ev.data === 'string') {
       let m = null;
       try { m = JSON.parse(ev.data); } catch (e) { }
@@ -1044,6 +1043,7 @@ async function startH264() {
     try {
       const sig = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/h264-rtc?k=' + encodeURIComponent(KEY) + '&s=' + SID);
       const pc = new RTCPeerConnection({ iceServers: [] });
+      try { window.__pcRaw = pc; } catch (e) { }   // 流量测量用（dev/诊断）
       const ch = pc.createDataChannel('frames', { ordered: true, maxRetransmits: 0 });
       ch.binaryType = 'arraybuffer';
 
@@ -1063,6 +1063,7 @@ async function startH264() {
       };
       const parts = new Map();
       ch.onmessage = function (ev) {
+        try { if (ev && ev.data) { window.__net = window.__net || { ws: 0, rtc: 0, mjpeg: 0 }; window.__net.rtc += (ev.data.byteLength || 0) + 14; } } catch (e) { }
         const b = new Uint8Array(ev.data);
         if (b.length < 15) return;
         const dv = new DataView(ev.data);
@@ -1113,8 +1114,7 @@ function startMjpeg() {
   applyRect();
   vid.classList.remove('show');
   img.classList.add('show');
-  state.lowBw = true;
-  btnLow.classList.add('on');
+  state.lowBw = true;                 // 只有"浏览器不支持高清"的兜底会走到这里，不再是用户按钮
   startLowBw();
   setStat('低频画面（当前浏览器不支持高清）');
 }
@@ -1403,9 +1403,9 @@ btnSmooth.addEventListener('click', async () => {
   state.mode = 'raw'; btnSmooth.classList.add('on'); btnCrisp.classList.remove('on');
   applyRect();
   stopPcmAudio();                       // 流畅模式用 WebRTC 的音频轨，PCM 通道关掉
-  // 省流量只在清晰模式有意义；切到流畅时必须停掉轮询，否则会一直在后台拉 /frame.jpg
+  // 低频轮询只在清晰模式的兜底里用；切到流畅时必须停掉，否则会一直在后台拉 /frame.jpg
   stopLowBw();
-  if (state.lowBw) { state.lowBw = false; btnLow.classList.remove('on'); }
+  if (state.lowBw) state.lowBw = false;
   setNote('切换流畅模式…');
   await fetch('/rtc-on', { method: 'POST' });
   await loadSources(true);
@@ -1439,12 +1439,8 @@ btnSnd.addEventListener('click', () => {
   buzz(8);
 });
 
-btnLow.addEventListener('click', () => {
-  state.lowBw = !state.lowBw; btnLow.classList.toggle('on', state.lowBw);
-  if (state.mode !== 'mjpeg') { state.lowBw = false; btnLow.classList.remove('on'); setNote('省流量只在清晰模式有效'); return; }
-  if (state.lowBw) startLowBw(); else stopLowBw();
-  buzz(8);
-});
+// 省流量按钮已删除（2026-11-05）：清晰模式现在走 H.264，帧轮询只是"浏览器不支持高清"的
+// 兜底画面，对用户手动开关已没有意义；省流量改由 设置 → 高清串流（码率/分辨率/帧率）控制。
 
 function setControl(on) {
   state.control = on;
@@ -2360,8 +2356,8 @@ async function pollStats() {
       hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
         + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'));
     } else if (state.lowBw) {
-      // 省流量轮询：显示轮询参数，避免误读成视频帧率
-      hud.textContent = '省流量 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
+      // 兜底的低频画面：显示轮询参数，避免误读成视频帧率
+      hud.textContent = '低频画面 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
       const capMs = cap ? Number(cap[1]) : 0;
       const capFps = capMs > 0 ? (1000 / capMs).toFixed(1) : '?';
       const dN = drop ? Number(drop[1]) : 0;
@@ -2413,7 +2409,7 @@ addEventListener('resize', syncViewportHeight);
 addEventListener('orientationchange', syncViewportHeight);
 if (window.visualViewport) window.visualViewport.addEventListener('resize', syncViewportHeight);
 function bindImg(el) {
-  el.addEventListener('load', () => { imgOkAt = Date.now(); setStat(state.lowBw ? '省流量（2 帧/秒 · ' + lowBwWidth() + ' 宽）' : '直播中'); });
+  el.addEventListener('load', () => { imgOkAt = Date.now(); setStat(state.lowBw ? '低频画面（' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽）' : '直播中'); });
   el.addEventListener('error', () => { if (!stopped) setTimeout(() => startMjpeg(), 1200); });
 }
 bindImg(img);
@@ -3766,6 +3762,84 @@ bindImg(img);
     return h;
   }
 
+  // ---- 防窥屏（privacy mode）页面侧 ------------------------------------------
+  // 服务端负责真的盖住电脑本机屏幕；页面只负责开关、心跳（证明控制端还在）和换图。
+  // 设备 id 存 localStorage：同一台手机刷新页面后仍是"第一个开的"那台，能自己关掉。
+  function privacyBind(box) {
+    const tog = box.querySelector('#prvToggle');
+    const msg = box.querySelector('#prvMsg');
+    const pick = box.querySelector('#prvImgPick');
+    const del = box.querySelector('#prvImgDel');
+    const file = box.querySelector('#prvImgFile');
+    const imgMsg = box.querySelector('#prvImgMsg');
+    let dev = '';
+    try {
+      dev = localStorage.getItem('pa-dev') || '';
+      if (!dev) { dev = Math.random().toString(36).slice(2, 12); localStorage.setItem('pa-dev', dev); }
+    } catch (e) { dev = SID; }
+    const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
+    let beatTimer = null;
+    const stopBeat = () => { if (beatTimer) { clearInterval(beatTimer); beatTimer = null; } };
+    const startBeat = () => {
+      stopBeat();
+      beatTimer = setInterval(async () => {
+        try {
+          const r = await fetch('/privacy/beat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: dev }) });
+          const st = await r.json();
+          if (!st || !st.active) stopBeat();
+        } catch (e) { }
+      }, 20000);
+    };
+    const paint = (st) => {
+      const active = !!(st && st.active);
+      const mine = active && st.owner === dev;
+      if (tog) {
+        tog.textContent = active ? (mine ? '关闭防窥屏' : '已由其它设备开启') : '开启防窥屏';
+        tog.style.background = active ? '#7a2f2f' : '#2a2d36';
+        tog.disabled = active && !mine;
+      }
+      if (imgMsg) imgMsg.textContent = st && st.hasImage ? '当前：自定义图' : '当前：纯黑';
+      if (mine) { setMsg('已开启（电脑本机已遮住）', '#8CE58C'); startBeat(); }
+      else if (active) setMsg('另一台设备已开启（以先开的为准）', '#ffb454');
+      else setMsg('');
+      try { window.__prvActive = active; window.__prvMine = mine; } catch (e) { }
+    };
+    const refresh = () => fetch('/privacy/status', { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => { });
+    const post = (p, body) => fetch(p, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body || {}) }).then((r) => r.json());
+    if (tog) tog.addEventListener('click', async () => {
+      tog.disabled = true;
+      try {
+        if (window.__prvMine) { await post('/privacy/off', { sid: dev }); stopBeat(); }
+        else { const r = await post('/privacy/on', { sid: dev }); if (r && r.ok && r.owner) startBeat(); }
+        await refresh();
+      } catch (e) { setMsg('操作失败：' + (e && e.message), '#ff9d9d'); }
+      tog.disabled = false;
+    });
+    if (pick && file) pick.addEventListener('click', () => file.click());
+    if (file) file.addEventListener('change', async () => {
+      const f = file.files && file.files[0];
+      if (!f) return;
+      if (f.size > 5 * 1024 * 1024) { imgMsg.textContent = '图片太大（上限 5MB）'; return; }
+      imgMsg.textContent = '上传中…';
+      try {
+        const buf = await f.arrayBuffer();
+        const r = await fetch('/privacy/image', { method: 'POST', headers: { 'content-type': f.type || 'application/octet-stream' }, body: buf });
+        const j = await r.json();
+        imgMsg.textContent = j && j.ok ? '已更新锁屏图' : ('失败：' + ((j && j.error) || ''));
+        refresh();
+      } catch (e) { imgMsg.textContent = '上传失败'; }
+      try { file.value = ''; } catch (e) { }
+    });
+    if (del) del.addEventListener('click', async () => {
+      try {
+        const j = await (await fetch('/privacy/image', { method: 'DELETE' })).json();
+        imgMsg.textContent = j && j.ok ? '已恢复纯黑' : '失败';
+        refresh();
+      } catch (e) { imgMsg.textContent = '失败'; }
+    });
+    refresh();
+  }
+
   function openSettings(lic) {
     const ver = String(lic.version || '—');
     let body = '';
@@ -3898,14 +3972,36 @@ bindImg(img);
       '<div style="display:flex;gap:14px;flex-wrap:wrap;color:#c9ccd1;font-size:12.5px;align-items:center">'
       + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560（原生·需设备支持）</option></select></label>'
       + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option></select></label>'
-      + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps</option><option value="12000">12 Mbps</option><option value="15000">15 Mbps</option><option value="20000">20 Mbps</option><option value="30000">30 Mbps</option></select></label>'
+      + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps（≈3.4 GB/时）</option><option value="12000">12 Mbps（≈5.3 GB/时）</option><option value="15000">15 Mbps（≈6.7 GB/时）</option><option value="20000">20 Mbps（≈8.9 GB/时）</option><option value="30000">30 Mbps（≈13.4 GB/时）</option></select></label>'
       + '</div>'
-      + '<div style="color:#6b7078;font-size:11px;margin-top:8px">改完自动重启编码器；网络差就降帧率/码率，同网可 60fps。跨网建议 30fps + 8–12Mbps。</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
+      + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。</div>'
       + '<div id="hqFlow" style="font-size:12.5px;color:#8CE58C;margin-top:8px"></div>'
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>');
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
     body += setSection('个性化', p13nInner(lic));
+
+    // 防窥屏（privacy mode）：盖住电脑本机屏幕，手机端不受影响
+    body += setSection('防窥屏（电脑前的人看不到）',
+      '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">'
+      + '开启后，电脑本机会被一层锁屏图盖住：屏幕前的人看不到桌面、鼠标点不动；'
+      + '<b>你手机上的画面和控制不受影响</b>。<br>'
+      + '别的设备再开启不会抢（以先开的为准）；你关掉或断开后自动解除。最长 8 小时自动解除，防止把电脑锁死。'
+      + '</div>'
+      + '<div style="display:flex;gap:10px;align-items:center;margin-top:12px;flex-wrap:wrap">'
+      + '<button id="prvToggle" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:9px 15px;font-size:13px;cursor:pointer">开启防窥屏</button>'
+      + '<span id="prvMsg" style="font-size:12.5px;color:#868c96;flex:1;min-width:150px"></span>'
+      + '</div>'
+      + '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">'
+      + '<button id="prvImgPick" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:7px 12px;font-size:12.5px;cursor:pointer">自定义锁屏图…</button>'
+      + '<button id="prvImgDel" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:9px;'
+      + 'padding:7px 12px;font-size:12.5px;cursor:pointer">恢复纯黑</button>'
+      + '<input type="file" id="prvImgFile" accept="image/png,image/jpeg,image/webp" style="display:none">'
+      + '<span id="prvImgMsg" style="font-size:12px;color:#6b7078"></span>'
+      + '</div>');
 
 
     // 版本与更新
@@ -3935,6 +4031,7 @@ bindImg(img);
 
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
+    privacyBind(box);
     bindLicencePaste(box);
     // 连接体检（Tailscale）：打开设置时自动检测一次，可手动重测/一键拉起安装包
     tsBind(box);

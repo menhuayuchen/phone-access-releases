@@ -766,6 +766,104 @@ function onHealth264() {
   }
 }
 if (CFG264.enabled) setInterval(poll264, 5000);
+
+// ---- 防窥屏（privacy mode，2026-11-05）--------------------------------------
+// 原理：在被控电脑每块屏幕最上层盖一个全屏窗口，并用 WDA_EXCLUDEFROMCAPTURE 让它
+// **不出现在屏幕捕获里**（本机实测 ddagrab 抓不到它）。所以：
+//   电脑前的人 → 只看到黑屏/自定义锁屏图，鼠标点在覆盖窗上，看不到也操作不了；
+//   手机端     → 捕获到的还是真实桌面，画面和控制完全不受影响。
+// 安全兜底（防止把客户锁在电脑外）：lock-screen.ps1 会自己检查"服务端进程还在、心跳文件
+// 还在更新、没超最长时长"，任何一条不满足就撤窗口；服务端崩溃/被杀也会在几秒内自动解锁。
+const PRIVACY_STOP = join(HERE, 'privacy.stop');
+const PRIVACY_BEAT = join(HERE, 'privacy.beat');
+const privacy = { proc: null, owner: '', image: '', startedAt: 0, lastBeat: 0 };
+
+function privacyPicPath() {
+  for (const ext of ['png', 'jpg', 'webp']) {
+    const p = join(HERE, 'privacy-lock.' + ext);
+    if (fileExists(p)) return p;
+  }
+  return '';
+}
+function privacyJson() {
+  return {
+    active: !!privacy.proc,
+    owner: privacy.owner || '',
+    since: privacy.startedAt || 0,
+    hasImage: !!privacyPicPath(),
+    imageUrl: '/privacy/image'
+  };
+}
+function privacyStop(reason) {
+  const proc = privacy.proc;
+  privacy.proc = null;
+  privacy.owner = '';
+  privacy.startedAt = 0;
+  privacy.lastBeat = 0;
+  try { writeFileSync(PRIVACY_STOP, '1'); } catch { }
+  setTimeout(() => {
+    try { if (proc) proc.kill(); } catch { }
+    try { unlinkSync(PRIVACY_STOP); } catch { }
+    try { unlinkSync(PRIVACY_BEAT); } catch { }
+  }, 1000);
+  console.log('privacy: 关闭（' + reason + '）');
+}
+function privacyStart(sid) {
+  if (privacy.proc) {
+    return { ok: true, active: true, owner: privacy.owner === sid, note: '另一台设备已开启防窥屏（以先开的为准）' };
+  }
+  const script = join(HERE, 'lock-screen.ps1');
+  if (!fileExists(script)) return { ok: false, error: 'lock-screen.ps1 缺失' };
+  privacy.image = privacyPicPath();
+  try { unlinkSync(PRIVACY_STOP); } catch { }
+  try { writeFileSync(PRIVACY_BEAT, String(Date.now())); } catch { }
+  const args = ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script,
+    '-StopFile', PRIVACY_STOP, '-BeatFile', PRIVACY_BEAT, '-ParentPid', String(process.pid), '-MaxMinutes', '480'];
+  if (privacy.image) args.push('-ImagePath', privacy.image);
+  let child = null;
+  try {
+    child = spawn('powershell.exe', args, { stdio: 'ignore', windowsHide: true });
+  } catch (e) {
+    return { ok: false, error: String((e && e.message) || e) };
+  }
+  privacy.proc = child;
+  privacy.owner = sid;
+  privacy.startedAt = Date.now();
+  privacy.lastBeat = Date.now();
+  child.on('exit', (code) => {
+    if (privacy.proc === child) {
+      privacy.proc = null; privacy.owner = ''; privacy.startedAt = 0; privacy.lastBeat = 0;
+      console.log('privacy: 锁屏窗口退出 code=' + code);
+    }
+    try { unlinkSync(PRIVACY_STOP); } catch { }
+    try { unlinkSync(PRIVACY_BEAT); } catch { }
+  });
+  console.log('privacy: 开启（owner=' + sid + '，图=' + (privacy.image || '纯黑') + '）');
+  return { ok: true, active: true, owner: true };
+}
+// 心跳：3 秒刷一次 beat 文件（窗口靠它判断服务端还活着）；owner 120 秒没心跳自动关
+setInterval(() => {
+  if (!privacy.proc) return;
+  try { writeFileSync(PRIVACY_BEAT, String(Date.now())); } catch { }
+  if (privacy.lastBeat && Date.now() - privacy.lastBeat > 120000) privacyStop('控制端已断开');
+}, 3000).unref();
+
+function readBody(req, limit) {
+  return new Promise((resolve) => {
+    const chunks = [];
+    let n = 0, done = false;
+    req.on('data', (c) => { n += c.length; if (n > limit) { done = true; try { req.destroy(); } catch { } resolve(Buffer.alloc(0)); return; } chunks.push(c); });
+    req.on('end', () => { if (!done) resolve(Buffer.concat(chunks)); });
+    req.on('error', () => { if (!done) resolve(Buffer.alloc(0)); });
+  });
+}
+function privacyDetectImage(buf) {
+  if (buf.length > 8 && buf[0] === 0x89 && buf[1] === 0x50 && buf[2] === 0x4E && buf[3] === 0x47) return 'png';
+  if (buf.length > 3 && buf[0] === 0xFF && buf[1] === 0xD8) return 'jpg';
+  if (buf.length > 12 && buf.toString('ascii', 0, 4) === 'RIFF' && buf.toString('ascii', 8, 12) === 'WEBP') return 'webp';
+  return '';
+}
+
 function attachH264Ws(server, key) {
   server.on('upgrade', (req, socket, head) => {
     let url;
@@ -3295,6 +3393,102 @@ function handler(req, res) {
       r.end();
     });
     return;
+  }
+  // ---- 防窥屏（privacy mode）------------------------------------------------
+  // 规则：哪台设备先开就以它为准；别的设备再开也不会抢（只回状态）。
+  // 控制端断开（120 秒没心跳）或它自己关掉 → 自动撤掉锁屏，不会把电脑锁死。
+  if (url.pathname === '/privacy/status') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify(privacyJson()));
+    return;
+  }
+  if (url.pathname === '/privacy/on' && req.method === 'POST') {
+    readBody(req, 4096).then((b) => {
+      let m = {}; try { m = JSON.parse(String(b) || '{}'); } catch { }
+      const sid = String(m.sid || '').slice(0, 40);
+      if (!sid) { res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"ok":false,"error":"missing sid"}'); return; }
+      const r = privacyStart(sid);
+      res.writeHead(r.ok ? 200 : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(Object.assign({}, r, privacyJson())));
+    });
+    return;
+  }
+  if (url.pathname === '/privacy/off' && req.method === 'POST') {
+    readBody(req, 4096).then((b) => {
+      let m = {}; try { m = JSON.parse(String(b) || '{}'); } catch { }
+      const sid = String(m.sid || '').slice(0, 40);
+      if (privacy.proc && sid && privacy.owner && sid !== privacy.owner) {
+        // 不是第一个开的那台：不能关，回状态说明
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(Object.assign({ ok: true, owner: false, note: '另一台设备开启的，以先开的为准' }, privacyJson())));
+        return;
+      }
+      privacyStop(sid ? '控制端关闭' : '控制端关闭');
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(Object.assign({ ok: true, owner: true }, privacyJson())));
+    });
+    return;
+  }
+  if (url.pathname === '/privacy/beat' && req.method === 'POST') {
+    readBody(req, 4096).then((b) => {
+      let m = {}; try { m = JSON.parse(String(b) || '{}'); } catch { }
+      const sid = String(m.sid || '').slice(0, 40);
+      if (privacy.proc && sid === privacy.owner) privacy.lastBeat = Date.now();
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(privacyJson()));
+    });
+    return;
+  }
+  if (url.pathname === '/privacy/image') {
+    if (req.method === 'GET') {
+      const p = privacyPicPath();
+      if (!p) { res.writeHead(404); res.end('no image'); return; }
+      const ext = p.slice(p.lastIndexOf('.') + 1);
+      const type = ext === 'png' ? 'image/png' : (ext === 'webp' ? 'image/webp' : 'image/jpeg');
+      try {
+        const buf = readFileSync(p);
+        res.writeHead(200, { 'content-type': type, 'cache-control': 'no-store', 'content-length': buf.length });
+        res.end(buf);
+      } catch { try { res.writeHead(500); res.end('read fail'); } catch { } }
+      return;
+    }
+    if (req.method === 'POST') {
+      readBody(req, 6 * 1024 * 1024).then((buf) => {
+        const ext = privacyDetectImage(buf);
+        if (!ext || buf.length < 64) {
+          res.writeHead(400, { 'content-type': 'application/json; charset=utf-8' });
+          res.end('{"ok":false,"error":"只支持 png/jpg/webp 图片"}');
+          return;
+        }
+        try {
+          for (const e of ['png', 'jpg', 'webp']) { try { unlinkSync(join(HERE, 'privacy-lock.' + e)); } catch { } }
+          writeFileSync(join(HERE, 'privacy-lock.' + ext), buf);
+        } catch (e) {
+          res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+          res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) }));
+          return;
+        }
+        privacy.image = privacyPicPath();
+        // 正在显示时换图：关掉旧窗口再拉起（同一个 owner）
+        const owner = privacy.owner;
+        if (privacy.proc && owner) {
+          privacyStop('换锁屏图');
+          setTimeout(() => { try { privacyStart(owner); } catch { } }, 1500);
+        }
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(Object.assign({ ok: true, bytes: buf.length }, privacyJson())));
+      });
+      return;
+    }
+    if (req.method === 'DELETE') {
+      for (const e of ['png', 'jpg', 'webp']) { try { unlinkSync(join(HERE, 'privacy-lock.' + e)); } catch { } }
+      privacy.image = '';
+      const owner = privacy.owner;
+      if (privacy.proc && owner) { privacyStop('恢复纯黑'); setTimeout(() => { try { privacyStart(owner); } catch { } }, 1500); }
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify(Object.assign({ ok: true }, privacyJson())));
+      return;
+    }
   }
   if (url.pathname === '/h264-init') {
     const info = h264.initInfo;

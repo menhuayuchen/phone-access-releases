@@ -131,6 +131,7 @@ $appFiles = @(
   'install.cmd',
   'screen-server.mjs',
   'page.mjs',
+  'lock-screen.ps1',
   'rtc.mjs',
   'decode.mjs',
   'input.mjs',
