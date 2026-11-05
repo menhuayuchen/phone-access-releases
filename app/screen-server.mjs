@@ -558,12 +558,14 @@ function h264Stop() {
       if (!h264.killPending) return;
       try { proc.kill('SIGKILL'); } catch { }
       h264.killPending = false;
-      if (h264.startQueued) { h264.startQueued = false; h264Start(); }
+      if (h264.startQueued && (rtc264Alive() || h264.clients.size > 0)) { h264.startQueued = false; h264Start(); }
     }, 2500);
     proc.once('exit', () => {
       clearTimeout(t);
       h264.killPending = false;
-      if (h264.startQueued) { h264.startQueued = false; h264Start(); }
+      // 只有"确实有观众在等"才兑现排队的那次启动；否则会出现
+      // stop→exit→start→stop 每 5 秒空转一轮（2026-11-05 晚踩过）
+      if (h264.startQueued && (rtc264Alive() || h264.clients.size > 0)) { h264.startQueued = false; h264Start(); }
     });
   }
   h264.initInfo = null;
@@ -760,6 +762,7 @@ function onHealth264() {
   if (now - rtc264IdleSince > 15000 && h264.clients.size === 0 && h264.proc) {
     console.log('rtc264: 没有 WebRTC 会话也没有 WS 观众，停编码器');
     h264Stop();
+    rtc264IdleSince = now;      // 重置：避免每 5 秒重复 kill（也让排队启动的条件失效）
   }
 }
 if (CFG264.enabled) setInterval(poll264, 5000);
