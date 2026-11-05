@@ -2956,6 +2956,24 @@ function handler(req, res) {
     return;
   }
 
+  if (url.pathname === '/wt-test') {
+    const html = '<!doctype html><meta charset="utf-8"><body style="background:#111;color:#eee;font:16px system-ui;padding:20px">'
+      + '<h3>WebTransport 测试</h3><div id="o">连接中…</div><div id="o2" style="opacity:.7;margin-top:12px"></div>'
+      + '<script>'
+      + 'const H="' + 'ftYqxxytlicCFp4MsLIlWuNaGOWxXsXZbyxsc/fwxEw=' + '";'
+      + 'function hb(){const b=atob(H);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}'
+      + '(async()=>{const o=document.getElementById("o");const url="https://"+location.hostname+":8444/wt";'
+      + 'try{const wt=new WebTransport(url,{serverCertificateHashes:[{algorithm:"sha-256",value:hb()}]});await wt.ready;'
+      + 'const w=wt.datagrams.writable.getWriter();await w.write(new TextEncoder().encode("hi"));'
+      + 'const r=await wt.datagrams.readable.getReader().read();o.textContent="PASS 证书固定模式，回显 "+r.value.length+" 字节";'
+      + '}catch(e){o.textContent="FAIL 证书固定模式: "+e.message;'
+      + 'try{const wt2=new WebTransport(url);await wt2.ready;o.textContent+=" / 普通模式 OK";}catch(e2){document.getElementById("o2").textContent="普通模式也失败: "+e2.message;}}'
+      + '})();'
+      + '</scr'+'ipt></body>';
+    res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(html);
+    return;
+  }
   if (url.pathname === '/h264-init') {
     const info = h264.initInfo;
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
