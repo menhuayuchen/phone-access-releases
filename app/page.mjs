@@ -922,6 +922,32 @@ async function pushRtcQuality() {
 }
 
 
+// ---- 流畅模式：按真实丢包自适应（比只按 RTT 更贴近实际）--------------------
+let rtcLastLost = 0, rtcLastRecv = 0;
+async function rtcLossAdapt() {
+  if (!pc || state.mode !== 'raw') return;
+  try {
+    const st = await pc.getStats();
+    let lost = 0, recv = 0;
+    st.forEach((r) => {
+      if (r.type === 'inbound-rtp' && r.kind === 'video') {
+        lost = r.packetsLost || 0;
+        recv = r.packetsReceived || 0;
+      }
+    });
+    const dLost = lost - rtcLastLost, dRecv = recv - rtcLastRecv;
+    rtcLastLost = lost; rtcLastRecv = recv;
+    if (dRecv + dLost < 40) return;
+    const rate = dLost / (dRecv + dLost);
+    if (rate > 0.05 && Date.now() - rtcQAt > 25000) {
+      const next = { kbps: Math.max(600, Math.round(lastQ.kbps * 0.6)), fps: Math.max(10, Math.round(lastQ.fps * 0.8)) };
+      try { await fetch('/rtc-quality?kbps=' + next.kbps + '&fps=' + next.fps, { method: 'POST' }); } catch (e) { }
+      lastQ = next; rtcQAt = Date.now(); rtcRetry = 0;
+      setNote('网络丢包 ' + (rate * 100).toFixed(0) + '%，已降到 ' + next.kbps + 'kbps / ' + next.fps + 'fps', 3500);
+      restartRtc();
+    }
+  } catch (e) { }
+}
 async function restartRtc() {
   stopRtc();
   // 服务器重启后 rtcMode 会回到 false，重连前再打开一次，否则服务端不喂帧、只有声音。
@@ -955,7 +981,16 @@ async function restartRtc() {
   gotVideo = false;
   pc.ontrack = (e) => {
     remote.addTrack(e.track);
-    if (e.track.kind === 'video') gotVideo = true;
+    if (e.track.kind === 'video') {
+      gotVideo = true;
+      // 压低浏览器侧抖动缓冲：跨网时默认缓冲往往 100–200ms，这里尽量压到 50–80ms
+      try {
+        if (e.receiver) {
+          if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 60;
+          if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0.06;
+        }
+      } catch (err) { }
+    }
     vid.play().catch(() => {});
   };
   pc.onconnectionstatechange = () => {
@@ -2156,7 +2191,8 @@ bindImg(img);
     startMjpeg();
   }
   pollStats();
-  statsTimer = setInterval(pollStats, 2000);
+  statsTimer = setInterval(pollStats, 2000);   // 顺带每 6 秒做一次 WebRTC 丢包自适应
+  setInterval(() => { if (state.mode === 'raw' && pc) rtcLossAdapt(); }, 6000);
   window.__page = { state, contentBox, toScreen, toPage, layoutPoint };   // 调试用
   setNote('');
 })();

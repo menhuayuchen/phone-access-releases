@@ -1,0 +1,10 @@
+./cache.go
+./client.go
+./config.go
+./conn.go
+./dns_sd.go
+./errors.go
+./mdns.go
+./networking.go
+./records.go
+./server.go

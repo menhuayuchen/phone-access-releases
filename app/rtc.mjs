@@ -34,7 +34,7 @@ export function createRtc({ log = () => {}, rawStampFn = () => 0, prime = DEFAUL
   // 默认值给局域网用；页面按自己测到的 RTT 调 setQuality()。
   // 改动：帧率 15 -> 24。15fps 用来远程控制明显发飘（用户反馈不够顺），24 与清晰模式一致。
 // 码率保持 3000 不变：24fps 下每帧分到的比特更少，但真实帧率上去了，体感更好。
-let qKbps = 3000, qFps = 24;
+let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低码率/24fps，网络好时再升
   const senderPcs = new Set();
     let lastFeed = 0;
   const peers = new Set();
@@ -189,8 +189,8 @@ let qKbps = 3000, qFps = 24;
     }
   }
   function setQuality(kbps, fps) {
-    if (Number.isFinite(kbps) && kbps >= 300 && kbps <= 8000) qKbps = kbps;
-    if (Number.isFinite(fps) && fps >= 5 && fps <= 30) qFps = fps;
+    if (Number.isFinite(kbps) && kbps >= 300 && kbps <= 20000) qKbps = kbps;
+    if (Number.isFinite(fps) && fps >= 5 && fps <= 60) qFps = fps;
     applyQuality();
     return { kbps: qKbps, fps: qFps };
   }
