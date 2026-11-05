@@ -21,7 +21,7 @@
 
 param(
   [string]$AppDir = '',        # 产品代码目录（默认=本脚本所在目录）
-  [string]$ProdDir = '',  # 生产目录（只读，留空表示不对比）
+  [string]$ProdDir = (Join-Path $env:LOCALAPPDATA 'PhoneAccess'),  # 生产目录（只读，默认取本机安装目录）
   [string]$OutDir = '',        # 输出目录（默认=<产品根>\dist）
   [string]$NodeExe = '',       # 指定 node.exe（默认自动找 v24.21.0 那一份）
   [string]$ExpectedNodeVersion = 'v24.21.0',
@@ -69,8 +69,8 @@ if (-not $AppDir) { $AppDir = Split-Path -Parent $MyInvocation.MyCommand.Path }
 if (-not (Test-Path -LiteralPath $AppDir -PathType Container)) { Stop-Pack ('找不到产品代码目录：' + $AppDir) }
 $AppDir = (Resolve-Path -LiteralPath $AppDir).Path.TrimEnd('\')
 
-if (-not (Test-Path -LiteralPath $ProdDir -PathType Container)) { Stop-Pack ('找不到生产目录（只读来源）：' + $ProdDir) }
-$ProdDir = (Resolve-Path -LiteralPath $ProdDir).Path.TrimEnd('\')
+if ($ProdDir -and -not (Test-Path -LiteralPath $ProdDir -PathType Container)) { Stop-Pack ('找不到生产目录（只读来源）：' + $ProdDir) }
+if ($ProdDir) { $ProdDir = (Resolve-Path -LiteralPath $ProdDir).Path.TrimEnd('\') }
 
 if ($ProdDir -eq $AppDir) { Stop-Pack '生产目录和产品目录是同一个，拒绝打包（会把生产文件混进包）。' }
 
