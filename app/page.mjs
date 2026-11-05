@@ -55,6 +55,15 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
 #fsBtn:hover, #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
 body.fs #fsBtn { opacity:.30; background:rgba(10,10,12,.20); }
 body.fs #fsBtn:hover, body.fs #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
+/* 游戏模式（Moonlight）按钮：右侧边缘垂直居中，和全屏按钮对称，同样半透明 */
+#gameBtn { position:fixed; right:0; top:50%; transform:translateY(-50%); z-index:10001; width:26px; height:64px;
+         border:1px solid rgba(255,255,255,.14); border-right:0; border-radius:12px 0 0 12px;
+         background:rgba(24,24,28,.22); color:rgba(255,255,255,.85);
+         font-size:15px; padding:0; cursor:pointer; opacity:.38; transition:opacity .2s, background .2s;
+         backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px); }
+#gameBtn:hover, #gameBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
+body.fs #gameBtn { opacity:.30; background:rgba(10,10,12,.20); }
+body.fs #gameBtn:hover, body.fs #gameBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
 body.fs header, body.fs #hint, body.fs #hud, body.fs #stat { display:none !important; }
 body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:9996; }
 #img, #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
@@ -153,6 +162,7 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
   <span id="hud"></span>
 </header>
 <button id="fsBtn" title="全屏（隐藏所有按钮和状态栏）">⛶</button>
+<button id="gameBtn" title="游戏模式（用 Moonlight 打开）">🎮</button>
 <div id="zoomPop" role="dialog" aria-label="缩放方式">
   <div class="zpTitle">三指及以上缩放</div>
   <button class="zpOpt" data-m="system">系统缩放<small>Ctrl+滚轮，电脑里的软件自己放大</small></button>
@@ -231,6 +241,31 @@ document.addEventListener('fullscreenchange', function () {
     if (fsBtn) fsBtn.textContent = '⛶';
   }
 });
+
+// ---- 游戏模式：一键深链到 Moonlight（硬核玩家用 Sunshine+Moonlight）----
+// Android 用 intent 打开 Moonlight 包；其它平台先试 moonlight://（没装就什么都不会发生）。
+function moonDeepLink() {
+  const ua = navigator.userAgent || '';
+  if (/Android/i.test(ua)) return 'intent://#Intent;package=com.limelight;end';
+  return 'moonlight://';
+}
+const gameBtn = document.getElementById('gameBtn');
+async function openGameMode() {
+  let st = null;
+  try { st = await (await fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' })).json(); } catch (e) { st = null; }
+  const ready = !!(st && st.installed && st.webUp && st.credentialsSet && st.licensed);
+  if (ready) {
+    try { setNote('正在打开 Moonlight…（没反应说明手机还没装 Moonlight）', 6000); } catch (e) { }
+    try { location.href = moonDeepLink(); } catch (e) { }
+  } else {
+    try { const g = document.getElementById('paGear'); if (g) g.click(); } catch (e) { }
+    setTimeout(function () {
+      try { const el = document.getElementById('secSunshine'); if (el) el.scrollIntoView({ block: 'center' }); } catch (e) { }
+    }, 500);
+    try { setNote('高性能模式还没就绪：先在设置里装好 Sunshine 和 Moonlight（页面会引导）', 7000); } catch (e) { }
+  }
+}
+if (gameBtn) gameBtn.addEventListener('click', function () { openGameMode().catch(function () { }); });
 
 // ---- 画面缩放（只放大手机上的显示，不动电脑）--------------------------------
 // 系统缩放 = 三指及以上发 Ctrl+滚轮，由电脑里的软件自己缩放；
@@ -3399,10 +3434,17 @@ bindImg(img);
           h += '<div style="margin-top:8px;color:#868c96;font-size:12px">组件下载地址还没配置'
             + '（上传组件后把链接和 SHA256 填进 product.config.json → components.sunshine）。</div>';
         }
-      } else if (!s.webUp) {
-        h = setPill(false, '', '已安装未运行') + '<div style="margin-top:8px">Sunshine 已装但服务没运行：重启一次电脑（或桌面「重启」）后再看。</div>';
-      } else if (!s.credentialsSet) {
-        h = setPill(false, '', '待初始化') + '<div style="margin-top:8px">已安装，等「手机远程」初始化凭据：重启一次就绪。</div>';
+      } else if (!s.webUp || !s.credentialsSet) {
+        const jobInit = s.init || {};
+        const initBusy = jobInit.phase === 'running';
+        h = setPill(false, '', s.credentialsSet ? '已安装未运行' : '待初始化')
+          + '<div style="margin-top:8px">' + (s.credentialsSet
+            ? 'Sunshine 已装但服务没运行：点下面初始化（会弹管理员授权），或重启电脑。'
+            : 'Sunshine 已装，但还没生成配对凭据：点下面初始化（会弹管理员授权）。') + '</div>'
+          + '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+          + '<button id="ssInit" ' + (initBusy ? 'disabled' : '') + ' style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:9px 15px;font-size:13px;cursor:pointer' + (initBusy ? ';opacity:.6' : '') + '">' + (initBusy ? '初始化中…' : '一键初始化高性能模式') + '</button>'
+          + '<span id="ssInitMsg" style="font-size:12px;color:#868c96">' + escHtml(initBusy ? '等电脑上点「是」（管理员授权）…' : (jobInit.phase === 'error' ? jobInit.error : '')) + '</span>'
+          + '</div>';
       } else if (!s.licensed) {
         h = setPill(false, '', '未授权') + '<div style="margin-top:8px">高性能模式需要许可证或处于试用期内；现在可以继续用网页模式。</div>';
       } else {
@@ -3411,7 +3453,12 @@ bindImg(img);
           selectedId = (pairings && pairings.length) ? pairings[0].id : '';
         }
         h = setPill(true, '已就绪', '')
-          + step(1, '手机装 <b>Moonlight</b>（安卓：GitHub 的 moonlight-android releases；iOS：App Store 搜 Moonlight）')
+          + '<div style="display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap">'
+          + '<a id="ssOpen" href="' + moonDeepLink() + '" style="background:#2f6feb;color:#fff;border-radius:9px;padding:9px 15px;font-size:13px;text-decoration:none">🎮 用 Moonlight 打开</a>'
+          + '<button id="ssCopyHost" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:9px 13px;font-size:12.5px;cursor:pointer">复制电脑地址</button>'
+          + '<a href="https://github.com/moonlight-stream/moonlight-android/releases" target="_blank" rel="noopener" style="color:#8fb6ff;font-size:12.5px;align-self:center">Moonlight 下载</a>'
+          + '</div>'
+          + step(1, '手机装 <b>Moonlight</b>（安卓：上面的链接；iOS：App Store 搜 Moonlight）')
           + step(2, 'Moonlight 里添加电脑：<code style="color:#8fb6ff">' + escHtml((s.sunshine && s.sunshine.name) || host) + '</code>（地址用 <code>' + escHtml(host) + '</code>）')
           + step(3, 'Moonlight 显示 4 位 PIN → 填下面 → 点「完成配对」')
           + '<div id="ssPairs">' + pairsHtml(pairings) + '</div>'
@@ -3419,6 +3466,11 @@ bindImg(img);
           + '<input id="ssPin" inputmode="numeric" maxlength="4" placeholder="4 位 PIN" style="width:110px;background:#0f1014;color:#e8eaee;'
           + 'border:1px solid #262932;border-radius:9px;padding:8px 11px;font:14px ui-monospace,Consolas,monospace">'
           + '<button id="ssPair" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 15px;font-size:12.5px;cursor:pointer">完成配对</button></div>'
+          + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
+          + '<div style="color:#aeb3bb;font-size:12.5px">游戏要在这里加：<a id="ssAdmin" target="_blank" rel="noopener" style="color:#8fb6ff">打开 Sunshine 管理页</a>'
+          + '<span id="ssAdminMsg" style="font-size:11.5px;color:#6b7078;margin-left:6px"></span></div>'
+          + '<div style="color:#6b7078;font-size:11px;margin-top:4px">管理页是电脑本机的 https 页面；第一次打开浏览器会提示证书不安全，选「继续」即可（只在你自己的 tailnet 内）。</div>'
+          + '</div>'
           + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
           + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">清空配对（连不上时用）</button></div>';
       }
@@ -3427,6 +3479,43 @@ bindImg(img);
       if (pinEl && prevPin) pinEl.value = prevPin;
       if (bodyEl.querySelector('#ssPairs')) bindPairs(pairings || []);
       if (bodyEl.querySelector('#ssComp')) bindComponent();
+      // 一键初始化（已装 Sunshine 但没凭据/服务没起）：点了以后自动轮询状态
+      const initBtn = bodyEl.querySelector('#ssInit');
+      if (initBtn) initBtn.addEventListener('click', async () => {
+        const msgEl = bodyEl.querySelector('#ssInitMsg');
+        initBtn.disabled = true;
+        initBtn.textContent = '初始化中…';
+        if (msgEl) msgEl.textContent = '等电脑上点「是」（管理员授权）…';
+        try { await fetch('/sunshine-init', { method: 'POST' }); } catch (e) { }
+        let n = 0;
+        const iv = setInterval(() => {
+          n++;
+          if (n > 48 || !document.body.contains(box)) { clearInterval(iv); return; }
+          poll();
+        }, 2500);
+      });
+      // 游戏模式的快捷入口：复制电脑地址 / 管理页（自动带出账号密码并复制密码）
+      const copyHost = bodyEl.querySelector('#ssCopyHost');
+      if (copyHost) copyHost.addEventListener('click', async () => {
+        try {
+          await navigator.clipboard.writeText(location.hostname);
+          copyHost.textContent = '已复制：' + location.hostname;
+        } catch (e) { setMsg('复制失败，请手动记：' + location.hostname, '#ffb454'); }
+      });
+      const adminLink = bodyEl.querySelector('#ssAdmin');
+      if (adminLink) adminLink.addEventListener('click', async (ev) => {
+        ev.preventDefault();
+        const msgEl = bodyEl.querySelector('#ssAdminMsg');
+        try {
+          const c = await fetch('/sunshine-creds?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+          if (!c || !c.ok) { if (msgEl) msgEl.textContent = '还没初始化账号（重启一次电脑）'; return; }
+          try { await navigator.clipboard.writeText(c.password); } catch (e) { }
+          if (msgEl) msgEl.textContent = '账号 ' + c.username + ' · 密码已复制到剪贴板';
+          window.open('https://' + location.hostname + ':47990/', '_blank', 'noopener');
+        } catch (e) {
+          if (msgEl) msgEl.textContent = '打开失败：' + (e && e.message);
+        }
+      });
     };
     const poll = async () => {
       let s = null;
@@ -4145,7 +4234,8 @@ bindImg(img);
 
     // 高性能模式（Sunshine/Moonlight）——2026-11-03 S3：电脑装好 Sunshine 后，手机装 Moonlight 用 PIN 配对。
     body += setSection('高性能模式（Moonlight）',
-      '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
+      '<div id="secSunshine"></div>'
+      + '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
       + '<button id="ssRefresh" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
       + 'padding:8px 13px;font-size:12.5px;cursor:pointer">刷新</button>'

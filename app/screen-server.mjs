@@ -1190,8 +1190,41 @@ async function downloadAndInstallSunshine() {
   }
   throw new Error('安装没有完成（可能没点管理员授权，或安装器报错）');
 }
-function attachAudioWs(server, key) {
-  server.on('upgrade', (req, socket, head) => {
+// ---- 高性能模式初始化/修复（已装 Sunshine 但没凭据时用；会弹 UAC）----------------
+let sunshineInitJob = { phase: 'idle', error: '', startedAt: 0 };
+async function runSunshineInit() {
+  if (sunshineInitJob.phase === 'running') return sunshineInitJob;
+  sunshineInitJob = { phase: 'running', error: '', startedAt: Date.now() };
+  const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const integ = join(HERE, 'sunshine-integration.ps1');
+  if (!fileExists(integ)) { sunshineInitJob = { phase: 'error', error: '缺少 sunshine-integration.ps1', startedAt: Date.now() }; return sunshineInitJob; }
+  const runner = join(HERE, 'sunshine-init-run.ps1');
+  try {
+    writeFileSync(runner, [
+      '$ErrorActionPreference = "Continue"',
+      'Start-Process powershell -Verb RunAs -ArgumentList @(',
+      '  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ' + JSON.stringify(integ) + ',',
+      '  "-Action", "install", "-AppDir", ' + JSON.stringify(HERE) + ', "-Quiet"',
+      ') | Out-Null'
+    ].join('\r\n'), 'utf8');
+  } catch (e) {
+    sunshineInitJob = { phase: 'error', error: String(e.message || e), startedAt: Date.now() };
+    return sunshineInitJob;
+  }
+  await new Promise((resolve) => {
+    const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner], { stdio: 'ignore', windowsHide: true });
+    child.on('exit', resolve);
+    child.on('error', resolve);
+  });
+  // 凭据文件出现就算完成（不要求服务立即起来：服务需要几秒）
+  for (let i = 0; i < 45; i++) {
+    if (fileExists(SUNSHINE_CRED_FILE)) { sunshineInitJob = { phase: 'done', error: '', startedAt: sunshineInitJob.startedAt }; return sunshineInitJob; }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  sunshineInitJob = { phase: 'error', error: '初始化没完成（可能没点管理员授权）', startedAt: sunshineInitJob.startedAt };
+  return sunshineInitJob;
+}
+function attachAudioWs(server, key) {  server.on('upgrade', (req, socket, head) => {
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
     // 改动（第二轮 P4-4）：这里是**最后**一个 upgrade 处理器（rtc.mjs 先注册、只认 /rtc），
@@ -2784,6 +2817,7 @@ function handler(req, res) {
           webUp: webUp,
           credentialsSet: creds,
           licensed: isFullFunction(),
+          init: sunshineInitJob,
           component: {
             configured: (Array.isArray(sunshineComp.urls) && sunshineComp.urls.length > 0 && !!sunshineComp.sha256),
             job: sunshineJob
@@ -2792,6 +2826,24 @@ function handler(req, res) {
         }));
       } catch { }
     })();
+    return;
+  }
+  // 高性能模式：管理页账号（只给已通过鉴权的页面；用于在手机上打开 Sunshine 管理页加游戏）
+  // 高性能模式：一键初始化/修复（已安装但没凭据时；会弹 UAC）
+  if (url.pathname === '/sunshine-init' && req.method === 'POST') {
+    runSunshineInit().catch(() => { });
+    try {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, job: sunshineInitJob }));
+    } catch { }
+    return;
+  }
+  if (url.pathname === '/sunshine-creds') {
+    const c = readSunshineCreds();
+    try {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: !!c, username: c ? c.username : '', password: c ? c.password : '', host: sunshineHost() }));
+    } catch { }
     return;
   }
   if (url.pathname === '/sunshine-pairings') {
