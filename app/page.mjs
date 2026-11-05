@@ -576,7 +576,6 @@ function stopH264() {
     h264.ws = null;
   }
   h264.sb = null; h264.ms = null; h264.queue = []; h264.appended = 0; h264.okAt = 0; h264.configured = false;
-  h264.wsKey = false;
   try { vid.removeAttribute('src'); } catch (e) { }
   try { vid.srcObject = null; } catch (e) { }
 }
@@ -685,7 +684,6 @@ async function startH264() {
   h264.gen = (h264.gen || 0) + 1;
   const myGen = h264.gen;
   h264.configured = false;
-  h264.wsKey = false;
   h264.pendingFrames = [];
   h264.frames = 0;
   h264.fps = 0; h264.fpsAt = Date.now(); h264.fpsN = 0;
@@ -744,7 +742,7 @@ async function startH264() {
         setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 400);
         return;
       }
-      setNote('高清连续解码失败，已切到低频画面', 6000);
+      setNote('高清连续解码失败，已切到低频画面: ' + ((e && e.message) || ''), 8000);
       startMjpeg();
     }
   });
@@ -763,7 +761,7 @@ async function startH264() {
           h264.decoder.configure({ codec: m.codec, description: desc, optimizeForLatency: true });
           h264.streamW = m.width || 0;
           h264.streamH = m.height || 0;
-          h264.configured = true; h264.bootTries = 0; h264.errCount = 0;
+          h264.configured = true; h264.bootTries = 0; h264.errCount = 0; setNote('HD init ok', 4000);
         } catch (e) {
           console.log('h264 configure failed', e && e.message);
           const cw = Number(m.width) || 0;
@@ -786,7 +784,6 @@ async function startH264() {
     if (!h264.configured) return;
     const ts = new DataView(ev.data).getInt32(0);
     const key = buf[4] === 1;
-    if (!h264.wsKey) { if (!key) return; h264.wsKey = true; }
     const len = new DataView(ev.data).getUint32(5);
     if (len <= 0 || buf.length < 9 + len) return;
     try {
@@ -798,6 +795,7 @@ async function startH264() {
     }
   };
   sock.onclose = function () {
+    setNote('HD 连接关闭', 5000);
     if (state.mode !== 'h264' || stopped) return;
     setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 1500);
   };
@@ -874,6 +872,8 @@ async function startH264() {
   }
 }function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
+  try { setNote('已切到低频画面(诊断)', 6000); } catch (e) { }
+  try { setNote('已切到低频画面', 4000); } catch (e) { }
   // MJPEG 流已退役（2026-11-04）：浏览器不支持 WebCodecs 或高清失败时，
   // 改用低频画面轮询（/frame.jpg），保留"能看见、能点"的基本能力。
   stopH264();
@@ -2123,11 +2123,10 @@ async function pollStats() {
           + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
     } else if (state.mode === 'h264') {
       hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
-        + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'))
         + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'));
-      // 省流量不走 MJPEG 流，服务器 out= 恒为 0，显示帧率会误导，这里直接标轮询参数
+    } else if (state.lowBw) {
+      // 省流量轮询：显示轮询参数，避免误读成视频帧率
       hud.textContent = '省流量 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
-    } else if (out) {
       const capMs = cap ? Number(cap[1]) : 0;
       const capFps = capMs > 0 ? (1000 / capMs).toFixed(1) : '?';
       const dN = drop ? Number(drop[1]) : 0;
