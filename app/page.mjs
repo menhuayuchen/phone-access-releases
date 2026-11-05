@@ -644,6 +644,47 @@ function startWtTransport() {
 let rtc264Gen = 0;
 const RTC264 = { pc: null, sid: '', watchdog: null, statsTimer: null, attempts: 0, startedAt: 0, firstVideo: false, busy: false };
 try { window.__rtc264 = RTC264; } catch (e) { }   // 诊断/端到端测试用
+
+// ---- 码率自动（可选，默认关）------------------------------------------------
+// 设计：设置里「自动」按钮，默认不开启；开启后按 WebRTC 丢包自动升降码率
+// （6–20 Mbps），只在 WebRTC264 通道生效。手动码率永远优先——用户一选固定值就退出自动。
+// 注意：这段必须在**最外层作用域**（rtc264Stats 里要用 autoqTag；放进设置面板的闭包里会
+// 变成 ReferenceError 被 catch 吞掉，表现就是状态栏一直停在「WebRTC264 连接中」）。
+const AUTOQ = { on: false, kbps: 12000, lastApply: 0, badStreak: 0, goodStreak: 0, lastLost: 0, lastRecv: 0 };
+try { AUTOQ.on = localStorage.getItem('hqAuto') === '1'; AUTOQ.kbps = Number(localStorage.getItem('hqAutoKbps')) || 12000; } catch (e) { }
+function autoqTag() { return AUTOQ.on ? (' · 自动' + Math.round(AUTOQ.kbps / 1000) + 'M') : ''; }
+async function autoqApply(kbps) {
+  AUTOQ.kbps = Math.max(6000, Math.min(20000, Math.round(Number(kbps) || 12000)));
+  AUTOQ.lastApply = Date.now();
+  try { localStorage.setItem('hqAutoKbps', String(AUTOQ.kbps)); } catch (e) { }
+  try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: AUTOQ.kbps }) }); } catch (e) { }
+}
+function autoqTick() {
+  if (!AUTOQ.on) return;
+  const pc = RTC264.pc;
+  if (!pc || state.mode !== 'h264' || document.hidden) return;
+  pc.getStats().then(function (st) {
+    let lost = 0, recv = 0, rtt = 0;
+    st.forEach(function (r) {
+      if (r.type === 'inbound-rtp' && r.kind === 'video') { lost = r.packetsLost || 0; recv = r.packetsReceived || 0; }
+      if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime) rtt = r.currentRoundTripTime;
+    });
+    const dLost = lost - AUTOQ.lastLost, dRecv = recv - AUTOQ.lastRecv;
+    AUTOQ.lastLost = lost; AUTOQ.lastRecv = recv;
+    const total = dLost + dRecv;
+    if (total < 30) return;
+    const loss = dLost / total;
+    if (loss > 0.03) { AUTOQ.badStreak++; AUTOQ.goodStreak = 0; }
+    else if (loss < 0.005) { AUTOQ.goodStreak++; AUTOQ.badStreak = 0; }
+    else { AUTOQ.goodStreak = 0; }
+    const now = Date.now();
+    if (now - AUTOQ.lastApply < 15000) return;      // 降/升之间至少隔 15 秒，避免编码器反复重启
+    if (AUTOQ.badStreak >= 2 && AUTOQ.kbps > 6000) { autoqApply(AUTOQ.kbps * 0.65); AUTOQ.badStreak = 0; return; }
+    if (AUTOQ.goodStreak >= 5 && rtt < 0.15 && AUTOQ.kbps < 20000) { autoqApply(AUTOQ.kbps * 1.25); AUTOQ.goodStreak = 0; }
+  }).catch(function () { });
+}
+setInterval(function () { try { autoqTick(); } catch (e) { } }, 4000);
+try { if (AUTOQ.on) setTimeout(function () { autoqApply(AUTOQ.kbps); }, 1500); } catch (e) { }
 function rtc264Mode() {
   try { return new URLSearchParams(location.search).get('rtc264') === 'relay' ? 'relay' : 'all'; } catch (e) { return 'all'; }
 }
@@ -3054,45 +3095,6 @@ bindImg(img);
   }
   // ---- 小文件传输（2026-11-03，A5 第二步）--------------------------------------
   // 上传：XHR 原始字节流 POST /file?name=…（带进度）；列表/下载：GET /files、GET /file?name=…
-  // ---- 码率自动（可选，默认关）---------------------------------------------
-  // 设计：设置里「自动」按钮，默认不开启；开启后按 WebRTC 丢包自动升降码率
-  // （6–20 Mbps），只在 WebRTC264 通道生效。手动码率永远优先——用户一选固定值就退出自动。
-  const AUTOQ = { on: false, kbps: 12000, lastApply: 0, badStreak: 0, goodStreak: 0, lastLost: 0, lastRecv: 0 };
-  try { AUTOQ.on = localStorage.getItem('hqAuto') === '1'; AUTOQ.kbps = Number(localStorage.getItem('hqAutoKbps')) || 12000; } catch (e) { }
-  function autoqTag() { return AUTOQ.on ? (' · 自动' + Math.round(AUTOQ.kbps / 1000) + 'M') : ''; }
-  async function autoqApply(kbps) {
-    AUTOQ.kbps = Math.max(6000, Math.min(20000, Math.round(Number(kbps) || 12000)));
-    AUTOQ.lastApply = Date.now();
-    try { localStorage.setItem('hqAutoKbps', String(AUTOQ.kbps)); } catch (e) { }
-    try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: AUTOQ.kbps }) }); } catch (e) { }
-  }
-  function autoqTick() {
-    if (!AUTOQ.on) return;
-    const pc = RTC264.pc;
-    if (!pc || state.mode !== 'h264' || document.hidden) return;
-    pc.getStats().then(function (st) {
-      let lost = 0, recv = 0, rtt = 0;
-      st.forEach(function (r) {
-        if (r.type === 'inbound-rtp' && r.kind === 'video') { lost = r.packetsLost || 0; recv = r.packetsReceived || 0; }
-        if (r.type === 'candidate-pair' && r.state === 'succeeded' && r.currentRoundTripTime) rtt = r.currentRoundTripTime;
-      });
-      const dLost = lost - AUTOQ.lastLost, dRecv = recv - AUTOQ.lastRecv;
-      AUTOQ.lastLost = lost; AUTOQ.lastRecv = recv;
-      const total = dLost + dRecv;
-      if (total < 30) return;
-      const loss = dLost / total;
-      if (loss > 0.03) { AUTOQ.badStreak++; AUTOQ.goodStreak = 0; }
-      else if (loss < 0.005) { AUTOQ.goodStreak++; AUTOQ.badStreak = 0; }
-      else { AUTOQ.goodStreak = 0; }
-      const now = Date.now();
-      if (now - AUTOQ.lastApply < 15000) return;      // 降/升之间至少隔 15 秒，避免编码器反复重启
-      if (AUTOQ.badStreak >= 2 && AUTOQ.kbps > 6000) { autoqApply(AUTOQ.kbps * 0.65); AUTOQ.badStreak = 0; return; }
-      if (AUTOQ.goodStreak >= 5 && rtt < 0.15 && AUTOQ.kbps < 20000) { autoqApply(AUTOQ.kbps * 1.25); AUTOQ.goodStreak = 0; }
-    }).catch(function () { });
-  }
-  setInterval(function () { try { autoqTick(); } catch (e) { } }, 4000);
-  try { if (AUTOQ.on) setTimeout(function () { autoqApply(AUTOQ.kbps); }, 1500); } catch (e) { }
-
   function h264QualityBind(box) {
     const wSel = box.querySelector('#hqW');
     const fpsSel = box.querySelector('#hqFps');
