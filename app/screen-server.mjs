@@ -462,7 +462,7 @@ function h264Start() {
     // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
-      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']
+      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']
       : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
