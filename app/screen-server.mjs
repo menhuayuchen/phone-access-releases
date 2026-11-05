@@ -466,7 +466,7 @@ function h264Start() {
       : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
-    '-frag_duration', '2000', '-flush_packets', '1',
+    '-frag_duration', '5000', '-flush_packets', '1',
     'pipe:1'
   ];
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
