@@ -145,7 +145,8 @@ const FFMPEG_EXE = join(HERE, 'bin', 'ffmpeg.exe');
 const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
 let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
-let H264_RECT = null;   // 指定显示器/窗口时先 crop（屏幕坐标）
+let H264_RECT = null;
+let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）   // 指定显示器/窗口时先 crop（屏幕坐标）
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 // 编码器：优先 NVENC（硬编，延迟低、CPU 几乎为 0），不可用时回退 h264_mf（软编）
@@ -456,12 +457,11 @@ function h264Start() {
     // 低延迟输入：不探测/不缓存
     '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
     '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0`,
-    '-filter_complex', h264Filter(),
-    '-map', '[v]',
+    ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
     // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
-      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '4', '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']
+      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']
       : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(H264_FPS), '-bf', '0']),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
@@ -2982,11 +2982,12 @@ function handler(req, res) {
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
       if (Number.isFinite(w) && w >= 640) {
-        H264_W = evenDown(Math.min(Math.min(CAP_W, 1920), Math.round(w)));   // 手机解码器对 >1920 宽支持不稳，先封顶 1920
+        H264_W = evenDown(Math.min(CAP_W, Math.round(w)));
         H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
       }
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       if (H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;
+      H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;
       // 重启编码器让新参数生效（页面会重新连接）
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
       h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
