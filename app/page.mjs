@@ -514,7 +514,6 @@ function lowBwUrl() {
 // 远处（4G / Tailscale 中继）推不动 2560×1600 全帧：一帧约 190KB，24fps ≈ 36Mbps，
 // 服务端只能不停丢帧，表现为"越来越卡、延迟越来越大"。这里按服务端回报的丢帧数
 // 和排队帧数自动降档（1280 宽一帧约 45KB），带宽够了再自己升回去。
-const W_LADDER = [2560, 1920];   // 只保留"满清晰"和"应急半档"两级：同一 Wi-Fi 下 2560 能跑满就不许乱跳
 // 默认就是 2560 满清晰，只有连续两次真的塞满才退到 1920（60 秒内不再升回，避免来回跳）
 let streamW = 2560;   // 默认满清晰（Wi-Fi 直连实测 24.5fps 0 丢帧）；真塞满了才自动降档
 let goodPolls = 0;
@@ -528,81 +527,6 @@ let advisedSlow = false;
 // 调试用：?rtt=300 可以假装链路延迟是 300ms，用来验证降码率/降档逻辑（正常访问不带即可）
 const rttForce = Number(new URLSearchParams(location.search).get('rtt') || 0);
 
-function streamUrl() {
-  const base = '/stream?k=' + encodeURIComponent(KEY) + '&s=' + SID;   // SID：丢帧只算自己这条流
-  if (streamW >= 2560) return base + '&t=' + Date.now();      // 全速：透传抓屏原始 JPEG
-  return base + '&w=' + streamW + '&q=65&t=' + Date.now();     // 窄带：服务端缩小后再发
-}
-
-function setStreamW(w) {
-  if (w === streamW) return;
-  const down = w < streamW;
-  streamW = w;
-  goodPolls = 0;
-  badPolls = 0;
-  if (down) holdUntil = Date.now() + 60000;
-  try { setNote(down ? ('带宽不够，清晰度降到 ' + w + ' 宽') : ('清晰度提到 ' + w + ' 宽'), down ? 4000 : 2500); } catch (e) {}
-  if (state.mode === 'mjpeg' && !state.lowBw && !stopped) {
-    abortStream();
-    setTimeout(() => { if (!stopped && state.mode === 'mjpeg' && !state.lowBw) showStream(); }, 120);
-  }
-}
-
-function adaptStream(outFps, inFps, drops, lag) {
-  if (state.mode !== 'mjpeg' || state.lowBw || stopped || !imgOkAt) return;
-  const idx = Math.max(0, W_LADDER.indexOf(streamW));
-  // 只有两级：2560 → 1920。降档必须是"连续两次都塞满"才动，避免一次抖动就换流导致画面跳。
-  const canDown = idx < W_LADDER.length - 1;
-  const starved = inFps >= 8 && outFps < inFps * 0.85;   // 抓屏本身没跑起来（刚重启）时不算塞车
-  if (drops >= 10 || lag >= 4) {
-    goodPolls = 0;
-    if (++badPolls >= 2 && canDown) { badPolls = 0; setStreamW(W_LADDER[idx + 1]); }
-    return;
-  }
-  if (starved) {                                  // 帧率跟不上但还没报丢
-    if (++badPolls >= 2 && canDown) { badPolls = 0; setStreamW(W_LADDER[idx + 1]); }
-    return;
-  }
-  badPolls = 0;
-  const healthy = drops === 0 && lag <= 1 && inFps > 0 && outFps >= inFps * 0.9;
-  if (healthy) {
-    if (++goodPolls >= 6 && idx > 0 && Date.now() > holdUntil) { goodPolls = 0; setStreamW(W_LADDER[idx - 1]); }
-  } else goodPolls = 0;
-}
-
-let swapGen = 0;
-// 双缓冲换流：新的 <img> 先隐形加载，等它出第一帧再顶掉旧的。
-// 换档、断流重连、服务器重启都不会再黑一下屏。
-function showStream() {
-  if (!img.classList.contains('show')) return;
-  const old = img;
-  const ni = document.createElement('img');
-  ni.id = 'img';
-  ni.className = 'show';
-  ni.style.opacity = '0';
-  bindImg(ni);
-  const myGen = ++swapGen;
-  let done = false;
-  const discard = () => { try { ni.removeAttribute('src'); } catch (e) {} ni.remove(); };
-  const up = () => {
-    if (done) return;
-    if (myGen !== swapGen || state.mode !== 'mjpeg') { done = true; discard(); return; }
-    // 新的还没解出画面时，绝不能把旧的摘掉——否则服务端一重启，屏幕就黑着等十几秒。
-    // 旧帧停在那是"卡住"，用户能接受；黑屏不行。
-    if (!ni.naturalWidth && old.isConnected && old.naturalWidth) { setTimeout(up, 900); return; }
-    done = true;
-    ni.style.opacity = '';
-    img = ni;
-    applyView();   // 换流后画面缩放状态要接着生效
-    try { old.removeAttribute('src'); } catch (e) {}   // 关掉旧流，别让服务端挂着两条连接
-    old.remove();
-  };
-  ni.addEventListener('load', up);
-  ni.addEventListener('error', () => { if (!done) { done = true; discard(); } });
-  ni.src = streamUrl();
-  stage.appendChild(ni);
-  setTimeout(up, 1200);   // 兜底：1.2 秒还没出画面就再看一眼（旧帧还在就继续等）
-}
 function stopLowBw() {
   if (lowTimer) { clearInterval(lowTimer); lowTimer = null; }
 }
@@ -625,14 +549,6 @@ function abortStream() {
   try { img.removeAttribute('src'); } catch (e) {}
 }
 
-function startMjpeg() {
-  stopLowBw();
-  img.classList.add('show');
-  vid.classList.remove('show');
-  imgOkAt = Date.now();
-  // 切换来源/切模式后要重新按当前状态决定走流还是走轮询，否则省流量会静默失效
-  if (state.lowBw && state.mode === 'mjpeg') startLowBw(); else showStream();
-}
 // ---- 高清模式（H.264 / MSE，2026-11-04）------------------------------------
 // 服务端用 ffmpeg（h264_mf）把画面编成 fMP4，这里用 MSE 播放：
 // 同画质带宽比 MJPEG 低一个数量级，手机还走硬件解码。ffmpeg 缺失/浏览器不支持时自动回落 MJPEG。
@@ -665,15 +581,7 @@ function stopH264() {
   try { vid.removeAttribute('src'); } catch (e) { }
   try { vid.srcObject = null; } catch (e) { }
 }
-function h264Pump() {
-  const sb = h264.sb;
-  if (!sb || sb.updating || h264.queue.length === 0) return;
-  try {
-    sb.appendBuffer(h264.queue.shift());
-    h264.appended++;
-  } catch (e) { console.log('h264 append failed', e && e.message); }
-}
-async function startH264() {
+function startH264() {
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   if (!st || !st.enabled) { startMjpeg(); return; }
@@ -1208,7 +1116,7 @@ btnSnd.addEventListener('click', () => {
 btnLow.addEventListener('click', () => {
   state.lowBw = !state.lowBw; btnLow.classList.toggle('on', state.lowBw);
   if (state.mode !== 'mjpeg') { state.lowBw = false; btnLow.classList.remove('on'); setNote('省流量只在清晰模式有效'); return; }
-  if (state.lowBw) startLowBw(); else { stopLowBw(); showStream(); }
+  if (state.lowBw) startLowBw(); else stopLowBw();
   buzz(8);
 });
 
@@ -2105,7 +2013,6 @@ async function pollStats() {
         if (++deadPolls >= 2) { deadPolls = 0; setStat('断流重连中…'); startMjpeg(); }
       } else deadPolls = 0;
     } else deadPolls = 0;
-    if (out && !state.lowBw) adaptStream(Number(out[1]), inp ? Number(inp[1]) : 0, drop ? Number(drop[1]) : 0, lagM ? Number(lagM[1]) : 0);
     const nowT = performance.now();
     if (vfcAt) {
       const dt = (nowT - vfcAt) / 1000;
