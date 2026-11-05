@@ -493,6 +493,7 @@ srcSel.addEventListener('change', async () => {
   await postMode({ monitor: state.monitor, window: state.window });
   setNote('已切换来源');
   buzz(8);
+  try { syncWin264(); } catch (e) { }
   if (state.mode === 'mjpeg') startMjpeg(); else if (state.mode === 'h264') { h264.graceUntil = Date.now() + 4000; fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rect: state.rect }) }).catch(function () {}); setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 250); } else restartRtc();
 });
 
@@ -685,6 +686,19 @@ function autoqTick() {
 }
 setInterval(function () { try { autoqTick(); } catch (e) { } }, 4000);
 try { if (AUTOQ.on) setTimeout(function () { autoqApply(AUTOQ.kbps); }, 1500); } catch (e) { }
+
+// ---- 单窗口采集（实验）--------------------------------------------------------
+// 选中窗口时把句柄交给服务端，用 PrintWindow 只抓这个窗口（被挡住也能抓到），
+// 帧率受 PrintWindow 限制约 10–30fps；不选窗口就回普通全屏采集。
+function win264On() { try { return localStorage.getItem('win264') === '1'; } catch (e) { return false; } }
+function syncWin264() {
+  let hwnd = 0;
+  try { hwnd = (win264On() && state.window) ? Number(state.window) : 0; } catch (e) { hwnd = 0; }
+  try {
+    return fetch('/h264-window', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ hwnd: hwnd }) })
+      .then(function (r) { return r.json(); }).catch(function () { return null; });
+  } catch (e) { return Promise.resolve(null); }
+}
 function rtc264Mode() {
   try { return new URLSearchParams(location.search).get('rtc264') === 'relay' ? 'relay' : 'all'; } catch (e) { return 'all'; }
 }
@@ -968,6 +982,7 @@ document.addEventListener('visibilitychange', function () {
 });
 async function startH264() {
   stopRtc264();                       // 从 WebRTC264 切回来时先收掉 RTC 会话，避免两路同时解码
+  try { syncWin264(); } catch (e) { }  // 单窗口采集开关：切到清晰模式时把当前窗口/全屏重新告诉服务端
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   h264.wt = (st && st.wt) || null;
@@ -3039,6 +3054,7 @@ bindImg(img);
     const fpsSel = box.querySelector('#hqFps');
     const kSel = box.querySelector('#hqKbps');
     const qfCb = box.querySelector('#hqQf');
+    const winCb = box.querySelector('#hqWin');
     const autoBtn = box.querySelector('#hqAuto');
     const msg = box.querySelector('#hqMsg');
     if (!wSel || !fpsSel || !kSel) return;
@@ -3091,6 +3107,17 @@ bindImg(img);
         if (state.mode === 'h264') restartH264();
       } catch (e) { setMsg('应用失败', '#ff6b6b'); }
     });
+    // 单窗口采集（实验）
+    if (winCb) {
+      try { winCb.checked = win264On(); } catch (e) { }
+      winCb.addEventListener('change', async () => {
+        try { localStorage.setItem('win264', winCb.checked ? '1' : '0'); } catch (e) { }
+        await syncWin264();
+        if (winCb.checked) setMsg(state.window ? '单窗口采集已开：当前选中窗口生效（约 10–30fps）' : '单窗口采集已开：先在上方选一个「窗口」才会生效', '#8CE58C');
+        else setMsg('已切回普通全屏采集', '#8CE58C');
+        if (state.mode === 'h264') restartH264();
+      });
+    }
     const updateFlow = () => {
       const el = box.querySelector('#hqFlow');
       const k = AUTOQ.on ? AUTOQ.kbps : (Number(kSel.value) || 0);
@@ -4106,6 +4133,8 @@ bindImg(img);
       + '<div id="hqFlow" style="font-size:12.5px;color:#8CE58C;margin-top:8px"></div>'
       + '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
       + '<input type="checkbox" id="hqQf"> 画质优先（文字更锐；延迟约 +1 帧，流量会波动）</label>'
+      + '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
+      + '<input type="checkbox" id="hqWin"> 单窗口采集（实验：只传选中的窗口，被挡住也能抓；约 10–30fps）</label>'
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>');
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）

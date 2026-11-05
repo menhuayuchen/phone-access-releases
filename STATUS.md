@@ -1522,3 +1522,25 @@ HTTP 全部超时，端口仍在监听所以守护看不出来，用户卡了 6 
 
 实测：开 → ffmpeg 命令行确认 `-preset p4 -tune hq -rc vbr -cq 22 ... -maxrate 20000K`，
 e2e 首帧 0.4 秒、画面正常；关 → 恢复 p1；UI 勾选与 `/h264-quality` 双向一致；配置文件落盘 qualityFirst。
+
+### 42.12 单窗口采集（实验）（2026-11-05 22:2x，未发布）
+
+用户之前提过"选窗口其实只是裁剪屏幕、被挡住就抓错"。这轮加了真正的按窗口采集：
+
+- 新组件 `app\win-capture.cs` → `bin\win-capture.exe`：用 `PrintWindow(PW_RENDERFULLCONTENT)`
+  抓指定窗口的**客户区**（含 DPI 感知），以 BGRA 原始帧写 stdout，stderr 先报 `SIZE w h`；
+  客户区尺寸变化返回 2，窗口消失返回 3。
+- 服务端：`/h264-window` POST `{hwnd}` 切换（0=回全屏）；窗口模式下
+  `win-capture.exe → ffmpeg rawvideo(bgra) → scale(min(iw,1920)) → NVENC → 同一套 fMP4/侧车`；
+  帧率封顶 30（PrintWindow 每帧 20–60ms）；空窗口/缺组件自动回退全屏。
+- 页面：设置 → 高清串流 新增「单窗口采集（实验）」勾选（默认关，存本机），
+  选中窗口后自动把 hwnd 交给服务端并重连；切回显示器/全部屏幕自动回全屏。
+
+实测：
+- `PrintWindow` 抓被蓝色窗口盖住的绿色 GDI 窗口 → 中心像素仍是绿色（未被遮挡影响）；
+- Chrome（GPU 合成）窗口：gdigrab 抓到全黑（不可用），`PrintWindow` 成功抓到页面内容（洋红）；
+- 端到端：hwnd=Chrome 测试窗 → 页面收到 1268x920 画面、帧/解正常、首帧 1.6s；
+- `/h264-status` 增加 `win`；pack.ps1 带上 `bin\win-capture.exe`。
+
+限制（如实写进说明）：帧率约 10–30fps（比裁剪+全屏 60fps 低）；输入坐标仍按窗口矩形换算，
+边框/标题栏有几像素偏差；少数 UWP/游戏窗口可能黑屏，遇到就关掉这个开关。

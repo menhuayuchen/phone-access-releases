@@ -161,6 +161,8 @@ let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
 // 画质优先（可选，默认关）：p4+hq、VBR+CQ，静态更清晰，流量会波动
 let H264_QF = cfgH264.qualityFirst === true;
+// 单窗口采集（实验）：>0 时用 win-capture.exe 抓这个窗口，0 = 普通全屏 ddagrab
+let H264_WIN = 0;
 let wtSrv = null;
 // B 方案：Pion 侧车（可选，默认关闭；开启后把帧转 Annex-B 通过 TCP 喂侧车）
 const CFG264 = (cfgH264.rtc264 || {});
@@ -485,18 +487,9 @@ function h264Filter() {
   return vf;
 }
 
-function h264Start() {
-  // killPending：上一只 ffmpeg 还没退干净。**这时绝不能再 spawn**，
-  // 否则会同时跑多只编码器、共用一个解析缓冲（2026-11-05 晚就是这样卡死 node 的）。
-  if (!H264_ENABLED || h264.proc || h264.killPending) return;
-  if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
-  const args = [
-    '-hide_banner', '-loglevel', 'error', '-nostdin',
-    // 低延迟输入：不探测/不缓存
-    '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
-    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0`,
-    ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
-    // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
+// 编码参数（ddagrab 全屏采集和单窗口采集共用）
+function h264EncArgs() {
+  return [
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
       ? (H264_QF
@@ -512,24 +505,18 @@ function h264Start() {
     '-frag_duration', '5000', '-flush_packets', '1',
     'pipe:1'
   ];
-  console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
+}
+
+function h264ResetCounters() {
   h264.initInfo = null;
   h264.pending = Buffer.alloc(0);
   h264.bytes = 0;
   h264.tsUs = 0;
   h264.frames = 0;
-  let proc = null;
-  try {
-    proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
-  } catch (e) {
-    h264.lastError = String(e.message || e);
-    console.log('h264: spawn failed ' + h264.lastError);
-    h264.proc = null;
-    return;
-  }
-  h264.proc = proc;
-  h264.startedAt = Date.now();
-  // 旧进程的输出一律丢掉：它们和当前 h264.pending 混在一起会把 fMP4 解析搅烂
+}
+
+// ffmpeg 输出/退出都走这里：旧进程（被 h264Stop 脱钩的）一律忽略，避免把解析器搅烂
+function h264AttachEncoder(proc) {
   const isCurrent = () => h264.proc === proc;
   proc.stdout.on('data', (d) => {
     if (!isCurrent()) return;
@@ -546,7 +533,9 @@ function h264Start() {
     const wasCurrent = isCurrent();
     if (wasCurrent) { h264.proc = null; h264.killPending = false; }
     console.log('h264: ffmpeg exit ' + code + (wasCurrent ? '' : '（旧进程，忽略）'));
-    if (!wasCurrent) return;                    // 被 h264Stop 脱钩的进程：不触发重启
+    if (!wasCurrent) return;
+    // 单窗口模式下编码器死了，采集端也要一起收掉，否则 h264Start 会被 h264.cap 挡住
+    if (h264.cap) { const c = h264.cap; h264.cap = null; try { c.kill(); } catch { } }
     if (h264.clients.size > 0 || rtc264Alive()) {
       setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Start(); }, 1500);
     }
@@ -554,8 +543,120 @@ function h264Start() {
   proc.on('error', (e) => { if (isCurrent()) h264.lastError = String(e.message || e); });
 }
 
+function h264Start() {
+  // killPending：上一只 ffmpeg 还没退干净。**这时绝不能再 spawn**，
+  // 否则会同时跑多只编码器、共用一个解析缓冲（2026-11-05 晚就是这样卡死 node 的）。
+  // h264.cap：单窗口采集端正在启动（还没起 ffmpeg），也不能重复 spawn。
+  if (!H264_ENABLED || h264.proc || h264.killPending || h264.cap) return;
+  if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
+  if (H264_WIN > 0) return h264StartWindow();
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-nostdin',
+    // 低延迟输入：不探测/不缓存
+    '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
+    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0`,
+    ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
+    ...h264EncArgs()
+  ];
+  console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
+  h264ResetCounters();
+  let proc = null;
+  try {
+    proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  } catch (e) {
+    h264.lastError = String(e.message || e);
+    console.log('h264: spawn failed ' + h264.lastError);
+    h264.proc = null;
+    return;
+  }
+  h264.proc = proc;
+  h264.startedAt = Date.now();
+  h264AttachEncoder(proc);
+}
+
+// 单窗口采集：win-capture.exe 把窗口客户区以 BGRA 原始帧写到 stdout，
+// 直接喂 ffmpeg 的 rawvideo（PrintWindow 即使窗口被挡也能拿到它自己的画面）。
+// 帧率封顶 30：PrintWindow 每帧约 20–60ms，再高也跑不满。
+function h264StartWindow() {
+  const helper = join(HERE, 'bin', 'win-capture.exe');
+  if (!fileExists(helper)) { console.log('h264: 缺 win-capture.exe，回退全屏采集'); H264_WIN = 0; return h264Start(); }
+  const capFps = Math.max(5, Math.min(30, H264_FPS));
+  h264ResetCounters();
+  let cap = null;
+  try {
+    cap = spawn(helper, [String(H264_WIN), String(capFps)], { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+  } catch (e) {
+    h264.lastError = String(e.message || e);
+    H264_WIN = 0;
+    return h264Start();
+  }
+  h264.cap = cap;
+  h264.startedAt = Date.now();
+  console.log('h264: window capture hwnd=' + H264_WIN + ' @' + capFps + 'fps');
+  let started = false, errBuf = '';
+  const startEncoder = (w, h) => {
+    if (started || h264.cap !== cap) return;
+    started = true;
+    const args = [
+      '-hide_banner', '-loglevel', 'error', '-nostdin',
+      '-f', 'rawvideo', '-pix_fmt', 'bgra', '-s', w + 'x' + h, '-r', String(capFps), '-i', 'pipe:0',
+      // 窗口尺寸可能是奇数（NVENC 要求偶数），且过大的窗口缩到 1920 宽再编码
+      '-vf', 'scale=min(iw\\,1920):-2:flags=lanczos+accurate_rnd,format=nv12',
+      ...h264EncArgs()
+    ];
+    let ff = null;
+    try {
+      ff = spawn(FFMPEG_EXE, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true });
+    } catch (e) {
+      h264.lastError = String(e.message || e);
+      H264_WIN = 0;
+      try { cap.kill(); } catch { }
+      return;
+    }
+    h264.proc = ff;
+    try { cap.stdout.pipe(ff.stdin); } catch (e) { }
+    h264AttachEncoder(ff);
+    console.log('h264: window encoder ' + w + 'x' + h);
+  };
+  cap.stderr.on('data', (d) => {
+    if (h264.cap !== cap) return;
+    errBuf += String(d);
+    if (!started) {
+      const m = errBuf.match(/SIZE (\d+) (\d+)/);
+      if (m) startEncoder(Number(m[1]), Number(m[2]));
+    } else {
+      const s = errBuf.trim();
+      if (s) h264.lastError = s.split('\n').slice(-1)[0];
+    }
+    if (errBuf.length > 4096) errBuf = errBuf.slice(-1024);
+  });
+  cap.on('exit', (code) => {
+    if (h264.cap !== cap) return;
+    h264.cap = null;
+    console.log('h264: window capture exit ' + code);
+    if (code === 2) {            // 客户区尺寸变了：重启整条管线
+      h264.startQueued = true;
+      h264Stop();
+      setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.killPending) h264Start(); }, 1200);
+    } else if (code === 3) {     // 窗口关了：回退全屏采集
+      H264_WIN = 0;
+      h264.startQueued = true;
+      h264Stop();
+      setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.killPending) h264Start(); }, 1200);
+    } else {
+      if (h264.proc) { try { h264.proc.kill(); } catch { } }
+      // 采集端起来就挂了（没等到 SIZE）：稍后重试一次，别让画面一直黑着
+      if (rtc264Alive() || h264.clients.size > 0) {
+        setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.cap && !h264.killPending) h264Start(); }, 1500);
+      }
+    }
+  });
+}
+
 function h264Stop() {
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
+  // 单窗口模式：采集端必须一起收掉，否则 h264Start 会被 h264.cap 挡住
+  if (h264.cap) { const c = h264.cap; h264.cap = null; try { c.kill(); } catch { } }
   const proc = h264.proc;
   if (proc) {
     // 先脱钩：这只进程的输出/退出都不再影响状态；等它真退出了才允许再 spawn
@@ -3575,6 +3676,24 @@ function handler(req, res) {
       writeFileSync(p, JSON.stringify(c, null, 2), 'utf8');
     } catch (e) { console.log('h264: 保存画质优先设置失败 ' + e.message); }
   }
+  // 单窗口采集（实验）：{ hwnd: 1234 } 开启，{ hwnd: 0 } 回全屏
+  if (url.pathname === '/h264-window' && req.method === 'POST') {
+    let b = '';
+    req.on('data', (c) => { b += c; if (b.length > 2048) req.destroy(); });
+    req.on('end', () => {
+      let m = {};
+      try { m = JSON.parse(b || '{}'); } catch { }
+      const hw = Number(m.hwnd) || 0;
+      H264_WIN = hw > 0 ? Math.round(hw) : 0;
+      console.log('h264: window mode -> ' + (H264_WIN ? ('hwnd ' + H264_WIN) : 'full screen'));
+      if (h264.proc || h264.cap) h264Stop();
+      h264.startQueued = true;
+      setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.killPending) h264Start(); }, 600);
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, win: H264_WIN }));
+    });
+    return;
+  }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
     if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, maxCapture: CAP_W });
@@ -3617,6 +3736,9 @@ function handler(req, res) {
       fps: H264_FPS,
       kbps: H264_KBPS,
       viewers: h264.clients.size,
+      // 单窗口采集（实验）：非 0 表示正在抓这个窗口
+      win: H264_WIN,
+      qf: H264_QF,
       // B 方案（Pion WebRTC H.264）默认通道：页面默认走它，?rtc264=0 可强制旧 WS 通道
       rtc: { enabled: !!(CFG264.enabled && fileExists(RTC264_EXE)), port: RTC264_PORT, turn: RTC264_TURN_PORT },
       wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,

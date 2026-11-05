@@ -503,6 +503,17 @@ if (Test-Path -LiteralPath $ffmpegExe) {
 } else {
   Write-WarnLine '没有网页端 H.264 组件（未找到 app\bin\ffmpeg.exe）：网页端继续用 MJPEG'
 }
+# 可选组件：单窗口采集（实验，2026-11-05）。app\bin\win-capture.exe 存在就带上；
+# 缺失时服务端自动回退全屏采集，不影响主流程。
+$winCapExe = Join-Path $AppDir 'bin\win-capture.exe'
+if (Test-Path -LiteralPath $winCapExe) {
+  $binDstWin = Join-Path $stage 'bin'
+  if (-not (Test-Path -LiteralPath $binDstWin)) { $null = New-Item -ItemType Directory -Path $binDstWin -Force }
+  Copy-Item -LiteralPath $winCapExe -Destination (Join-Path $binDstWin 'win-capture.exe') -Force
+  Write-OkLine ('单窗口采集组件已带上（bin\win-capture.exe，' + (Format-Mb (Get-Item -LiteralPath $winCapExe).Length) + '）')
+} else {
+  Write-WarnLine '没有单窗口采集组件（未找到 app\bin\win-capture.exe）：只影响"单窗口采集（实验）"开关'
+}
 
 # 可选组件：B 方案侧车（Pion WebRTC H.264，2026-11-05）。
 # app\rtc-h264\rtc-h264.exe 是本地 Go 构建产物（不进仓库）；存在就带上，没有只少一条低延迟通道。
