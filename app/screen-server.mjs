@@ -13,6 +13,19 @@ import { PAGE } from './page.mjs';
 // rtc.mjs 的 1280。换到非 2560 宽的机器后这几处判断集体偏掉，表现为清晰度错/莫名降档/RTC 比例怪且不报错。
 // 现在由启动脚本按主显示器物理分辨率算好传进来；没传就读 product.config.json；都没有才用 2560×1600 兜底。
 
+// 网络抖动（客户端强退/断网）会触发 Socket 'error'（ECONNRESET/EPIPE）。
+// 以前没有护栏会直接抛到进程级 → 整个画面服务退出（表现为手机长时间黑屏、随后掉省流量）。
+process.on('uncaughtException', (e) => {
+  const code = e && e.code;
+  if (code === 'ECONNRESET' || code === 'EPIPE' || code === 'ECONNABORTED') {
+    console.log('net: ignored ' + code);
+    return;
+  }
+  console.error('uncaught: ' + ((e && e.stack) || e));
+});
+process.on('unhandledRejection', (e) => {
+  console.error('unhandledRejection: ' + ((e && e.message) || e));
+});
 import http, { createServer } from 'node:http';
 import https from 'node:https';
 import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream, createWriteStream } from 'node:fs';
