@@ -4043,6 +4043,10 @@ bindImg(img);
         connInner += setKv('实时', '<span style="color:#aeb3bb">' + escHtml(hud.textContent.trim()) + '</span>');
       }
     } catch (e) { }
+    // 状态数值开关（原来靠 MutationObserver 往高清串流里注入，藏得太深不好找；
+    // 2026-11-05 用户反馈「关掉数据显示的选项不见了」，改成这一节里的固定勾选）
+    connInner += '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
+      + '<input type="checkbox" id="hudToggle"> 显示帧率/分辨率等状态数值</label>';
     body += setSection('连接与画面', connInner);
 
     // 连接体检（Tailscale）——2026-11-03 A1/A3：装没装、登没登、在不在线、手机是直连还是中继。
@@ -4216,6 +4220,15 @@ bindImg(img);
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
     privacyBind(box);
+    // 状态数值开关（与 HUD 共用 localStorage 'hudvis'）
+    const hudT = box.querySelector('#hudToggle');
+    if (hudT) {
+      try { hudT.checked = localStorage.getItem('hudvis') !== '0'; } catch (e) { }
+      hudT.addEventListener('change', () => {
+        try { localStorage.setItem('hudvis', hudT.checked ? '1' : '0'); } catch (e) { }
+        try { if (window.__paHudVis) window.__paHudVis.apply(); } catch (e) { }
+      });
+    }
     // 诊断导出
     const diagBtn = box.querySelector('#diagBtn');
     if (diagBtn) diagBtn.addEventListener('click', async () => {
@@ -4627,7 +4640,13 @@ bindImg(img);
     var h = document.getElementById('hud');
     var KEYV = 'hudvis';
     function visible() { return localStorage.getItem(KEYV) !== '0'; }
-    function applyVis() { if (h) h.style.display = visible() ? '' : 'none'; }
+    // 开关同时管 #hud（帧率/分辨率）和 #stat（状态栏实时值），否则平板横屏关掉一个还剩另一个在刷新
+    function applyVis() {
+      var on = visible();
+      if (h) h.style.display = on ? '' : 'none';
+      var s = document.getElementById('stat');
+      if (s) s.style.display = on ? '' : 'none';
+    }
     function fmt() {
       if (!h) return;
       applyVis();
@@ -4636,23 +4655,7 @@ bindImg(img);
       if (txt.indexOf(' · ') >= 0) h.textContent = txt.split(' · ').join('\n');
     }
     if (h) { new MutationObserver(fmt).observe(h, { childList: true, characterData: true, subtree: true }); fmt(); }
-    // 设置面板出现后注入「显示状态数值」开关
-    var injected = false;
-    function inject() {
-      if (injected) return;
-      var anchor = document.getElementById('hqFlow') || document.getElementById('hqW');
-      if (!anchor) return;
-      var box = document.createElement('label');
-      box.style.cssText = 'display:flex;align-items:center;gap:6px;font-size:12.5px;color:#c9ccd1;margin-top:8px';
-      var cb = document.createElement('input');
-      cb.type = 'checkbox'; cb.id = 'hqHud'; cb.checked = visible();
-      cb.onchange = function () { localStorage.setItem(KEYV, cb.checked ? '1' : '0'); applyVis(); };
-      box.appendChild(cb); box.appendChild(document.createTextNode('显示状态数值（帧率/分辨率）'));
-      anchor.parentNode.insertBefore(box, anchor);
-      injected = true;
-    }
-    new MutationObserver(inject).observe(document.body, { childList: true, subtree: true });
-    setTimeout(inject, 1500);
+    window.__paHudVis = { visible: visible, apply: applyVis, key: KEYV };
   } catch (e) {}
 })();
 </script><style>#zoomPop{z-index:10001 !important;}</style>
