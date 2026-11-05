@@ -163,6 +163,9 @@ let H264_RECT = null;
 let H264_QF = cfgH264.qualityFirst === true;
 // 单窗口采集（实验）：>0 时用 win-capture.exe 抓这个窗口，0 = 普通全屏 ddagrab
 let H264_WIN = 0;
+// 采集的显示器序号（ddagrab output_idx）：0=主屏；副屏必须切到对应 output_idx，
+// 否则抓的是主屏、只把副屏的坐标当裁剪区 → 画面和操控对不上（2026-11-05 用户报的副屏 bug）
+let H264_MON = 0;
 let wtSrv = null;
 // B 方案：Pion 侧车（可选，默认关闭；开启后把帧转 Annex-B 通过 TCP 喂侧车）
 const CFG264 = (cfgH264.rtc264 || {});
@@ -554,7 +557,7 @@ function h264Start() {
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     // 低延迟输入：不探测/不缓存
     '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
-    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0`,
+    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0:output_idx=${H264_MON}`,
     ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
     ...h264EncArgs()
   ];
@@ -3696,14 +3699,19 @@ function handler(req, res) {
   }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
-    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, maxCapture: CAP_W });
+    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON, maxCapture: CAP_W });
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
     req.on('end', () => {
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
-      const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width);
+      const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width), mon = Number(m.mon);
+      // 显示器切换：ddagrab output_idx 要跟着换（裁剪矩形由页面换算成"相对该显示器"的坐标）
+      if (Number.isFinite(mon) && mon >= 0 && mon <= 7 && Math.round(mon) !== H264_MON) {
+        H264_MON = Math.round(mon);
+        H264_NATIVE = false;   // 副屏几何/分辨率不一定和主屏一样，先走缩放路径
+      }
       if (m.rect && Number(m.rect.w) > 0) H264_RECT = { x: Number(m.rect.x) || 0, y: Number(m.rect.y) || 0, w: Number(m.rect.w), h: Number(m.rect.h) };
       else if (m.rect === null) H264_RECT = null;
       if (typeof m.qf === 'boolean' && m.qf !== H264_QF) { H264_QF = m.qf; saveH264QualityFirst(H264_QF); }
@@ -3715,13 +3723,13 @@ function handler(req, res) {
       }
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       if (!H264_NATIVE && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
-      H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;
+      H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0;    // 原生路径只对主屏生效
       // 重启编码器让新参数生效。RTC264 会话没有 WS 观众，也必须重启，
       // 否则调码率后编码器停着不回来（以前只在有 WS 观众时重启）。
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
       h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
       if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
-      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF });
+      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON });
     });
     return;
   }
@@ -3738,6 +3746,7 @@ function handler(req, res) {
       viewers: h264.clients.size,
       // 单窗口采集（实验）：非 0 表示正在抓这个窗口
       win: H264_WIN,
+      mon: H264_MON,
       qf: H264_QF,
       // B 方案（Pion WebRTC H.264）默认通道：页面默认走它，?rtc264=0 可强制旧 WS 通道
       rtc: { enabled: !!(CFG264.enabled && fileExists(RTC264_EXE)), port: RTC264_PORT, turn: RTC264_TURN_PORT },

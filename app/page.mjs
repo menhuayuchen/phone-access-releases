@@ -46,6 +46,17 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
 #blk button { margin-left:8px; background:#ffe9e9; color:#7a1f1f; border:0; border-radius:7px;
               padding:5px 9px; font:inherit; font-weight:600; }
 #stage { flex:1; position:relative; overflow:hidden; background:#000; touch-action:none; }
+/* 全屏按钮：贴在左边缘垂直居中，平时半透明，按住/悬停变亮（不挡画面又能找到） */
+#fsBtn { position:fixed; left:0; top:50%; transform:translateY(-50%); z-index:10001; width:28px; height:70px;
+         border:1px solid rgba(255,255,255,.18); border-left:0; border-radius:0 12px 12px 0;
+         background:rgba(20,20,24,.55); color:rgba(255,255,255,.9);
+         font-size:16px; padding:0; cursor:pointer; opacity:.6; transition:opacity .2s, background .2s;
+         backdrop-filter:blur(4px); -webkit-backdrop-filter:blur(4px); }
+#fsBtn:hover, #fsBtn:active { opacity:1; background:rgba(40,40,46,.85); }
+body.fs #fsBtn { opacity:.45; background:rgba(0,0,0,.55); }
+body.fs #fsBtn:hover, body.fs #fsBtn:active { opacity:.95; background:rgba(40,40,46,.85); }
+body.fs header, body.fs #hint, body.fs #hud, body.fs #stat { display:none !important; }
+body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:9996; }
 #img, #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
 #img.show, #vid.show { display:block; }
 #overlay { position:absolute; inset:0; z-index:5; touch-action:none; }
@@ -141,6 +152,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
   <span id="stat">连接中…</span>
   <span id="hud"></span>
 </header>
+<button id="fsBtn" title="全屏（隐藏所有按钮和状态栏）">⛶</button>
 <div id="zoomPop" role="dialog" aria-label="缩放方式">
   <div class="zpTitle">三指及以上缩放</div>
   <button class="zpOpt" data-m="system">系统缩放<small>Ctrl+滚轮，电脑里的软件自己放大</small></button>
@@ -196,6 +208,29 @@ const KEY = "__KEY__";
 const stage = document.getElementById('stage');
 let img = document.getElementById('img');
 const vid = document.getElementById('vid');
+
+// ---- 全屏模式：隐藏顶栏/提示/状态值，只留画面 + 左边缘的半透明按钮 ----
+const fsBtn = document.getElementById('fsBtn');
+function fsIsOn() { return document.body.classList.contains('fs'); }
+function setFsOn(on) {
+  document.body.classList.toggle('fs', !!on);
+  if (fsBtn) fsBtn.textContent = on ? '⤢' : '⛶';
+  try {
+    if (on) {
+      if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(function () { });
+    } else if (document.fullscreenElement && document.exitFullscreen) {
+      document.exitFullscreen().catch(function () { });
+    }
+  } catch (e) { }
+}
+if (fsBtn) fsBtn.addEventListener('click', function () { setFsOn(!fsIsOn()); });
+// 用户用系统手势退出全屏时，把 CSS 全屏一起收掉，别留下隐藏的顶栏
+document.addEventListener('fullscreenchange', function () {
+  if (!document.fullscreenElement && fsIsOn()) {
+    document.body.classList.remove('fs');
+    if (fsBtn) fsBtn.textContent = '⛶';
+  }
+});
 
 // ---- 画面缩放（只放大手机上的显示，不动电脑）--------------------------------
 // 系统缩放 = 三指及以上发 Ctrl+滚轮，由电脑里的软件自己缩放；
@@ -445,6 +480,7 @@ async function loadSources(force) {
     // 下拉框正开着就别重建（会把列表关掉），下一轮再说
     if (document.activeElement === srcSel && !force) return;
     rebuildSourceOptions();
+    try { if (state.mode === 'h264') sendCaptureArgs(false); } catch (e) { }
     // 选中的窗口已经关掉了 → 自动切回"全部屏幕"，别让画面停在不存在的东西上
     if (state.window && !state.windows.some((x) => x.hwnd === state.window)) {
       state.window = 0; state.monitor = -1; applyRect();
@@ -494,7 +530,7 @@ srcSel.addEventListener('change', async () => {
   setNote('已切换来源');
   buzz(8);
   try { syncWin264(); } catch (e) { }
-  if (state.mode === 'mjpeg') startMjpeg(); else if (state.mode === 'h264') { h264.graceUntil = Date.now() + 4000; fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ rect: state.rect }) }).catch(function () {}); setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 250); } else restartRtc();
+  if (state.mode === 'mjpeg') startMjpeg(); else if (state.mode === 'h264') { h264.graceUntil = Date.now() + 4000; try { sendCaptureArgs(true); } catch (e) { } setTimeout(function () { if (state.mode === 'h264') restartH264(); }, 250); } else restartRtc();
 });
 
 async function postMode(patch) {
@@ -690,6 +726,43 @@ try { if (AUTOQ.on) setTimeout(function () { autoqApply(AUTOQ.kbps); }, 1500); }
 // ---- 单窗口采集（实验）--------------------------------------------------------
 // 选中窗口时把句柄交给服务端，用 PrintWindow 只抓这个窗口（被挡住也能抓到），
 // 帧率受 PrintWindow 限制约 10–30fps；不选窗口就回普通全屏采集。
+// 采集参数：显示器序号 + 相对**该显示器**的裁剪矩形。
+// ddagrab 一次只能抓一个输出，副屏必须切 output_idx，否则抓到的是主屏（用户实测的副屏 bug）。
+function h264CaptureArgs() {
+  const ms = state.monitors || [];
+  function monOf(px, py) {
+    for (let i = 0; i < ms.length; i++) {
+      const m = ms[i];
+      if (px >= m.x && px < m.x + m.w && py >= m.y && py < m.y + m.h) return m;
+    }
+    return null;
+  }
+  if (state.window) {
+    const w = (state.windows || []).find(function (x) { return x.hwnd === state.window; });
+    if (w) {
+      const mo = monOf(w.x + w.w / 2, w.y + w.h / 2) || ms[0] || { i: 0, x: 0, y: 0 };
+      return { mon: mo.i, rect: { x: Math.max(0, w.x - mo.x), y: Math.max(0, w.y - mo.y), w: w.w, h: w.h } };
+    }
+  }
+  if (state.monitor >= 0) {
+    const mo = ms.find(function (x) { return x.i === state.monitor; });
+    if (mo) return { mon: mo.i, rect: { x: 0, y: 0, w: mo.w, h: mo.h } };
+  }
+  const mo0 = ms.find(function (x) { return x.i === 0; }) || null;
+  if (mo0) return { mon: 0, rect: { x: 0, y: 0, w: mo0.w, h: mo0.h } };
+  return { mon: 0, rect: null };
+}
+// 只有参数真的变了才下发（loadSources 每 2 秒轮询一次，无脑下发会让编码器反复重启）
+let lastCapKey = '';
+function sendCaptureArgs(force) {
+  try {
+    const ca = h264CaptureArgs();
+    const key = ca.mon + '|' + (ca.rect ? (ca.rect.x + ',' + ca.rect.y + ',' + ca.rect.w + ',' + ca.rect.h) : 'null');
+    if (!force && key === lastCapKey) return;
+    lastCapKey = key;
+    fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(ca) }).catch(function () { });
+  } catch (e) { }
+}
 function win264On() { try { return localStorage.getItem('win264') === '1'; } catch (e) { return false; } }
 function syncWin264() {
   let hwnd = 0;
@@ -983,6 +1056,7 @@ document.addEventListener('visibilitychange', function () {
 async function startH264() {
   stopRtc264();                       // 从 WebRTC264 切回来时先收掉 RTC 会话，避免两路同时解码
   try { syncWin264(); } catch (e) { }  // 单窗口采集开关：切到清晰模式时把当前窗口/全屏重新告诉服务端
+  try { sendCaptureArgs(true); } catch (e) { }   // 显示器序号 + 裁剪矩形（副屏必须切 output_idx）
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   h264.wt = (st && st.wt) || null;
