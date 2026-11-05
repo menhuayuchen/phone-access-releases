@@ -581,7 +581,7 @@ function stopH264() {
   try { vid.removeAttribute('src'); } catch (e) { }
   try { vid.srcObject = null; } catch (e) { }
 }
-function startH264() {
+async function startH264() {
   let st = null;
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   if (!st || !st.enabled) { startMjpeg(); return; }
