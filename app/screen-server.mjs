@@ -3880,6 +3880,7 @@ async function handler(req, res) {
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       if (!H264_NATIVE && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
       H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0;    // 原生路径只对主屏生效
+      if (H264_RECT) H264_NATIVE = false;   // 选了窗口/局部区域时必须走裁剪滤镜
       // 重启编码器让新参数生效。RTC264 会话没有 WS 观众，也必须重启，
       // 否则调码率后编码器停着不回来（以前只在有 WS 观众时重启）。
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }

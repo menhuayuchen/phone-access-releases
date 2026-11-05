@@ -137,11 +137,31 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
   #bar select, .bar select { font-size: 12.5px !important; padding: 4px 6px !important; }
 }
 </style>
-</head><body>
+<style>
+/* 选择显示来源：手机上原生 <select> 弹层会截断长列表，改成全屏底部面板 */
+#srcSheet { position:fixed; inset:0; z-index:10002; background:rgba(0,0,0,.55); display:none; }
+#srcSheet.show { display:flex; align-items:flex-end; }
+#srcPanel { width:100%; max-height:84vh; background:#141519; border:1px solid #262932; border-bottom:0;
+            border-radius:16px 16px 0 0; display:flex; flex-direction:column; box-shadow:0 -12px 30px rgba(0,0,0,.5); }
+#srcPanel h3 { margin:0; padding:14px 16px 6px; font-size:15px; color:#e8eaee; font-weight:600; }
+#srcList { overflow-y:auto; -webkit-overflow-scrolling:touch; padding:0 10px 8px; }
+.srcHead { padding:12px 12px 4px; color:#7d838d; font-size:11.5px; font-weight:700; letter-spacing:.06em; }
+.srcRow { display:flex; flex-direction:column; gap:2px; padding:11px 12px; margin:2px 0; border-radius:10px;
+          color:#c9ccd1; font-size:13.5px; cursor:pointer; }
+.srcRow:active { background:#22242b; }
+.srcRow small { color:#6b7078; font-size:11.5px; }
+.srcRow.cur { background:#1d2a3f; color:#cfe1ff; }
+.srcRow.cur small { color:#8fa9c9; }
+#srcSheet .srcBtns { display:flex; gap:10px; padding:10px 16px 16px; }
+#srcSheet .srcBtns button { flex:1; border-radius:10px; padding:11px; font-size:13px; cursor:pointer; }
+</style>
+</head>
+<body>
 <header>
   <button id="mCrisp">清晰</button>
   <button id="mSmooth">流畅</button>
-  <select id="src"><option value="m-1">全部屏幕</option></select>
+  <button id="srcBtn" title="选择显示来源">全部屏幕</button>
+  <select id="src" style="display:none"><option value="m-1">全部屏幕</option></select>
   <button id="deskBtn" title="最小化所有窗口，露出桌面">桌面</button>
   <button id="snd">声音</button>
   <button id="ctl">控制</button>
@@ -153,6 +173,16 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
   <span id="hud"></span>
 </header>
 <button id="fsBtn" title="全屏（隐藏所有按钮和状态栏）">⛶</button>
+<div id="srcSheet" role="dialog" aria-label="选择显示来源">
+  <div id="srcPanel">
+    <h3>选择显示来源</h3>
+    <div id="srcList"></div>
+    <div class="srcBtns">
+      <button id="srcClose" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a">关闭</button>
+      <button id="srcReload" style="background:#2f6feb;color:#fff;border:0">刷新列表</button>
+    </div>
+  </div>
+</div>
 <div id="zoomPop" role="dialog" aria-label="缩放方式">
   <div class="zpTitle">三指及以上缩放</div>
   <button class="zpOpt" data-m="system">系统缩放<small>Ctrl+滚轮，电脑里的软件自己放大</small></button>
@@ -384,6 +414,65 @@ const hint = document.getElementById('hint');
 const btnCrisp = document.getElementById('mCrisp');
 const btnSmooth = document.getElementById('mSmooth');
 const srcSel = document.getElementById('src');
+const srcBtn = document.getElementById('srcBtn');
+const srcSheet = document.getElementById('srcSheet');
+const srcList = document.getElementById('srcList');
+// 选择显示来源：把原生下拉（手机上会截断长列表）换成分组、可滚动的底部面板
+function openSrcSheet() {
+  try { loadSources(false); } catch (e) { }
+  const rows = [];
+  const add = (value, label, sub, cur) => {
+    rows.push('<div class="srcRow' + (cur ? ' cur' : '') + '" data-v="' + value + '">'
+      + '<span>' + escHtml(label) + (cur ? ' ✓' : '') + '</span>'
+      + (sub ? '<small>' + escHtml(sub) + '</small>' : '')
+      + '</div>');
+  };
+  const cur = state.window ? 'w' + state.window : 'm' + (state.monitor >= 0 ? state.monitor : -1);
+  add('m-1', '全部屏幕', '主屏', cur === 'm-1');
+  for (const m of (state.monitors || [])) {
+    add('m' + m.i, '显示器 ' + (m.i + 1) + '（' + m.w + '×' + m.h + '）', m.i === 0 ? '主屏' : '副屏', cur === 'm' + m.i);
+  }
+  if ((state.windows || []).length) {
+    rows.push('<div class="srcHead">窗口（' + state.windows.length + '）</div>');
+    for (const w of state.windows) {
+      const cx = w.x + w.w / 2, cy = w.y + w.h / 2;
+      let mon = '';
+      for (const m of (state.monitors || [])) {
+        if (cx >= m.x && cx < m.x + m.w && cy >= m.y && cy < m.y + m.h) { mon = '显示器 ' + (m.i + 1); break; }
+      }
+      add('w' + w.hwnd, String(w.title == null ? '' : w.title), mon + ' · ' + w.w + '×' + w.h, cur === 'w' + w.hwnd);
+    }
+  } else {
+    rows.push('<div class="srcHead">窗口（0）</div>');
+    rows.push('<div class="srcRow" data-v="">没有可选的窗口（打开一个软件再刷新）</div>');
+  }
+  srcList.innerHTML = rows.join('');
+  srcSheet.classList.add('show');
+  srcList.querySelectorAll('.srcRow[data-v]').forEach((el) => {
+    el.addEventListener('click', () => {
+      const v = el.getAttribute('data-v');
+      if (!v) return;
+      if ([...srcSel.options].some((o) => o.value === v)) {
+        srcSel.value = v;
+        srcSel.dispatchEvent(new Event('change'));
+      }
+      srcSheet.classList.remove('show');
+    });
+  });
+}
+if (srcBtn) srcBtn.addEventListener('click', openSrcSheet);
+if (srcSheet) {
+  srcSheet.addEventListener('click', (e) => { if (e.target === srcSheet) srcSheet.classList.remove('show'); });
+  const sc = document.getElementById('srcClose');
+  if (sc) sc.addEventListener('click', () => srcSheet.classList.remove('show'));
+  const sr = document.getElementById('srcReload');
+  if (sr) sr.addEventListener('click', async () => {
+    sr.textContent = '刷新中…';
+    try { await loadSources(true); } catch (e) { }
+    sr.textContent = '刷新列表';
+    openSrcSheet();
+  });
+}
 const btnSnd = document.getElementById('snd');
 const btnCtl = document.getElementById('ctl');
 const btnDesk = document.getElementById('deskBtn');
@@ -469,9 +558,18 @@ function rebuildSourceOptions() {
   for (const w of state.windows) {
     addOpt('w' + w.hwnd, '窗口：' + String(w.title == null ? '' : w.title).slice(0, 30));
   }
-  const want = state.window ? 'w' + state.window : 'm' + (state.monitor >= 0 ? state.monitor : -1);
-  if ([...srcSel.options].some((o) => o.value === want)) srcSel.value = want;
+  const cur = state.window ? 'w' + state.window : 'm' + (state.monitor >= 0 ? state.monitor : -1);
+  if ([...srcSel.options].some((o) => o.value === cur)) srcSel.value = cur;
+  syncSrcBtn();
   applyRect();
+}
+function syncSrcBtn() {
+  if (!srcBtn) return;
+  const o = [...srcSel.options].find((x) => x.value === srcSel.value);
+  let t = o ? o.textContent : '全部屏幕';
+  t = String(t).replace(/^窗口：/, '');
+  if (t.length > 12) t = t.slice(0, 11) + '…';
+  srcBtn.textContent = t;
 }
 
 async function loadSources(force) {
@@ -535,6 +633,7 @@ srcSel.addEventListener('change', async () => {
   if (v.startsWith('m')) { state.monitor = Number(v.slice(1)); state.window = 0; }
   else if (v.startsWith('w')) { state.window = Number(v.slice(1)); state.monitor = -1; }
   applyRect();
+  try { syncSrcBtn(); } catch (e) { }
   await postMode({ monitor: state.monitor, window: state.window });
   setNote('已切换来源');
   buzz(8);
