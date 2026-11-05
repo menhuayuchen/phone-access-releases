@@ -55,15 +55,6 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
 #fsBtn:hover, #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
 body.fs #fsBtn { opacity:.30; background:rgba(10,10,12,.20); }
 body.fs #fsBtn:hover, body.fs #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
-/* 游戏模式（Moonlight）按钮：右侧边缘垂直居中，和全屏按钮对称，同样半透明 */
-#gameBtn { position:fixed; right:0; top:50%; transform:translateY(-50%); z-index:10001; width:26px; height:64px;
-         border:1px solid rgba(255,255,255,.14); border-right:0; border-radius:12px 0 0 12px;
-         background:rgba(24,24,28,.22); color:rgba(255,255,255,.85);
-         font-size:15px; padding:0; cursor:pointer; opacity:.38; transition:opacity .2s, background .2s;
-         backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px); }
-#gameBtn:hover, #gameBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
-body.fs #gameBtn { opacity:.30; background:rgba(10,10,12,.20); }
-body.fs #gameBtn:hover, body.fs #gameBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
 body.fs header, body.fs #hint, body.fs #hud, body.fs #stat { display:none !important; }
 body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:9996; }
 #img, #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
@@ -162,7 +153,6 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
   <span id="hud"></span>
 </header>
 <button id="fsBtn" title="全屏（隐藏所有按钮和状态栏）">⛶</button>
-<button id="gameBtn" title="游戏模式（用 Moonlight 打开）">🎮</button>
 <div id="zoomPop" role="dialog" aria-label="缩放方式">
   <div class="zpTitle">三指及以上缩放</div>
   <button class="zpOpt" data-m="system">系统缩放<small>Ctrl+滚轮，电脑里的软件自己放大</small></button>
@@ -243,29 +233,13 @@ document.addEventListener('fullscreenchange', function () {
 });
 
 // ---- 游戏模式：一键深链到 Moonlight（硬核玩家用 Sunshine+Moonlight）----
+// ---- 游戏模式：深链到 Moonlight（入口在 设置 → 高性能模式，不占主界面）----
 // Android 用 intent 打开 Moonlight 包；其它平台先试 moonlight://（没装就什么都不会发生）。
 function moonDeepLink() {
   const ua = navigator.userAgent || '';
   if (/Android/i.test(ua)) return 'intent://#Intent;package=com.limelight;end';
   return 'moonlight://';
 }
-const gameBtn = document.getElementById('gameBtn');
-async function openGameMode() {
-  let st = null;
-  try { st = await (await fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' })).json(); } catch (e) { st = null; }
-  const ready = !!(st && st.installed && st.webUp && st.credentialsSet && st.licensed);
-  if (ready) {
-    try { setNote('正在打开 Moonlight…（没反应说明手机还没装 Moonlight）', 6000); } catch (e) { }
-    try { location.href = moonDeepLink(); } catch (e) { }
-  } else {
-    try { const g = document.getElementById('paGear'); if (g) g.click(); } catch (e) { }
-    setTimeout(function () {
-      try { const el = document.getElementById('secSunshine'); if (el) el.scrollIntoView({ block: 'center' }); } catch (e) { }
-    }, 500);
-    try { setNote('高性能模式还没就绪：先在设置里装好 Sunshine 和 Moonlight（页面会引导）', 7000); } catch (e) { }
-  }
-}
-if (gameBtn) gameBtn.addEventListener('click', function () { openGameMode().catch(function () { }); });
 
 // ---- 画面缩放（只放大手机上的显示，不动电脑）--------------------------------
 // 系统缩放 = 三指及以上发 Ctrl+滚轮，由电脑里的软件自己缩放；
