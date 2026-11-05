@@ -1507,3 +1507,18 @@ HTTP 全部超时，端口仍在监听所以守护看不出来，用户卡了 6 
 
 实测（1280×800）：勾选默认开；取消 → 两处都 display:none、localStorage `hudvis=0`；
 重新勾上 → 两处恢复、`hudvis=1`。
+
+### 42.11 删掉坏的 ?rtc=1 旧路径 + 画质优先档（2026-11-05 22:1x，未发布）
+
+**删死路径**：`connectWs()` 里 `?rtc=1` 的分支（走已退役的 /h264-rtc 信令 + DataChannel），
+现在没有任何入口会传这个参数，删掉约 60 行；保留 ?wt=1（WebTransport 通道）与正常路径。
+
+**画质优先档（可选，默认关）**：设置 → 高清串流 新增勾选「画质优先（文字更锐；延迟约 +1 帧，流量会波动）」。
+- 开：NVENC `-preset p4 -tune hq -rc vbr -cq 22 -b:v <kbps> -maxrate <kbps> -bufsize 2×`；
+  静态桌面吃满质量、动态时封顶 maxrate，流量会波动；
+- 关：原来的 `p1 + ull + cbr_ld_hq` 低延迟档；
+- 开关写回 product.config.json（`screen.h264.qualityFirst`），重启后保持；
+- `/h264-quality` GET/POST 带 `qf`；页面切换后自动 `restartH264()` 重连一次生效（约 1 秒）。
+
+实测：开 → ffmpeg 命令行确认 `-preset p4 -tune hq -rc vbr -cq 22 ... -maxrate 20000K`，
+e2e 首帧 0.4 秒、画面正常；关 → 恢复 p1；UI 勾选与 `/h264-quality` 双向一致；配置文件落盘 qualityFirst。

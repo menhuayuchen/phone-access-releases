@@ -159,6 +159,8 @@ const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
 let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
+// 画质优先（可选，默认关）：p4+hq、VBR+CQ，静态更清晰，流量会波动
+let H264_QF = cfgH264.qualityFirst === true;
 let wtSrv = null;
 // B 方案：Pion 侧车（可选，默认关闭；开启后把帧转 Annex-B 通过 TCP 喂侧车）
 const CFG264 = (cfgH264.rtc264 || {});
@@ -497,8 +499,14 @@ function h264Start() {
     // 远端桌面场景 + 低延迟码控：比默认 profile 少缓存好几帧
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
-      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS)), '-bf', '0']
-      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS)), '-bf', '0']),
+      ? (H264_QF
+        // 画质优先：p4 + hq（编码延迟多 1 帧左右），VBR+CQ 让静态桌面吃满质量、动态时封顶 maxrate。
+        // 代价：码率不再恒定（流量会波动），所以做成设置里的可选开关。
+        ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '22',
+           '-b:v', String(H264_KBPS) + 'K', '-maxrate', String(H264_KBPS) + 'K', '-bufsize', String(H264_KBPS * 2) + 'K',
+           '-g', String(Math.round(H264_FPS)), '-bf', '0', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : [])]
+        : ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS)), '-bf', '0'])
+      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', H264_QF ? '90' : '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS)), '-bf', '0']),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
     '-frag_duration', '5000', '-flush_packets', '1',
@@ -3556,9 +3564,20 @@ function handler(req, res) {
     }));
     return;
   }
+  // 画质优先开关写回 product.config.json（重启后仍生效）
+  function saveH264QualityFirst(on) {
+    try {
+      const p = join(HERE, 'product.config.json');
+      const c = JSON.parse(readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
+      if (!c.screen) c.screen = {};
+      if (!c.screen.h264) c.screen.h264 = {};
+      c.screen.h264.qualityFirst = !!on;
+      writeFileSync(p, JSON.stringify(c, null, 2), 'utf8');
+    } catch (e) { console.log('h264: 保存画质优先设置失败 ' + e.message); }
+  }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
-    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, maxCapture: CAP_W });
+    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, maxCapture: CAP_W });
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
@@ -3568,6 +3587,7 @@ function handler(req, res) {
       const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width);
       if (m.rect && Number(m.rect.w) > 0) H264_RECT = { x: Number(m.rect.x) || 0, y: Number(m.rect.y) || 0, w: Number(m.rect.w), h: Number(m.rect.h) };
       else if (m.rect === null) H264_RECT = null;
+      if (typeof m.qf === 'boolean' && m.qf !== H264_QF) { H264_QF = m.qf; saveH264QualityFirst(H264_QF); }
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
       if (Number.isFinite(w) && w >= 640) {
@@ -3582,7 +3602,7 @@ function handler(req, res) {
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
       h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
       if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
-      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS });
+      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF });
     });
     return;
   }

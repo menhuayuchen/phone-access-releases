@@ -1153,68 +1153,7 @@ async function startH264() {
   if (rtc264Wanted()) { startRtc264(); return; }
   const useWt = new URLSearchParams(location.search).get('wt') === '1' && h264.wt && h264.wt.enabled && h264.wt.hash && window.WebTransport;
   if (useWt) { startWtTransport(); return; }
-  const useRtc = new URLSearchParams(location.search).get('rtc') === '1' && !!window.RTCPeerConnection;
-  if (useRtc) {
-    try {
-      const sig = new WebSocket((location.protocol === 'https:' ? 'wss:' : 'ws:') + '//' + location.host + '/h264-rtc?k=' + encodeURIComponent(KEY) + '&s=' + SID);
-      const pc = new RTCPeerConnection({ iceServers: [] });
-      try { window.__pcRaw = pc; } catch (e) { }   // 流量测量用（dev/诊断）
-      const ch = pc.createDataChannel('frames', { ordered: true, maxRetransmits: 0 });
-      ch.binaryType = 'arraybuffer';
-
-      ch.onopen = async function () {
-        for (let i = 0; i < 20; i++) {
-          try {
-            const init = await (await fetch('/h264-init?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
-            if (init && init.ok && init.description) {
-              const d = Uint8Array.from(atob(init.description), function (c) { return c.charCodeAt(0); });
-              h264.decoder.configure({ codec: init.codec, description: d, optimizeForLatency: true });
-              h264.streamW = init.width || 0; h264.streamH = init.height || 0; h264.configured = true; h264.bootTries = 0; h264.errCount = 0;
-              return;
-            }
-          } catch (e) { }
-          await new Promise(function (r) { setTimeout(r, 250); });
-        }
-      };
-      const parts = new Map();
-      ch.onmessage = function (ev) {
-        try { if (ev && ev.data) { window.__net = window.__net || { ws: 0, rtc: 0, mjpeg: 0 }; window.__net.rtc += (ev.data.byteLength || 0) + 14; } } catch (e) { }
-        const b = new Uint8Array(ev.data);
-        if (b.length < 15) return;
-        const dv = new DataView(ev.data);
-        const ts = dv.getInt32(1), isKey = b[5] === 1, total = dv.getUint32(6), off = dv.getUint32(10);
-        const pay = b.subarray(14);
-        let ent = parts.get(ts);
-        if (!ent) { ent = { buf: new Uint8Array(total), got: 0, key: isKey }; parts.set(ts, ent); }
-        if (off + pay.length > total) return;
-        ent.buf.set(pay, off); ent.got += pay.length;
-        if (ent.got >= total) {
-          parts.delete(ts);
-          if (parts.size > 40) parts.clear();
-          if (!h264.rtcStarted) { if (!ent.key) return; h264.rtcStarted = true; }
-          try { h264.decoder.decode(new EncodedVideoChunk({ type: ent.key ? 'key' : 'delta', timestamp: ts, data: ent.buf })); } catch (err) { }
-        }
-      };      sig.onopen = async function () {
-        try {
-          const offer = await pc.createOffer();
-          await pc.setLocalDescription(offer);
-          sig.send(JSON.stringify({ type: 'offer', sdp: offer.sdp }));
-        } catch (e) { connectWs(); }
-      };
-      sig.onmessage = async function (ev) {
-        try {
-          const m = JSON.parse(ev.data);
-          if (m.type === 'answer') await pc.setRemoteDescription({ type: 'answer', sdp: m.sdp });
-          else if (m.type === 'answer-error') connectWs();
-        } catch (e) { }
-      };
-      setTimeout(function () {
-        if (state.mode === 'h264' && !h264.configured) { try { sig.close(); pc.close(); } catch (e) { } connectWs(); }
-      }, 5000);
-    } catch (e) { connectWs(); }
-  } else {
-    connectWs();
-  }
+  connectWs();
 }function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
   stopRtc264();                       // 降级到低频画面时不要留着 WebRTC264 会话
@@ -3099,6 +3038,7 @@ bindImg(img);
     const wSel = box.querySelector('#hqW');
     const fpsSel = box.querySelector('#hqFps');
     const kSel = box.querySelector('#hqKbps');
+    const qfCb = box.querySelector('#hqQf');
     const autoBtn = box.querySelector('#hqAuto');
     const msg = box.querySelector('#hqMsg');
     if (!wSel || !fpsSel || !kSel) return;
@@ -3137,10 +3077,20 @@ bindImg(img);
         wSel.value = String(j.width);
         fpsSel.value = String(j.fps);
         kSel.value = String(j.kbps);
+        if (qfCb) qfCb.checked = !!j.qf;
         if (!j.width || !j.height) setMsg('高清通道未启用');
         updateFlow();
       } catch (e) { }
     })();
+    // 画质优先：p4+hq、VBR+CQ；切换后重启一次编码器生效（页面会重连，约 1 秒）
+    if (qfCb) qfCb.addEventListener('change', async () => {
+      setMsg('正在应用画质优先设置…');
+      try {
+        await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ qf: !!qfCb.checked }) });
+        setMsg(qfCb.checked ? '画质优先已开：文字更锐，延迟约 +1 帧，流量会波动' : '已切回低延迟模式', '#8CE58C');
+        if (state.mode === 'h264') restartH264();
+      } catch (e) { setMsg('应用失败', '#ff6b6b'); }
+    });
     const updateFlow = () => {
       const el = box.querySelector('#hqFlow');
       const k = AUTOQ.on ? AUTOQ.kbps : (Number(kSel.value) || 0);
@@ -4154,6 +4104,8 @@ bindImg(img);
       + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
       + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。</div>'
       + '<div id="hqFlow" style="font-size:12.5px;color:#8CE58C;margin-top:8px"></div>'
+      + '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
+      + '<input type="checkbox" id="hqQf"> 画质优先（文字更锐；延迟约 +1 帧，流量会波动）</label>'
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>');
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
