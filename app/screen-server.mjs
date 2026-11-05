@@ -2966,7 +2966,7 @@ function handler(req, res) {
       + 'const s=document.getElementById("s");let fps=0,fc=0,last=Date.now();'
       + 'function hb(){const b=atob(H);const u=new Uint8Array(b.length);for(let i=0;i<b.length;i++)u[i]=b.charCodeAt(i);return u;}'
       + 'let dec=null,metaBuf="",metaTotal=0;const parts=new Map();'
-      + 'const canvas=document.createElement("canvas");const ctx=canvas.getContext("2d");'
+      + 'const canvas=document.createElement("canvas");const ctx=canvas.getContext("2d");canvas.style.cssText="width:100vw;height:auto;display:block";document.body.appendChild(canvas);'
       + 'function startDec(m){metaTotal=m.length;metaBuf+=m;try{const j=JSON.parse(metaBuf);'
       + 'dec=new VideoDecoder({output:(f)=>{if(canvas.width!==f.displayWidth){canvas.width=f.displayWidth;canvas.height=f.displayHeight;}'
       + 'ctx.drawImage(f,0,0);f.close();fc++;const n=Date.now();if(n-last>=1000){fps=fc*1000/(n-last);fc=0;last=n;s.textContent=(j.width||canvas.width)+"x"+(j.height||canvas.height)+" · "+fps.toFixed(1)+" fps";}},'
