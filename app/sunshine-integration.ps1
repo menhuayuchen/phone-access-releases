@@ -22,7 +22,7 @@
 #>
 [CmdletBinding()]
 param(
-    [ValidateSet('status', 'install', 'uninstall')]
+    [ValidateSet('status', 'install', 'credentials', 'uninstall')]
     [string]$Action = 'status',
     # 产品安装目录（默认 = 脚本所在目录）；凭据/marker 都写在这里
     [string]$AppDir = '',
@@ -308,11 +308,28 @@ if ($Action -eq 'status') {
 }
 
 # ---------------------------------------------------------------------------
+# credentials（只设置配对凭据；不需要管理员权限）
+# ---------------------------------------------------------------------------
+if ($Action -eq 'credentials') {
+    if (-not (Wait-WebUp 60)) { Fail 'Sunshine Web UI 没起来（服务没启动？）' }
+    $cred = Set-CredentialsIfNeeded
+    if (-not $cred.ok) { Fail $cred.error }
+    $result = [ordered]@{ ok = $true; action = 'credentials'; credentials = $cred.action; user = $cred.user; port = $Port }
+    if ($Json) { [pscustomobject]$result | ConvertTo-Json -Depth 6 }
+    else { Say ('凭据：' + $cred.action + ' user=' + $cred.user) 'Green' }
+    exit 0
+}
+
+# ---------------------------------------------------------------------------
 # install
 # ---------------------------------------------------------------------------
 if ($Action -eq 'install') {
     $inst = Get-SunshineInstalled
+    $isAdmin = $false
+    try { $isAdmin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator) } catch { }
+    $warns = New-Object System.Collections.ArrayList
     if (-not $inst.installed) {
+        if (-not $isAdmin) { Fail '装 Sunshine 需要管理员权限：请从页面点按钮（会弹管理员授权）' }
         if (-not $MsiPath) { $MsiPath = Join-Path $here 'Sunshine-Windows-AMD64-installer.msi' }
         if (-not (Test-Path -LiteralPath $MsiPath)) { Fail ('找不到 Sunshine 安装包：' + $MsiPath) }
         $log = Join-Path $env:TEMP 'sunshine-msi-install.log'
@@ -323,27 +340,37 @@ if ($Action -eq 'install') {
         Say 'Sunshine 已经装了，跳过安装，只做预配置。'
     }
 
-    Say '写预配置（只绑 tailnet / 关 UPnP / 关 LAN Web UI）…'
-    if (-not (Write-Conf)) { Fail ('写不了配置文件：' + $confFile) }
-
-    Say '重启服务…'
+    # 1) 服务/Web UI（不需要管理员）
     $svc = Get-SunshineService
-    if ($svc) {
-        try {
-            if ($svc.Status -eq 'Running') { Restart-Service -Name $svcName -Force -ErrorAction Stop }
-            else { Start-Service -Name $svcName -ErrorAction Stop }
-        } catch { Fail ('服务启不来：' + $_.Exception.Message) }
-    } else { Fail '找不到 SunshineService（安装可能没完成）' }
-
-    Say '等 Web UI 起来（最多 60 秒）…'
+    if (-not $svc) { [void]$warns.Add('找不到 SunshineService（安装可能没完成）') }
     if (-not (Wait-WebUp 60)) { Fail 'Sunshine Web UI 60 秒内没起来（看 %ProgramFiles%\Sunshine\config\sunshine.log）' }
 
+    # 2) 凭据：先做（不需要管理员，配对就靠它；不让配置写失败把整件事卡死）
     $cred = Set-CredentialsIfNeeded
     if (-not $cred.ok) { Fail $cred.error }
     Say ('凭据：' + $cred.action + ' user=' + $cred.user)
 
-    $fw = Set-FirewallHardening
-    Say ('防火墙：找到 ' + $fw.found + ' 条，收紧 ' + $fw.changed + ' 条')
+    # 3) 预配置 + 重启服务 + 防火墙（需要管理员；失败只警告，不影响配对）
+    if ($isAdmin) {
+        if (-not (Write-Conf)) { [void]$warns.Add('写不了配置文件：' + $confFile) }
+        else {
+            $svc2 = Get-SunshineService
+            if ($svc2) {
+                try {
+                    if ($svc2.Status -eq 'Running') { Restart-Service -Name $svcName -Force -ErrorAction Stop }
+                    else { Start-Service -Name $svcName -ErrorAction Stop }
+                } catch { [void]$warns.Add('重启服务失败：' + $_.Exception.Message) }
+            }
+            if (-not (Wait-WebUp 60)) { [void]$warns.Add('重启后 Web UI 没起来') }
+        }
+        try {
+            $fw = Set-FirewallHardening
+            Say ('防火墙：找到 ' + $fw.found + ' 条，收紧 ' + $fw.changed + ' 条')
+        } catch { [void]$warns.Add('防火墙收紧失败：' + $_.Exception.Message) }
+    } else {
+        [void]$warns.Add('没有管理员权限：跳过"只绑 tailnet / 防火墙收紧"（配对不受影响）')
+    }
+    foreach ($w in $warns) { Say ('[!] ' + $w) 'Yellow' }
 
     $marker = [pscustomobject]@{
         installedByUs = $true
@@ -356,7 +383,7 @@ if ($Action -eq 'install') {
 
     $result = [ordered]@{
         ok = $true; action = 'install'; installed = $true; credentials = $cred.action
-        firewallFound = $fw.found; firewallChanged = $fw.changed; tailnetIp = (Get-TailscaleIp); port = $Port
+        elevated = $isAdmin; warnings = @($warns); tailnetIp = (Get-TailscaleIp); port = $Port
     }
     if ($Json) { [pscustomobject]$result | ConvertTo-Json -Depth 6 }
     else { Say ('高性能模式已就绪：tailnet ' + (Get-TailscaleIp) + ':' + $Port + '，手机装 Moonlight 后配对即可。') 'Green' }

@@ -1202,14 +1202,20 @@ async function runSunshineInit() {
   const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
   const integ = join(HERE, 'sunshine-integration.ps1');
   if (!fileExists(integ)) { sunshineInitJob = { phase: 'error', error: '缺少 sunshine-integration.ps1', startedAt: Date.now() }; return sunshineInitJob; }
+  const wrap = join(HERE, 'sunshine-init-wrap.ps1');
   const runner = join(HERE, 'sunshine-init-run.ps1');
+  const log = join(HERE, 'sunshine-init.log');
+  const tailLog = () => { try { const s = readFileSync(log, 'utf8'); return s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).slice(-4).join(' | '); } catch { return ''; } };
+  try { unlinkSync(log); } catch { }
   try {
+    writeFileSync(wrap, [
+      '$ErrorActionPreference = "Continue"',
+      '& \'' + integ + '\' -Action install -AppDir \'' + HERE + '\' *> \'' + log + '\'',
+      'exit $LASTEXITCODE'
+    ].join('\r\n'), 'utf8');
     writeFileSync(runner, [
       '$ErrorActionPreference = "Continue"',
-      'Start-Process powershell -Verb RunAs -ArgumentList @(',
-      '  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ' + JSON.stringify(integ) + ',',
-      '  "-Action", "install", "-AppDir", ' + JSON.stringify(HERE) + ', "-Quiet"',
-      ') | Out-Null'
+      'Start-Process powershell -Verb RunAs -Wait -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",\'' + wrap + '\') | Out-Null'
     ].join('\r\n'), 'utf8');
   } catch (e) {
     sunshineInitJob = { phase: 'error', error: String(e.message || e), startedAt: Date.now() };
@@ -1220,12 +1226,13 @@ async function runSunshineInit() {
     child.on('exit', resolve);
     child.on('error', resolve);
   });
-  // 凭据文件出现就算完成（不要求服务立即起来：服务需要几秒）
+  // 凭据文件出现就算完成（配置/重启那步失败不影响配对）
   for (let i = 0; i < 45; i++) {
     if (fileExists(SUNSHINE_CRED_FILE)) { sunshineInitJob = { phase: 'done', error: '', startedAt: sunshineInitJob.startedAt }; return sunshineInitJob; }
     await new Promise((r) => setTimeout(r, 2000));
   }
-  sunshineInitJob = { phase: 'error', error: '初始化没完成（可能没点管理员授权）', startedAt: sunshineInitJob.startedAt };
+  const t = tailLog();
+  sunshineInitJob = { phase: 'error', error: '初始化没完成' + (t ? ('：' + t) : '（可能没点管理员授权）'), log: t, startedAt: sunshineInitJob.startedAt };
   return sunshineInitJob;
 }
 function attachAudioWs(server, key) {  server.on('upgrade', (req, socket, head) => {
