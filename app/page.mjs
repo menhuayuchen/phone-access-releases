@@ -5442,19 +5442,22 @@ bindImg(img);
   // 约束：这一段只能"新增"，不修改上面任何逻辑。所有异常都在内部吃掉，
   // 最坏情况是实验功能不出现，绝不影响画面、输入、音频。
   // 注意：整页是 String.raw 模板，所以这段代码里不能出现反引号和美元花括号。
+  // 每个形状自带 viewBox 尺寸 w/h，热点 hx/hy 用的是**viewBox 内坐标**。
+  // 2026-11-07 修正：原来所有形状共用 16x16，而箭头路径画到 y=19.6 —— 底部被裁掉，
+  // 手机上看到的是一个缺了尾巴的怪箭头（用户第一反馈就是这个）。现在各自用自己的尺寸。
   var EXP_SHAPES = {
-    arrow:    { hx: 1, hy: 1, s: '<path d="M1 1 L1 16.6 L5.4 12.7 L8.4 19.6 L10.2 18.9 L7.2 12.1 L14.4 12.1 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/>' },
-    ibeam:    { hx: 4, hy: 8, s: '<path d="M1.2 1.2 H6.8 M4 1.2 V14.8 M1.2 14.8 H6.8" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/><path d="M1.2 1.2 H6.8 M4 1.2 V14.8 M1.2 14.8 H6.8" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>' },
-    hand:     { hx: 4, hy: 1.2, s: '<path d="M4 8 V2 M7 8 V3.6 M10 8.5 V5.2 M1 10 V12.5 C1 15.4 3.6 19 8 19 C12 19 14 15.4 14 12 V8.5" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/><path d="M4 8 V2 M7 8 V3.6 M10 8.5 V5.2 M1 10 V12.5 C1 15.4 3.6 19 8 19 C12 19 14 15.4 14 12 V8.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>' },
-    wait:     { hx: 7.5, hy: 7.5, s: '<circle cx="7.5" cy="7.5" r="6.2" fill="#fff" stroke="#000" stroke-width="1.4"/><path d="M7.5 4 V7.5 L10 9.2" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>' },
-    progress: { hx: 1, hy: 1, s: '<path d="M1 1 L1 16.6 L5.4 12.7 L8.4 19.6 L10.2 18.9 L7.2 12.1 L14.4 12.1 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/><circle cx="13" cy="4" r="3.2" fill="none" stroke="#000" stroke-width="1.5"/><path d="M13 2.4 V4 L14.2 4.8" fill="none" stroke="#000" stroke-width="1.2"/>' },
-    cross:    { hx: 7.5, hy: 7.5, s: '<path d="M7.5 1 V14 M1 7.5 H14" stroke="#000" stroke-width="3" stroke-linecap="round"/><path d="M7.5 1 V14 M1 7.5 H14" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
-    sizeall:  { hx: 7.5, hy: 7.5, s: '<path d="M7.5 1 V14 M1 7.5 H14 M7.5 1 L5.4 3.4 M7.5 1 L9.6 3.4 M7.5 14 L5.4 11.6 M7.5 14 L9.6 11.6 M1 7.5 L3.4 5.4 M1 7.5 L3.4 9.6 M14 7.5 L11.6 5.4 M14 7.5 L11.6 9.6" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M7.5 1 V14 M1 7.5 H14 M7.5 1 L5.4 3.4 M7.5 1 L9.6 3.4 M7.5 14 L5.4 11.6 M7.5 14 L9.6 11.6 M1 7.5 L3.4 5.4 M1 7.5 L3.4 9.6 M14 7.5 L11.6 5.4 M14 7.5 L11.6 9.6" fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
-    sizewe:   { hx: 7.5, hy: 7.5, s: '<path d="M1 7.5 H14 M1 7.5 L4 4.6 M1 7.5 L4 10.4 M14 7.5 L11 4.6 M14 7.5 L11 10.4" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M1 7.5 H14 M1 7.5 L4 4.6 M1 7.5 L4 10.4 M14 7.5 L11 4.6 M14 7.5 L11 10.4" fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
-    sizens:   { hx: 7.5, hy: 7.5, s: '<path d="M7.5 1 V14 M7.5 1 L4.6 4 M7.5 1 L10.4 4 M7.5 14 L4.6 11 M7.5 14 L10.4 11" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M7.5 1 V14 M7.5 1 L4.6 4 M7.5 1 L10.4 4 M7.5 14 L4.6 11 M7.5 14 L10.4 11" fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
-    no:       { hx: 7.5, hy: 7.5, s: '<circle cx="7.5" cy="7.5" r="6" fill="#fff" stroke="#000" stroke-width="1.5"/><path d="M3.6 3.6 L11.4 11.4" stroke="#c00" stroke-width="2.2" stroke-linecap="round"/>' },
-    help:     { hx: 1, hy: 1, s: '<path d="M1 1 L1 16.6 L5.4 12.7 L8.4 19.6 L10.2 18.9 L7.2 12.1 L14.4 12.1 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/><text x="9.6" y="6.6" font-size="7.5" font-weight="700" font-family="sans-serif" fill="#1a3fd0">?</text>' },
-    uparrow:  { hx: 7.5, hy: 1, s: '<path d="M7.5 1 L13 8 H10 V14 H5 V8 H2 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/>' }
+    arrow:    { w: 16, h: 22, hx: 1, hy: 1, s: '<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' },
+    ibeam:    { w: 12, h: 18, hx: 6, hy: 9, s: '<path d="M1.5 1.5 H10.5 M6 1.5 V16.5 M1.5 16.5 H10.5" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M1.5 1.5 H10.5 M6 1.5 V16.5 M1.5 16.5 H10.5" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>' },
+    hand:     { w: 16, h: 20, hx: 4, hy: 1.5, s: '<path d="M3.6 9.5 V3.4 M7.6 9.5 V2.4 M11.6 9.5 V4.2" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M3.6 9.5 V14 C3.6 17.2 5.9 19 8.4 19 C10.9 19 13.2 17.2 13.2 14 V9.5" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M3.6 9.5 V3.4 M7.6 9.5 V2.4 M11.6 9.5 V4.2" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/><path d="M3.6 9.5 V14 C3.6 17.2 5.9 19 8.4 19 C10.9 19 13.2 17.2 13.2 14 V9.5" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>' },
+    wait:     { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.4" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M8 4.2 V8 L11 9.8" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>' },
+    progress: { w: 18, h: 23, hx: 1, hy: 1, s: '<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/><circle cx="15" cy="5" r="3.4" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M15 3 V5 L16.4 5.9" fill="none" stroke="#000" stroke-width="1.2"/>' },
+    cross:    { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M1 8 H15" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1 V15 M1 8 H15" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
+    sizeall:  { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/><path d="M8 0.6 L10.4 3.6 H5.6 Z M8 15.4 L10.4 12.4 H5.6 Z M0.6 8 L3.6 5.6 V10.4 Z M15.4 8 L12.4 5.6 V10.4 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' },
+    sizewe:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"/><path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#fff" stroke-width="1.05" stroke-linecap="round"/>' },
+    sizens:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"/><path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#fff" stroke-width="1.05" stroke-linecap="round"/>' },
+    no:       { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.3" fill="#fff" stroke="#000" stroke-width="1.2"/><path d="M4 4 L12 12" stroke="#d00" stroke-width="2.2" stroke-linecap="round"/>' },
+    help:     { w: 18, h: 23, hx: 1, hy: 1, s: '<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/><text x="12.2" y="7.4" font-size="8" font-weight="700" font-family="sans-serif" fill="#1546d8">?</text>' },
+    uparrow:  { w: 14, h: 18, hx: 7, hy: 1, s: '<path d="M7 1 L12.6 7.4 H9.4 V16 H4.6 V7.4 H1.4 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' }
   };
   function expShape(s) {
     if (EXP_SHAPES[s]) return EXP_SHAPES[s];
@@ -5466,21 +5469,27 @@ bindImg(img);
   // 拿 {x,y,s,v}（屏幕物理像素），用 toPage() 换算成页面坐标后本地画一个。
   // 坐标换算必须复用 toPage —— 另写一套就会重演 2026-11-06 的触屏偏移事故。
   function expCursorStart() {
-    var SIZE = 21;                      // 显示尺寸（SVG viewBox 是 16）
+    var K = 1.1;                        // 每 viewBox 单位 → 屏幕像素（再乘当前画面缩放）
     var el = document.createElement('div');
     el.id = 'expCursor';
-    el.style.cssText = 'position:fixed;left:0;top:0;width:' + SIZE + 'px;height:' + SIZE + 'px;'
-      + 'pointer-events:none;z-index:9998;display:none;will-change:transform;'
-      + 'background-repeat:no-repeat;background-size:' + SIZE + 'px ' + SIZE + 'px;';
+    el.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:9998;'
+      + 'display:none;will-change:transform;background-repeat:no-repeat;';
     document.body.appendChild(el);
 
-    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
-    var k = SIZE / 16;
+    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: K, zoom: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
 
-    function paint(s) {
+    // 形状和尺寸一起画：w/h 是形状自己的 viewBox 尺寸；zoom 跟着画面缩放，
+    // 否则放大画面后光标相对画面会越来越小（用户反馈过"放大后大小不一样"）。
+    function paint(s, zoom) {
       var d = expShape(s);
-      st.hx = d.hx; st.hy = d.hy;
-      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' + d.s + '</svg>';
+      var z = (zoom > 0 ? zoom : 1) * K;
+      st.hx = d.hx; st.hy = d.hy; st.k = z;
+      var w = Math.round(d.w * z * 10) / 10;
+      var h = Math.round(d.h * z * 10) / 10;
+      el.style.width = w + 'px';
+      el.style.height = h + 'px';
+      el.style.backgroundSize = w + 'px ' + h + 'px';
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + d.w + '" height="' + d.h + '" viewBox="0 0 ' + d.w + ' ' + d.h + '">' + d.s + '</svg>';
       el.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
     }
     function show(on) {
@@ -5501,12 +5510,15 @@ bindImg(img);
       try { p = toPage(st.rx, st.ry); } catch (e) { return; }
       if (!p || !isFinite(p.x) || !isFinite(p.y)) { show(false); return; }
       st.tx = p.x; st.ty = p.y;
+      // 画面缩放（三指捏合改变的 view.scale）变了就重画一次尺寸：光标跟着画面一起放大
+      var z = (typeof view !== 'undefined' && view && view.scale) ? view.scale : 1;
+      if (Math.abs(z - st.zoom) > 0.02) { st.zoom = z; paint(st.shape, z); }
       if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
       var dx = st.tx - st.x, dy = st.ty - st.y;
       if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
       else { st.x += dx * 0.45; st.y += dy * 0.45; }
-      el.style.transform = 'translate3d(' + (st.x - st.hx * k).toFixed(1) + 'px,'
-        + (st.y - st.hy * k).toFixed(1) + 'px,0)';
+      el.style.transform = 'translate3d(' + (st.x - st.hx * st.k).toFixed(1) + 'px,'
+        + (st.y - st.hy * st.k).toFixed(1) + 'px,0)';
       show(true);
     }
     function stop() {
@@ -5527,7 +5539,7 @@ bindImg(img);
         st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
         st.vis = (j.v !== 0);
         var sh = j.s || 'arrow';
-        if (sh !== st.shape) { st.shape = sh; paint(sh); }
+        if (sh !== st.shape) { st.shape = sh; paint(sh, st.zoom); }
         if (!st.raf) frame();
       };
       w.onclose = function () {
@@ -5537,7 +5549,7 @@ bindImg(img);
       };
       w.onerror = function () { try { w.close(); } catch (e) { } };
     }
-    paint('arrow');
+    paint('arrow', 1);
     connect();
   }
 

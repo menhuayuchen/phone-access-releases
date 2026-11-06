@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh"><head><meta charset="utf-8"><title>光标形状预览</title>
+<style>
+  body { margin:0; background:#0b0b0d; color:#c9ccd1; font:13px/1.4 system-ui,sans-serif; padding:14px; }
+  h1 { font-size:14px; margin:0 0 10px; color:#8fb6ff; font-weight:600; }
+  .row { display:flex; flex-wrap:wrap; gap:10px; }
+  .cell { width:118px; border-radius:10px; padding:8px; background:#23252b; text-align:center; }
+  .stage2 { height:86px; display:flex; align-items:center; justify-content:center; border-radius:7px; }
+  .dark { background:#2b2d33; } .light { background:#e9eaee; }
+  .nm { font-size:11px; color:#8b9099; margin-top:6px; }
+  .grid { display:grid; grid-template-columns:repeat(4,1fr); gap:10px; }
+</style></head><body>
+<h1>光标形状（3× 放大；深底 / 浅底各一行）</h1>
+<div class="grid" id="g"></div>
+<script>
+const SH = {
+  arrow:    { w:16, h:22, s:'<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' },
+  ibeam:    { w:12, h:18, s:'<path d="M1.5 1.5 H10.5 M6 1.5 V16.5 M1.5 16.5 H10.5" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M1.5 1.5 H10.5 M6 1.5 V16.5 M1.5 16.5 H10.5" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>' },
+  hand:     { w:16, h:20, s:'<path d="M3.6 9.5 V3.4 M7.6 9.5 V2.4 M11.6 9.5 V4.2" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M3.6 9.5 V14 C3.6 17.2 5.9 19 8.4 19 C10.9 19 13.2 17.2 13.2 14 V9.5" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M3.6 9.5 V3.4 M7.6 9.5 V2.4 M11.6 9.5 V4.2" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/><path d="M3.6 9.5 V14 C3.6 17.2 5.9 19 8.4 19 C10.9 19 13.2 17.2 13.2 14 V9.5" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>' },
+  wait:     { w:16, h:16, s:'<circle cx="8" cy="8" r="6.4" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M8 4.2 V8 L11 9.8" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>' },
+  progress: { w:18, h:23, s:'<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/><circle cx="15" cy="5" r="3.4" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M15 3 V5 L16.4 5.9" fill="none" stroke="#000" stroke-width="1.2"/>' },
+  cross:    { w:16, h:16, s:'<path d="M8 1 V15 M1 8 H15" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1 V15 M1 8 H15" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
+  sizeall:  { w:16, h:16, s:'<path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/><path d="M8 0.6 L10.4 3.6 H5.6 Z M8 15.4 L10.4 12.4 H5.6 Z M0.6 8 L3.6 5.6 V10.4 Z M15.4 8 L12.4 5.6 V10.4 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' },
+  sizewe:   { w:16, h:16, s:'<path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"/><path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#fff" stroke-width="1.05" stroke-linecap="round"/>' },
+  sizens:   { w:16, h:16, s:'<path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"/><path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#fff" stroke-width="1.05" stroke-linecap="round"/>' },
+  no:       { w:16, h:16, s:'<circle cx="8" cy="8" r="6.3" fill="#fff" stroke="#000" stroke-width="1.2"/><path d="M4 4 L12 12" stroke="#d00" stroke-width="2.2" stroke-linecap="round"/>' },
+  help:     { w:18, h:23, s:'<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/><text x="12.2" y="7.4" font-size="8" font-weight="700" font-family="sans-serif" fill="#1546d8">?</text>' },
+  uparrow:  { w:14, h:18, s:'<path d="M7 1 L12.6 7.4 H9.4 V16 H4.6 V7.4 H1.4 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' }
+};
+const Z = 3;
+const g = document.getElementById('g');
+for (const k of Object.keys(SH)) {
+  const d = SH[k];
+  const svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + d.w * Z + '" height="' + d.h * Z + '" viewBox="0 0 ' + d.w + ' ' + d.h + '">' + d.s + '</svg>';
+  const url = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
+  const cell = document.createElement('div');
+  cell.className = 'cell';
+  cell.innerHTML = '<div class="stage2 dark" style="background-image:' + url.replace(/"/g, "'") + '"></div>'
+    + '<div class="stage2 light" style="background-image:' + url.replace(/"/g, "'") + '"></div>'
+    + '<div class="nm">' + k + ' (' + d.w + '×' + d.h + ')</div>';
+  document.querySelectorAll('.stage2').forEach(() => {});
+  [].forEach.call(cell.querySelectorAll('.stage2'), (s) => {
+    s.style.backgroundRepeat = 'no-repeat';
+    s.style.backgroundPosition = 'center';
+    s.style.backgroundSize = (d.w * Z) + 'px ' + (d.h * Z) + 'px';
+  });
+  g.appendChild(cell);
+}
+</script>
+</body></html>
