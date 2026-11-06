@@ -70,9 +70,9 @@ function Test-TailnetHttps {
             } else {
                 # 没签出来：把 Tailscale 的原话压成一句给客户看
                 $hint = ''
-                if ($out -match 'https?://\S*admin\S*dns\S*') { $hint = '这个 Tailscale 账号还没启用 HTTPS。打开 Tailscale 后台 → DNS → HTTPS Certificates → 点 Enable HTTPS，然后重跑安装。' }
-                elseif ($out -match 'HTTPS is not enabled|https.*(disabled|not enabled)') { $hint = '这个 Tailscale 账号还没启用 HTTPS。打开 Tailscale 后台 → DNS → HTTPS Certificates → 点 Enable HTTPS，然后重跑安装。' }
-                elseif ($out -match 'tailnet.*does not support|not available') { $hint = '当前 tailnet 不支持自动签发证书。手机暂时不能用"安装到桌面"，浏览器打开仍然可用。' }
+                if ($out -match 'https?://\S*admin\S*dns\S*') { $hint = '这个 Tailscale 账号还没启用 HTTPS。一次性设置：打开 Tailscale 后台 → DNS → HTTPS Certificates → 点 Enable HTTPS（同一个页面里就有链接），然后回到手机页面再点一次「一键开启远程 HTTPS」。' }
+                elseif ($out -match 'HTTPS is not enabled|https.*(disabled|not enabled)') { $hint = '这个 Tailscale 账号还没启用 HTTPS。一次性设置：打开 Tailscale 后台 → DNS → HTTPS Certificates → 点 Enable HTTPS（同一个页面里就有链接），然后回到手机页面再点一次「一键开启远程 HTTPS」。' }
+                elseif ($out -match 'tailnet.*does not support|not available') { $hint = '当前 tailnet 不支持自动签发证书（多半是没开 HTTPS Certificates）。手机暂时装不了 App，用浏览器打开仍然可用。' }
                 elseif ($out.Trim()) { $hint = '签发证书失败：' + (($out.Trim() -split "`n")[0]) }
                 else { $hint = '签发证书失败（无输出）' }
                 $res.Hint = $hint

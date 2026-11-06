@@ -663,13 +663,14 @@ function refreshWinRect() {
     .catch(() => { });
 }
 
-// 非安全上下文（http）提示：浏览器在 http 下禁用 WebRTC，只能走 WS 通道（延迟更高）。
-// 局域网请用 https 地址（桌面「手机远程 → 离线模式」入口会自动给出）。
+// 非安全上下文（http）提示：画面/触控照常走 WebRTC264（2026-11-06 起 http 也能低延迟），
+// 但有几样浏览器只给安全上下文：装成 App（Service Worker）、WebCodecs 备用高清通道、声音的 AudioWorklet。
+// 所以只做一句轻提示，不吓人；想全功能还是用 https 地址（桌面「手机远程 → 离线模式」会自动给出）。
 try {
-  if (!window.isSecureContext || !window.RTCPeerConnection) {
+  if (!window.isSecureContext) {
     setTimeout(function () {
-      try { setNote('当前是 http 打开的：WebRTC 用不了，延迟会更高。改用 https 地址（手机入口 → 离线模式）可走低延迟通道。', 14000); } catch (e) { }
-    }, 3000);
+      try { setNote('当前是 http 打开：画面/触控正常（走低延迟通道），但装不了 App、声音会用兼容模式。想要全部功能，用 https 地址。', 12000); } catch (e) { }
+    }, 3500);
   }
 } catch (e) { }
 
@@ -1214,10 +1215,11 @@ function rtc264Wanted() {
   let p = null;
   try { p = new URLSearchParams(location.search).get('rtc264'); } catch (e) { }
   if (p === '0') return false;
-  // http 不是安全上下文：WebRTC 实际用不了（Chrome 可能仍暴露 RTCPeerConnection 但连接必失败），
-  // 直接走 WS 通道，省掉一次必然失败的 3 秒尝试。
-  const secure = (typeof window.isSecureContext === 'boolean') ? window.isSecureContext : true;
-  if (!secure) return false;
+  // 2026-11-06 修正：**http（非安全上下文）也走 WebRTC264**。
+  // 之前的判断是「http 下 WebRTC 连不上，直接走 WS」—— 实测是错的：
+  //   http 下 RTCPeerConnection 正常、ICE 能收齐、<video> 能播 MediaStream；
+  //   真正被安全上下文卡住的是 WebCodecs（window.VideoDecoder 在 http 下是 undefined），
+  //   所以 http 走 WS 那条路必失败，最后只能掉到 5fps 的低频画面 —— 这才是「http 很卡」的根因。
   if (p === '1' || p === 'relay') return !!window.RTCPeerConnection;
   return !!(h264.rtcEnabled && window.RTCPeerConnection);
 }
@@ -1259,6 +1261,10 @@ async function startH264() {
     }
   } catch (e) { }
   if (!st || !st.enabled) { startMjpeg(); return; }
+  // 2026-11-06：WebRTC264 的判断必须放在 WebCodecs 检查**前面**。
+  // http 下没有 window.VideoDecoder（WebCodecs 是安全上下文专属），但 WebRTC 完全可用；
+  // 原来先判 WebCodecs，导致 http 直接掉到 5fps 的低频画面。
+  if (rtc264Wanted()) { startRtc264(); return; }
   if (!(window.VideoDecoder && window.EncodedVideoChunk)) { startMjpeg(); return; }   // 没有 WebCodecs 就回落 MJPEG
   stopH264();
   stopRtc();
@@ -1436,7 +1442,6 @@ async function startH264() {
     }
   }, 5000);  };
 
-  if (rtc264Wanted()) { startRtc264(); return; }
   const useWt = new URLSearchParams(location.search).get('wt') === '1' && h264.wt && h264.wt.enabled && h264.wt.hash && window.WebTransport;
   if (useWt) { startWtTransport(); return; }
   connectWs();
@@ -1726,13 +1731,10 @@ btnCrisp.addEventListener('click', async () => {
   stopRtc();
   try { await fetch('/rtc-off', { method: 'POST' }); } catch (e) {}
   await postMode({});
-  if (h264Supported()) {
-    stopLowBw();                        // 高清模式下不该再挂着 200ms 的低频轮询定时器
-    startH264();
-    setStat('高清模式（H.264）');
-  } else {
-    startMjpeg();
-  }
+  // 2026-11-06：同样交给 startH264 自己选通道（http 下 WebCodecs 不可用，但 WebRTC264 可用）
+  stopLowBw();                          // 高清模式下不该再挂着 200ms 的低频轮询定时器
+  startH264();
+  setStat('高清模式（H.264）');
   if (state.lowBw && state.mode === 'mjpeg') startLowBw();
   if (state.audio) startPcmAudio();     // 声音统一走 PCM 通道（H.264 只传画面）
   buzz(8);
@@ -2793,13 +2795,13 @@ bindImg(img);
   await postMode({});
   await loadSources(true);
   startSourcesPolling();
-  // 默认优先高清（H.264）；不支持或组件缺失时 startH264 会自己回落 MJPEG
+  // 默认优先低延迟通道；startH264 内部会依次判断：WebRTC264 → WebCodecs(WS) → 低频画面兜底。
+  // 2026-11-06 修正：http 下没有 WebCodecs（安全上下文专属），原来这里先判 h264Supported()
+  // 就直接掉到 5fps 的低频画面，永远没机会走 WebRTC264。
   if (new URLSearchParams(location.search).get('mjpeg') === '1') {
     startMjpeg();
-  } else if (h264Supported()) {
-    startH264();
   } else {
-    startMjpeg();
+    startH264();
   }
   pollStats();
   statsTimer = setInterval(pollStats, 2000);   // 顺带每 6 秒做一次 WebRTC 丢包自适应
@@ -3327,13 +3329,25 @@ bindImg(img);
       rows.push(setKv('在线节点', '<span style="color:#aeb3bb">' + (s.onlinePeers || 0) + ' / ' + (s.peerTotal || 0) + '</span>'));
       // 远程 HTTPS 入口（tailscale serve）：一键开启，省得客户自己去后台折腾
       if (s.httpsUrl) {
-        rows.push(setKv('远程 HTTPS', '<a href="' + escHtml(s.httpsUrl) + '" style="color:#8fb6ff">' + escHtml(s.httpsUrl) + '</a>'));
+        // 已开启：给「复制 / 直接打开」两个动作，省得客户手动抄地址
+        rows.push(setKv('远程 HTTPS', '<a href="' + escHtml(s.httpsUrl) + '" target="_blank" rel="noreferrer" style="color:#8fb6ff">' + escHtml(s.httpsUrl) + '</a>'));
+        rows.push('<div style="display:flex;gap:8px;align-items:center;margin:6px 0 2px;flex-wrap:wrap">'
+          + '<button id="tsHttpsCopy" data-url="' + escHtml(s.httpsUrl) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">复制这个地址</button>'
+          + '<a href="' + escHtml(s.httpsUrl) + '" target="_blank" rel="noreferrer" style="background:#2f6feb;color:#fff;border-radius:8px;padding:5px 11px;font-size:11.5px;text-decoration:none">用它打开</a>'
+          + '<span id="tsHttpsMsg" style="font-size:11.5px;color:#868c96"></span></div>');
+        rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.6">这个地址是 https 的，证书由 Tailscale 自动签发（手机不用装任何证书）。加到手机主屏当 App 用最方便。</div>');
       } else {
         rows.push(setKv('远程 HTTPS', '<span style="color:#ffb454">未开启</span>'));
         rows.push('<div style="display:flex;gap:8px;align-items:center;margin:6px 0 2px;flex-wrap:wrap">'
           + '<button id="tsHttpsBtn" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">一键开启远程 HTTPS</button>'
+          + '<a href="https://login.tailscale.com/admin/dns" target="_blank" rel="noreferrer" style="color:#8fb6ff;font-size:11.5px;text-decoration:none">去 Tailscale 后台启用 HTTPS →</a>'
           + '<span id="tsHttpsMsg" style="font-size:11.5px;color:#868c96"></span></div>');
-        if (s.httpsHint) rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.6">' + escHtml(s.httpsHint) + '</div>');
+        // 三步傻瓜化：① 后台一次性启用 ② 回来点按钮 ③ 用新地址打开
+        rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.75">'
+          + '<b style="color:#aeb3bb">怎么开（一次性）</b>：① 打开上面那个后台链接 → 登录 → <b>DNS</b> → <b>HTTPS Certificates</b> → 点 <b>Enable HTTPS</b>；'
+          + '② 回到这里点「一键开启远程 HTTPS」；③ 出现 https 地址后，用「用它打开」进一次，再「添加到主屏幕」。'
+          + '</div>');
+        if (s.httpsHint) rows.push('<div style="margin-top:4px;color:#ffb454;font-size:11px;line-height:1.6">' + escHtml(s.httpsHint) + '</div>');
       }
     }
     if (s.peers && s.peers.length) {
@@ -3376,6 +3390,12 @@ bindImg(img);
       try { s = await fetch('/tailscale-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { s = null; }
       if (!s) { bodyEl.innerHTML = '<span style="color:#ff6b6b">检测失败：读不到 Tailscale 状态。</span>'; return; }
       bodyEl.innerHTML = tsRowsHtml(s);
+      const httpsCopy = bodyEl.querySelector('#tsHttpsCopy');
+      if (httpsCopy) httpsCopy.addEventListener('click', () => {
+        const u = httpsCopy.getAttribute('data-url') || '';
+        if (copyText(u)) { httpsCopy.textContent = '已复制'; setTimeout(() => { httpsCopy.textContent = '复制这个地址'; }, 1500); }
+        else { setMsg('复制不了，长按上面的地址手动复制', '#ffb454'); }
+      });
       const httpsBtn = bodyEl.querySelector('#tsHttpsBtn');
       if (httpsBtn) httpsBtn.addEventListener('click', async () => {
         const hm = bodyEl.querySelector('#tsHttpsMsg');
@@ -3384,11 +3404,11 @@ bindImg(img);
         let r = null;
         try { r = await fetch('/tailscale-https', { method: 'POST' }).then((x) => x.json()); } catch (e) { r = null; }
         if (hm) {
-          hm.textContent = (r && (r.note || (r.ok ? '已开启' : ''))) || '开启失败（看上面的说明）';
-          hm.style.color = (r && r.ok) ? '#8CE58C' : '#ffb454';
+          if (r && r.ok) { hm.textContent = '已开启：' + (r.url || ''); hm.style.color = '#8CE58C'; }
+          else { hm.textContent = (r && r.note) || '开启失败（看上面的说明）'; hm.style.color = '#ffb454'; }
         }
         httpsBtn.disabled = false; httpsBtn.style.opacity = '1';
-        setTimeout(load, 1500);
+        setTimeout(load, 2000);
       });
       const ins = bodyEl.querySelector('#tsInstall');
       if (ins) ins.addEventListener('click', async () => {
