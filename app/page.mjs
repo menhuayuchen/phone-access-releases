@@ -4382,7 +4382,12 @@ bindImg(img);
         + '<input type="checkbox" id="offToggle" ' + (on ? 'checked' : '') + '> 开启局域网访问（会重启画面服务，约 10 秒；会弹一次管理员授权）</label>';
       if (on) {
         const firstIp = (j.ips && j.ips.length) ? j.ips[0] : null;
-        const firstUrl = firstIp ? ((j.https === false ? 'http://' : 'https://') + firstIp.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY)) : '';
+        const blockedPorts = (j.blockedPorts || []).map(Number);
+        // 被旧防火墙规则挡住的端口排最后，二维码/首选地址用没被挡的那个
+        const httpsPorts = [j.port, j.httpsPort2].filter((p) => Number(p) > 0);
+        httpsPorts.sort((a, b) => ((blockedPorts.indexOf(a) >= 0 ? 1 : 0) - (blockedPorts.indexOf(b) >= 0 ? 1 : 0)));
+        const firstPort = httpsPorts[0] || j.port;
+        const firstUrl = firstIp ? ((j.https === false ? 'http://' : 'https://') + firstIp.ip + ':' + firstPort + '/?k=' + encodeURIComponent(KEY)) : '';
         h += '<div style="margin-top:12px;color:#e8eaee;font-size:12.5px">手机扫码或打开（同一 Wi-Fi / 热点）：</div>';
         if (!j.ips || !j.ips.length) {
           h += '<div style="color:#ffb454;font-size:12px;margin-top:4px">没检测到局域网 IP（先连上 Wi-Fi 或开热点；用 USB 共享网络也可以）</div>';
@@ -4392,27 +4397,26 @@ bindImg(img);
             + 'style="background:#fff;padding:6px;border-radius:10px;display:block">'
             + '<div style="flex:1;min-width:210px">';
           for (const it of j.ips) {
-            const url = (j.https === false ? 'http://' : 'https://') + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
-            const tag = it.usb
-              ? '<span style="background:#1d3a24;color:#8CE58C;border:1px solid #2f5f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">USB 直连 · 最快</span>'
-              : '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span>';
-            h += '<div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">'
-              + '<code style="color:#8fb6ff;font-size:12px">' + esc(url) + '</code>'
-              + '<button class="offCopy" data-url="' + esc(url) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer">复制</button>'
-              + tag + '</div>';
+            for (const p of httpsPorts) {
+              const isBlocked = blockedPorts.indexOf(p) >= 0;
+              const url = (j.https === false ? 'http://' : 'https://') + it.ip + ':' + p + '/?k=' + encodeURIComponent(KEY);
+              let tag = '';
+              if (it.usb) tag += '<span style="background:#1d3a24;color:#8CE58C;border:1px solid #2f5f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">USB 直连 · 最快</span>';
+              if (p !== j.port) tag += '<span style="background:#20232b;color:#8fb6ff;border:1px solid #2a2f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">备用端口 ' + p + '</span>';
+              if (isBlocked) tag += '<span style="color:#ffb454;font-size:10.5px">被旧防火墙规则挡住，需点一次管理员授权修复</span>';
+              if (!it.usb && !isBlocked) tag += '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span>';
+              h += '<div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">'
+                + '<code style="color:' + (isBlocked ? '#8a8f98' : '#8fb6ff') + ';font-size:12px">' + esc(url) + '</code>'
+                + '<button class="offCopy" data-url="' + esc(url) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer">复制</button>'
+                + tag + '</div>';
+            }
           }
           h += '</div></div>';
           h += '<div style="color:#6b7078;font-size:11px;margin-top:6px">这台电脑是自签证书：手机第一次打开提示"不安全"，点「高级 → 继续前往」；'
             + '继续后 HUD 应显示「WebRTC264 直连」（才是低延迟通道）。</div>';
-          if (firstIp && j.httpsPort2) {
-            const u2 = 'https://' + firstIp.ip + ':' + j.httpsPort2 + '/?k=' + encodeURIComponent(KEY);
-            h += '<div style="margin-top:6px;font-size:11px;color:#6b7078;line-height:1.7">上面那个一直超时（旧防火墙规则挡住 8660）？用这个<b>低延迟备用端口</b>（一样是 https、一样点「继续前往」）：'
-              + '<br><code style="color:#8fb6ff">' + esc(u2) + '</code> '
-              + '<button class="offCopy" data-url="' + esc(u2) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button></div>';
-          }
           if (firstIp && j.fallbackPort) {
             const fb = 'http://' + firstIp.ip + ':' + j.fallbackPort + '/?k=' + encodeURIComponent(KEY);
-            h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">上面那个打不开（证书页过不去/浏览器限制）？试备用地址（不加密、延迟略高）：'
+            h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">https 都过不去（证书页/浏览器限制）？试明文备用（WS，延迟略高）：'
               + '<code style="color:#8fb6ff">' + esc(fb) + '</code> '
               + '<button class="offCopy" data-url="' + esc(fb) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button>'
               + '<div style="display:flex;gap:10px;align-items:center;margin-top:8px">'

@@ -2029,6 +2029,32 @@ function usbLanIps() {
   if (now - _usbIpsCache.at > 60000) refreshUsbLanIps();
   return _usbIpsCache.ips;
 }
+// 哪些局域网端口被"产品相关的 Block 规则"挡住（只读查询，不需要管理员）：
+// 旧安装器留下的 "DSH phone access : block lan 8660" 会让 8660 超时，页面要自动优先用没被挡的端口。
+let _blockedPorts = { at: 0, ports: [] };
+let _blockedRefreshing = false;
+function refreshBlockedPorts(cb) {
+  if (_blockedRefreshing) { if (cb) cb(); return; }
+  _blockedRefreshing = true;
+  const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const cmd = "Get-NetFirewallRule -Direction Inbound -Action Block -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.DisplayName -match 'phone ?access|手机远程' } | ForEach-Object { $pf = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $_ -ErrorAction SilentlyContinue; if ($pf) { ($pf.LocalPort -join ',') } }";
+  execFile(psExe, ['-NoProfile', '-Command', cmd], { timeout: 8000, windowsHide: true }, (err, out) => {
+    _blockedRefreshing = false;
+    let ports = [];
+    if (!err) {
+      ports = String(out || '').split(/[\s,]+/).map((s) => Number(s)).filter((n) => Number.isFinite(n) && n > 0);
+      ports = [...new Set(ports)];
+    }
+    _blockedPorts = { at: Date.now(), ports: ports };
+    if (cb) cb();
+  });
+}
+function blockedPortsNow() {
+  if (Date.now() - _blockedPorts.at > 60000) refreshBlockedPorts();
+  return _blockedPorts.ports;
+}
+setTimeout(() => { try { refreshBlockedPorts(); } catch { } }, 5000);
+
 // 启动时预热一次（手机 USB 共享一出现，下一次 /offline-info 就能带上）
 setTimeout(() => { try { refreshUsbLanIps(); } catch { } }, 4000);
 
@@ -4042,6 +4068,7 @@ async function handler(req, res) {
         https: LAN_HTTPS,
         fallbackPort: (Number(cfgNow.ports && cfgNow.ports.screen) || 8660) + 1,
         httpsPort2: (Number(cfgNow.ports && cfgNow.ports.screen) || 8660) + 2,
+        blockedPorts: (() => { try { return blockedPortsNow(); } catch { return []; } })(),
         hotspot: hs
       }));
     } catch { }
