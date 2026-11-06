@@ -2206,6 +2206,13 @@ let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoo
 let multiGesture = false;
 
 overlay.addEventListener('pointerdown', (e) => {
+  // 主指针落下 = 新的一轮触摸序列：清掉上一轮可能残留的指针状态。
+  // （三指手势常被浏览器用 pointercancel 收尾，pointerup 不一定全会来；不清理的话
+  //  activePtr 里会一直留着旧 id，之后每次单指都被当成"多指"，画面就拖不动了。）
+  if (e.isPrimary) {
+    activePtr.clear();
+    multiGesture = false;
+  }
   activePtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
   // 多指（第二根及以后）落下：取消单指状态与画面平移，别让抬手被当成点击
   const multiPt = (activePtr.size > 1) || e.isPrimary === false;
@@ -2543,6 +2550,8 @@ overlay.addEventListener('touchend', (e) => {
   if (e.touches.length === 0) {
     if (longTimer) { clearTimeout(longTimer); longTimer = null; }
     ptr = null; dragBtn = -1; moved = false;
+    viewPan = null;
+    activePtr.clear();
     // 所有手指都抬起后延迟复位：先让这一轮的 pointerup 处理完，再允许下一次单点
     setTimeout(() => { multiGesture = false; }, 0);
   }
@@ -2553,8 +2562,10 @@ overlay.addEventListener('touchcancel', () => {
   pinch = null;
   zoomG = null;
   viewG = null;
+  viewPan = null;
   ptr = null; dragBtn = -1; moved = false;
-  setTimeout(() => { multiGesture = false; }, 0);
+  activePtr.clear();              // 关键：别让残留指针把下一次单指拖拽当成多指
+  multiGesture = false;
   releaseZoomCtrl();
 }, { passive: true });
 // 切后台/失焦/关页面时一定要把 Ctrl 补起来，否则电脑上会卡着 Ctrl
