@@ -29,7 +29,7 @@ process.on('unhandledRejection', (e) => {
 });
 import http, { createServer } from 'node:http';
 import https from 'node:https';
-import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream, createWriteStream, openSync, closeSync } from 'node:fs';
+import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, renameSync, mkdirSync, readdirSync, createReadStream, createWriteStream, openSync, closeSync, ftruncateSync, existsSync, rmSync, statfsSync } from 'node:fs';
 import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
@@ -1994,6 +1994,17 @@ function writeSystemClipboard(text) {
 //   · 上传大小上限 32MB，超过直接断开；文件名重名自动加 (1)(2)…
 //   · 走默认鉴权（必须密钥/cookie），和画面接口同一套。
 const UPLOAD_DIR = join(process.env.USERPROFILE || HERE, 'Downloads', 'PhoneAccess');
+const STAGING_DIR = join(UPLOAD_DIR, '.staging');   // 并行分片上传的暂存区（用完即删）
+// 启动时清理超过 7 天的残留分片会话（20GB 级上传中断会占很大空间）
+try {
+  for (const d of readdirSync(STAGING_DIR)) {
+    const dir = join(STAGING_DIR, d);
+    let meta = null;
+    try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')); } catch { }
+    const age = Date.now() - Number((meta && meta.created) || 0);
+    if (!meta || age > 7 * 86400000) { try { rmSync(dir, { recursive: true, force: true }); } catch { } }
+  }
+} catch { }
 const UPLOAD_MAX = 20 * 1024 * 1024 * 1024;   // 大文件：上限 20GB（局域网直传，速度就是 Wi-Fi 上限）
 // 真实桌面路径（可能被重定向到 D:\...）；reg.exe 输出是系统代码页，中文机按 GBK 解
 let _deskCache = null;
@@ -2831,6 +2842,143 @@ async function handler(req, res) {
     } catch (e) {
       try { res.end(); } catch { }
     }
+    return;
+  }
+
+  // ---- 并行分片上传（2026-11-06）：100GB 级大文件，多连接并发吃满 Wi-Fi -------------
+  // POST /upload/init   {name,size}          -> {id, chunkSize, parts}（预分配文件，写盘按偏移）
+  // POST /upload/part?id=&index=              -> 分片原始字节（按 index*chunkSize 偏移写入）
+  // POST /upload/done   {id}                  -> 校验分片齐全 -> 改名到「下载\PhoneAccess」
+  // GET  /upload/status?id=                   -> {done:[indexes], parts, chunkSize}（断点续传用）
+  // POST /upload/abort  {id}                  -> 清理暂存
+  const STAGING_DIR = join(UPLOAD_DIR, '.staging');
+  const UP_CHUNK = 32 * 1024 * 1024;
+  if (url.pathname === '/upload/init' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+      let j = {};
+      try { j = JSON.parse(body || '{}'); } catch { }
+      const name = safeUploadName(j.name);
+      const size = Number(j.size);
+      if (!name) return jr(400, { ok: false, message: '文件名不合法' });
+      if (!Number.isFinite(size) || size <= 0) return jr(400, { ok: false, message: '文件大小不合法' });
+      if (size > UPLOAD_MAX) return jr(413, { ok: false, message: '文件太大（上限 20GB）' });
+      try { mkdirSync(STAGING_DIR, { recursive: true }); } catch { }
+      try {
+        const sf = statfsSync(UPLOAD_DIR);
+        const free = Number(sf.bavail) * Number(sf.bsize);
+        if (free > 0 && free < size + 512 * 1024 * 1024) return jr(507, { ok: false, message: '电脑硬盘空间不够（需要 ' + (size / 1073741824).toFixed(1) + 'GB）' });
+      } catch { }
+      const id = randomBytes(8).toString('hex');
+      const dir = join(STAGING_DIR, id);
+      try {
+        mkdirSync(dir, { recursive: true });
+        const fd = openSync(join(dir, 'data'), 'w');
+        closeSync(fd);
+        const fd2 = openSync(join(dir, 'data'), 'r+');
+        ftruncateSync(fd2, size);
+        closeSync(fd2);
+        writeFileSync(join(dir, 'meta.json'), JSON.stringify({ name: name, size: size, chunkSize: UP_CHUNK, created: Date.now() }));
+      } catch (e) {
+        try { rmSync(dir, { recursive: true, force: true }); } catch { }
+        return jr(500, { ok: false, message: '建暂存失败：' + ((e && e.message) || e) });
+      }
+      const parts = Math.ceil(size / UP_CHUNK);
+      console.log('upload: init ' + name + ' ' + size + 'B parts=' + parts + ' id=' + id);
+      jr(200, { ok: true, id: id, name: name, size: size, chunkSize: UP_CHUNK, parts: parts });
+    });
+    return;
+  }
+  if (url.pathname === '/upload/part' && req.method === 'POST') {
+    const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+    const id = String(url.searchParams.get('id') || '');
+    const index = Number(url.searchParams.get('index'));
+    if (!/^[a-f0-9]{16}$/.test(id) || !Number.isInteger(index) || index < 0) return jr(400, { ok: false, message: '参数不合法' });
+    const dir = join(STAGING_DIR, id);
+    let meta = null;
+    try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')); } catch { }
+    if (!meta) return jr(404, { ok: false, message: '上传会话不存在（重新开始）' });
+    const offset = index * meta.chunkSize;
+    if (offset >= meta.size) return jr(400, { ok: false, message: '分片越界' });
+    const maxLen = Math.min(meta.chunkSize, meta.size - offset);
+    let ws = null;
+    try { ws = createWriteStream(join(dir, 'data'), { flags: 'r+', start: offset }); } catch (e) { return jr(500, { ok: false, message: '打开暂存失败' }); }
+    let got = 0;
+    let done = false;
+    const fail = (code, message) => {
+      if (done) return; done = true;
+      try { ws.destroy(); } catch { }
+      jr(code, { ok: false, message: message });
+    };
+    req.on('data', (c) => { got += c.length; if (got > maxLen + 1024) { fail(413, '分片太大'); try { req.destroy(); } catch { } } });
+    req.on('error', () => fail(500, '分片传输出错'));
+    ws.on('error', () => fail(500, '写分片失败'));
+    req.pipe(ws);
+    ws.on('finish', () => {
+      if (done) return;
+      if (got !== maxLen) return fail(400, '分片大小不对（' + got + '/' + maxLen + '）');
+      done = true;
+      try { writeFileSync(join(dir, 'done-' + index), '1'); } catch { }
+      jr(200, { ok: true, index: index, size: got });
+    });
+    return;
+  }
+  if (url.pathname === '/upload/status' && req.method === 'GET') {
+    const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+    const id = String(url.searchParams.get('id') || '');
+    if (!/^[a-f0-9]{16}$/.test(id)) return jr(400, { ok: false, message: '参数不合法' });
+    const dir = join(STAGING_DIR, id);
+    let meta = null;
+    try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')); } catch { }
+    if (!meta) return jr(404, { ok: false, message: '没有这个上传会话' });
+    const parts = Math.ceil(meta.size / meta.chunkSize);
+    const doneIdx = [];
+    for (let i = 0; i < parts; i++) { try { if (statSync(join(dir, 'done-' + i)).isFile()) doneIdx.push(i); } catch { } }
+    return jr(200, { ok: true, id: id, name: meta.name, size: meta.size, chunkSize: meta.chunkSize, parts: parts, done: doneIdx });
+  }
+  if (url.pathname === '/upload/done' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+      let j = {};
+      try { j = JSON.parse(body || '{}'); } catch { }
+      const id = String(j.id || '');
+      if (!/^[a-f0-9]{16}$/.test(id)) return jr(400, { ok: false, message: '参数不合法' });
+      const dir = join(STAGING_DIR, id);
+      let meta = null;
+      try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')); } catch { }
+      if (!meta) return jr(404, { ok: false, message: '上传会话不存在' });
+      const parts = Math.ceil(meta.size / meta.chunkSize);
+      for (let i = 0; i < parts; i++) {
+        try { if (!statSync(join(dir, 'done-' + i)).isFile()) return jr(400, { ok: false, message: '还缺分片 ' + i + '（刷新页面可断点续传）' }); } catch { return jr(400, { ok: false, message: '还缺分片 ' + i }); }
+      }
+      let finalPath = '';
+      try { finalPath = uniqueUploadPath(meta.name); renameSync(join(dir, 'data'), finalPath); } catch (e) {
+        return jr(500, { ok: false, message: '合并失败：' + ((e && e.message) || e) });
+      }
+      let sz = 0;
+      try { sz = statSync(finalPath).size; } catch { }
+      try { rmSync(dir, { recursive: true, force: true }); } catch { }
+      console.log('upload: done ' + basename(finalPath) + ' ' + sz + 'B');
+      jr(200, { ok: true, name: basename(finalPath), size: sz, dir: UPLOAD_DIR, message: '已收到：' + basename(finalPath) + '（' + (sz / 1048576).toFixed(1) + ' MB）' });
+    });
+    return;
+  }
+  if (url.pathname === '/upload/abort' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
+    req.on('end', () => {
+      const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+      let j = {};
+      try { j = JSON.parse(body || '{}'); } catch { }
+      const id = String(j.id || '');
+      if (!/^[a-f0-9]{16}$/.test(id)) return jr(400, { ok: false, message: '参数不合法' });
+      try { rmSync(join(STAGING_DIR, id), { recursive: true, force: true }); } catch { }
+      return jr(200, { ok: true });
+    });
     return;
   }
 

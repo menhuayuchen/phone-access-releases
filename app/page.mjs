@@ -3393,6 +3393,8 @@ bindImg(img);
     const bar = box.querySelector('#fileBar');
     const prog = box.querySelector('#fileProg');
     if (!pick || !sendBtn) return;
+    const BIG = 8 * 1024 * 1024;      // 超过 8MB 走分片并行
+    const PARALLEL = 4;               // 4 路并发（吃满 Wi-Fi）
     const fmt = (n) => {
       const v = Number(n) || 0;
       if (v >= 1024 * 1024 * 1024) return (v / 1073741824).toFixed(2) + ' GB';
@@ -3454,7 +3456,91 @@ bindImg(img);
         browse(el.getAttribute('data-dir') || '');
       }));
     };
-    // 多文件顺序上传：总进度 + 实时速度 + 剩余时间
+    // 小文件：单连接流式 POST
+    const uploadSimple = (f, onProg) => new Promise((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open('POST', '/file?name=' + encodeURIComponent(f.name));
+      xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) onProg(ev.loaded); };
+      xhr.onload = () => {
+        let j = null;
+        try { j = JSON.parse(xhr.responseText); } catch (e) { }
+        resolve({ ok: xhr.status === 200 && j && j.ok, msg: (j && j.message) || ('HTTP ' + xhr.status) });
+      };
+      xhr.onerror = () => resolve({ ok: false, msg: '网络断了' });
+      xhr.send(f);
+    });
+    // 大文件：分片 + 4 路并发（服务端按偏移写同一个文件），支持断点续传
+    const uploadBig = async (f, onProg) => {
+      const key = 'upq:' + f.name + ':' + f.size;
+      let init = null;
+      let loaded = 0;
+      const chunkLenOf = (cs, i) => Math.min(cs, f.size - i * cs);
+      try {
+        let savedId = '';
+        try { savedId = localStorage.getItem(key) || ''; } catch (e) { }
+        if (savedId) {
+          let st = null;
+          try { const r = await fetch('/upload/status?id=' + savedId + '&_=' + Date.now(), { cache: 'no-store' }); if (r.status === 200) st = await r.json(); } catch (e) { }
+          if (st && st.ok && st.size === f.size && st.name === f.name) {
+            init = { id: st.id, chunkSize: st.chunkSize, parts: st.parts, done: st.done || [] };
+          }
+        }
+        if (!init) {
+          const r = await fetch('/upload/init', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name: f.name, size: f.size }) });
+          const j = await r.json().catch(() => null);
+          if (!j || !j.ok) return { ok: false, msg: (j && j.message) || ('初始化失败 HTTP ' + r.status) };
+          init = { id: j.id, chunkSize: j.chunkSize, parts: j.parts, done: [] };
+        }
+        try { localStorage.setItem(key, init.id); } catch (e) { }
+        const cs = init.chunkSize;
+        const parts = init.parts;
+        const doneSet = new Set(init.done || []);
+        doneSet.forEach((i) => { loaded += chunkLenOf(cs, i); });
+        if (loaded > 0) onProg(loaded, '续传');
+        let next = 0;
+        let failed = '';
+        const sendPart = (i) => new Promise((resolve) => {
+          const start = i * cs;
+          const end = Math.min(f.size, start + cs);
+          const blob = f.slice(start, end);
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/upload/part?id=' + init.id + '&index=' + i);
+          let last = 0;
+          xhr.upload.onprogress = (ev) => {
+            if (!ev.lengthComputable) return;
+            const delta = ev.loaded - last;
+            last = ev.loaded;
+            loaded += delta;
+            onProg(loaded);
+          };
+          xhr.onload = () => {
+            if (xhr.status === 200) { doneSet.add(i); resolve(true); }
+            else { failed = failed || ('分片 ' + (i + 1) + '/' + parts + ' 失败 HTTP ' + xhr.status); resolve(false); }
+          };
+          xhr.onerror = () => { failed = failed || '网络断了'; resolve(false); };
+          xhr.send(blob);
+        });
+        const worker = async () => {
+          for (;;) {
+            const i = next++;
+            if (i >= parts) return;
+            if (doneSet.has(i)) continue;
+            const ok = await sendPart(i);
+            if (!ok) return;
+            onProg(loaded);
+          }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        if (failed) return { ok: false, msg: failed };
+        const r2 = await fetch('/upload/done', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: init.id }) });
+        const j2 = await r2.json().catch(() => null);
+        if (!j2 || !j2.ok) return { ok: false, msg: (j2 && j2.message) || ('完成失败 HTTP ' + r2.status) };
+        try { localStorage.removeItem(key); } catch (e) { }
+        return { ok: true, msg: j2.message || '' };
+      } catch (e) {
+        return { ok: false, msg: (e && e.message) || '上传出错' };
+      }
+    };
     let busy = false;
     if (sendBtn) sendBtn.addEventListener('click', async () => {
       if (busy) return;
@@ -3464,53 +3550,41 @@ bindImg(img);
       sendBtn.disabled = true;
       if (wrap) wrap.style.display = 'block';
       if (bar) bar.style.width = '0%';
-      const totalBytes = files.reduce((a, f) => a + f.size, 0);
-      const t0 = Date.now();
       let doneBytes = 0;
-      let failed = 0;
+      let okCount = 0;
+      let failCount = 0;
+      const tAll = Date.now();
       for (let i = 0; i < files.length; i++) {
         const f = files[i];
         const label = '（' + (i + 1) + '/' + files.length + '）' + f.name;
-        setMsg('正在传 ' + label);
-        await new Promise((resolve) => {
-          const xhr = new XMLHttpRequest();
-          xhr.open('POST', '/file?name=' + encodeURIComponent(f.name));
-          xhr.upload.onprogress = (ev) => {
-            if (!ev.lengthComputable) return;
-            const loaded = doneBytes + ev.loaded;
-            const pct = totalBytes ? Math.round(loaded * 100 / totalBytes) : 0;
-            if (bar) bar.style.width = pct + '%';
-            const sec = Math.max(0.2, (Date.now() - t0) / 1000);
-            const speed = loaded / sec;
-            const left = speed > 0 ? (totalBytes - loaded) / speed : 0;
-            if (prog) prog.textContent = label + ' · ' + fmt(loaded) + ' / ' + fmt(totalBytes)
-              + '（' + pct + '%） · ' + fmtSpeed(speed) + ' · 剩余 ' + (left > 1 ? Math.ceil(left) + ' 秒' : '…');
-          };
-          xhr.onload = () => {
-            let j = null;
-            try { j = JSON.parse(xhr.responseText); } catch (e) { }
-            if (xhr.status === 200 && j && j.ok) {
-              doneBytes += f.size;
-              if (bar) bar.style.width = Math.min(100, Math.round(doneBytes * 100 / totalBytes)) + '%';
-            } else {
-              failed++;
-              setMsg((j && j.message) || ('上传失败（HTTP ' + xhr.status + '）：' + f.name), '#ff6b6b');
-            }
-            resolve();
-          };
-          xhr.onerror = () => { failed++; resolve(); };
-          xhr.send(f);
-        });
+        const t0 = Date.now();
+        let lastUi = 0;
+        const onProg = (loaded, tag) => {
+          const now = Date.now();
+          if (now - lastUi < 120 && loaded < f.size) return;
+          lastUi = now;
+          const pct = f.size ? Math.min(100, Math.round(loaded * 100 / f.size)) : 0;
+          if (bar) bar.style.width = pct + '%';
+          const sec = Math.max(0.2, (now - t0) / 1000);
+          const speed = loaded / sec;
+          const left = speed > 0 ? (f.size - loaded) / speed : 0;
+          if (prog) prog.textContent = label + (tag ? '（' + tag + '）' : '') + ' · ' + fmt(loaded) + ' / ' + fmt(f.size)
+            + '（' + pct + '%） · ' + fmtSpeed(speed) + ' · 剩余 ' + (left > 1 ? Math.ceil(left) + ' 秒' : '…');
+        };
+        onProg(0);
+        const res = f.size > BIG ? await uploadBig(f, onProg) : await uploadSimple(f, (n) => onProg(n));
+        if (res.ok) { okCount++; doneBytes += f.size; if (bar) bar.style.width = '100%'; }
+        else { failCount++; setMsg(label + ' 失败：' + (res.msg || '未知'), '#ff6b6b'); }
       }
-      const secs = Math.max(0.2, (Date.now() - t0) / 1000);
-      if (!failed) {
-        setMsg('完成：' + files.length + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）', '#8CE58C');
+      const secs = Math.max(0.2, (Date.now() - tAll) / 1000);
+      if (!failCount) {
+        setMsg('完成：' + okCount + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）', '#8CE58C');
         pick.value = '';
+        if (prog) prog.textContent = '平均 ' + fmtSpeed(doneBytes / secs);
       } else {
-        setMsg('完成，但有 ' + failed + ' 个失败', '#ffb454');
+        setMsg('完成 ' + okCount + ' 个、失败 ' + failCount + ' 个（大文件重试会断点续传）', '#ffb454');
       }
-      if (prog) prog.textContent = '平均 ' + fmtSpeed(doneBytes / secs);
-      setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 2500);
+      setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 3000);
       busy = false;
       sendBtn.disabled = false;
       load();
@@ -4558,7 +4632,7 @@ bindImg(img);
     // 大文件传输（2026-11-06）：局域网/离线模式下手机↔电脑直传，速度就是 Wi-Fi 上限。
     body += setSection('大文件传输（手机 ↔ 电脑）',
       '<div style="color:#868c96;font-size:12px;margin-bottom:8px">'
-      + '不经过任何服务器：手机和电脑在同一 Wi-Fi/热点时，速度就是 Wi-Fi 上限（几十 MB/s）。单个文件上限 20GB。</div>'
+      + '不经过任何服务器、只走局域网：<b>4 路并发 + 断点续传</b>，速度能吃到 Wi-Fi 上限（Wi-Fi 6 常见 80–120 MB/s）。单个文件上限 20GB。</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
       + '<input id="filePick" type="file" multiple style="flex:1;min-width:170px;color:#c9ccd1;font-size:12.5px">'
       + '<button id="fileSend" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
