@@ -4408,7 +4408,11 @@ bindImg(img);
             const fb = 'http://' + firstIp.ip + ':' + j.fallbackPort + '/?k=' + encodeURIComponent(KEY);
             h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">上面那个打不开（证书页过不去/浏览器限制）？试备用地址（不加密、延迟略高）：'
               + '<code style="color:#8fb6ff">' + esc(fb) + '</code> '
-              + '<button class="offCopy" data-url="' + esc(fb) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button></div>';
+              + '<button class="offCopy" data-url="' + esc(fb) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button>'
+              + '<div style="display:flex;gap:10px;align-items:center;margin-top:8px">'
+              + '<img id="offQr2" src="/qr?d=' + encodeURIComponent(fb) + '" width="96" height="96" alt="备用二维码" style="background:#fff;padding:4px;border-radius:8px;display:block">'
+              + '<div style="color:#6b7078;font-size:11px;line-height:1.6">备用二维码（<b>http</b>，扫码直接用）<br>注意：<b>ip:8661 必须带 http://</b>，<br>Chrome 直接输地址会先试 https，就会报 ERR_SSL_PROTOCOL_ERROR。</div>'
+              + '</div></div>';
           }
           h += '<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #24262d">'
             + '<button id="lanCheckBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">检测局域网（手机连不上时点）</button>'
@@ -4476,6 +4480,8 @@ bindImg(img);
       });
       const qrImg = bodyEl.querySelector('#offQr');
       if (qrImg) qrImg.addEventListener('error', () => { qrImg.style.display = 'none'; });
+      const qrImg2 = bodyEl.querySelector('#offQr2');
+      if (qrImg2) qrImg2.addEventListener('error', () => { qrImg2.style.display = 'none'; });
       const lcBtn = bodyEl.querySelector('#lanCheckBtn');
       if (lcBtn) lcBtn.addEventListener('click', async () => {
         const box = bodyEl.querySelector('#lanCheckMsg');
