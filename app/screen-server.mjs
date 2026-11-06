@@ -162,11 +162,7 @@ let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
 // 画质优先（可选，默认关）：p4+hq、VBR+CQ，静态更清晰，流量会波动
 let H264_QF = cfgH264.qualityFirst === true;
-// GPU 侧缩放（2026-11-06 性能）：ddagrab 用 D3D11 视频处理器直接缩放到目标尺寸，硬件帧零拷贝进 NVENC。
-// 原来走 hwdownload + swscale lanczos：1920×1200@60 实测占 ~2.2 核；GPU 缩放 ~0.1 核（输出码率/分辨率不变）。
-// 老驱动或虚拟显示器不支持视频处理器时会在启动后立刻退出 → 自动退回 CPU 缩放链路，不会死循环。
-// 想强制用 CPU 链路：screen.h264.gpuScale = false。
-let H264_GPU_SCALE_OFF = cfgH264.gpuScale === false;
+// 2026-11-06 已移除 GPU 侧缩放实验（ddagrab video_size 是裁剪、scale_d3d11 在本机创建 NV12 纹理失败）。
 // 单窗口采集（实验）：>0 时用 win-capture.exe 抓这个窗口，0 = 普通全屏 ddagrab
 let H264_WIN = 0;
 // 采集的显示器序号（ddagrab output_idx）：0=主屏；副屏必须切到对应 output_idx，
@@ -495,7 +491,9 @@ function h264Filter() {
     const h = Math.max(16, Math.round(H264_RECT.h / 2) * 2);
     vf += ',crop=' + w + ':' + h + ':' + x + ':' + y;
   }
-  vf += ',scale=' + H264_W + ':-2:flags=lanczos+accurate_rnd,format=nv12[v]';
+  // 2026-11-06：不再显式接 format=nv12 —— 交给编码器声明 -pix_fmt nv12，
+  // swscale 在缩放的同一次 pass 里就把 BGRA 转成 NV12（实测 1920×1200@60 少约 25% CPU，输出完全一致）。
+  vf += ',scale=' + H264_W + ':-2:flags=lanczos+accurate_rnd[v]';
   return vf;
 }
 
@@ -548,15 +546,6 @@ function h264AttachEncoder(proc) {
     if (!wasCurrent) return;
     // 单窗口模式下编码器死了，采集端也要一起收掉，否则 h264Start 会被 h264.cap 挡住
     if (h264.cap) { const c = h264.cap; h264.cap = null; try { c.kill(); } catch { } }
-    // GPU 缩放链路自愈：刚起来就退出且一帧没产出（老驱动/虚拟显示器不支持视频处理器）→ 换 CPU 缩放重试一次。
-    // 只降级一次（H264_GPU_SCALE_OFF 记住），不会来回抖。
-    if (h264.gpuScaled && h264.frames === 0 && code !== 0) {
-      H264_GPU_SCALE_OFF = true;
-      h264.gpuScaled = false;
-      console.log('h264: GPU 缩放链路启动失败（code=' + code + '，' + (h264.lastError || '') + '），改用 CPU 缩放重试');
-      if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => h264Start(), 300);
-      return;
-    }
     if (h264.clients.size > 0 || rtc264Alive()) {
       setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Start(); }, 1500);
     }
@@ -571,21 +560,20 @@ function h264Start() {
   if (!H264_ENABLED || h264.proc || h264.killPending || h264.cap) return;
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
   if (H264_WIN > 0) return h264StartWindow();
-  // 2026-11-06：能缩放就在 GPU 上缩（ddagrab video_size），硬件帧直接喂 NVENC，CPU 几乎不参与。
-  // 条件：NVENC + 全屏采集（没有选中某个矩形）+ 目标宽确实小于抓屏宽。
-  // h264_mf（软件/MediaFoundation）需要内存里的 nv12 帧，所以仍走原来的 hwdownload+scale 链路。
-  const gpuScale = H264_ENCODER === 'nvenc' && !H264_GPU_SCALE_OFF && !H264_RECT && H264_W < CAP_W;
-  const ddagrabArg = 'ddagrab=framerate=' + H264_FPS + ':draw_mouse=0:output_idx=' + H264_MON
-    + (gpuScale ? (':video_size=' + H264_W + 'x' + H264_H) : '');
+  // 2026-11-06 结论（记录一下，别再试错）：GPU 侧缩放这条路在这台机器上不通 ——
+  //   · ddagrab 的 video_size 是「裁剪采集区域」不是缩放，用它会让手机只看到画面左上角；
+  //   · scale_d3d11 在这块 RTX 5070 + 驱动 32.0.15.9201 上创建 NV12 纹理直接 E_INVALIDARG。
+  // 所以全屏缩小仍走 CPU（hwdownload → swscale lanczos），但把「缩放 + 转 NV12」合成一次 pass：
+  // 由编码器声明 -pix_fmt nv12，filter 里不再接 format=nv12（实测少约 25% CPU，输出保持一致）。
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
     // 低延迟输入：不探测/不缓存
     '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
-    '-f', 'lavfi', '-i', ddagrabArg,
-    ...((H264_NATIVE || gpuScale) ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
+    '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0:output_idx=${H264_MON}`,
+    ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
+    '-pix_fmt', 'nv12',
     ...h264EncArgs()
   ];
-  if (gpuScale) console.log('h264: GPU 缩放（零拷贝）' + H264_W + 'x' + H264_H);
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
   h264ResetCounters();
   let proc = null;
@@ -598,8 +586,7 @@ function h264Start() {
     return;
   }
   h264.proc = proc;
-  h264.gpuScaled = gpuScale;
-  h264.startedAt = Date.now();
+    h264.startedAt = Date.now();
   h264AttachEncoder(proc);
 }
 
@@ -630,7 +617,9 @@ function h264StartWindow() {
       '-hide_banner', '-loglevel', 'error', '-nostdin',
       '-f', 'rawvideo', '-pix_fmt', 'bgra', '-s', w + 'x' + h, '-r', String(capFps), '-i', 'pipe:0',
       // 窗口尺寸可能是奇数（NVENC 要求偶数），且过大的窗口缩到 1920 宽再编码
-      '-vf', 'scale=min(iw\\,1920):-2:flags=lanczos+accurate_rnd,format=nv12',
+      // 2026-11-06：format=nv12 去掉，改成 -pix_fmt nv12，让 swscale 一次 pass 完成缩放+转换
+      '-vf', 'scale=min(iw\\,1920):-2:flags=lanczos+accurate_rnd',
+      '-pix_fmt', 'nv12',
       ...h264EncArgs()
     ];
     let ff = null;
