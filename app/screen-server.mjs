@@ -2794,7 +2794,7 @@ async function handler(req, res) {
       } catch { return 'na'; }
     })();
     res.writeHead(frame ? 200 : 503, { 'content-type': 'text/plain' });
-    res.end((frame ? 'ok' : 'no-frame') + ' viewers=' + wanted() + ' source=' + (pipeOk ? 'pipe' : 'file')
+    res.end((frame ? 'ok' : 'no-frame') + ' viewers=' + wanted() + ' s264=' + (rtc264Status.sessions || 0) + ' source=' + (pipeOk ? 'pipe' : 'file')
         + ' age=' + (frameStamp ? ((Date.now() - frameStamp) / 1000).toFixed(1) : -1)
         + ' dropped=' + droppedTotal + ' cap=' + CAP_LEVELS[capLevel] + ' in=' + currentInFps() + ' out=' + currentOutFps() + ' drop10=' + recentDrops(10, healthSid) + ' lag=' + lastLagFrames
         + ' mode=' + sourceState.mode + ' raw=' + (rawStamp ? ((Date.now() - rawStamp) / 1000).toFixed(1) : -1)
