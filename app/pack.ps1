@@ -162,13 +162,8 @@ $appFiles = @(
   '使用说明.md',
   'dsh-port.ps1',
   'restart.ps1',
-  'restart.cmd',
-  # 半免费(freemium)：卖家收款码与联系方式，随包出货。
-  # licence-state.ps1 扫 branding\ 里这几个固定文件名（微信.jpg / 支付宝.jpg / 联系.txt），
-  # screen-server 的 /branding/ 路由放行 .png/.jpg 给未授权页面展示。
-  'branding\微信.jpg',
-  'branding\支付宝.jpg',
-  'branding\联系.txt'
+  'restart.cmd'
+  # 2026-11-06 免费化：不再随包发收款码 / 联系方式（/branding/ 路由保留，卖家自己放图片即可）
 )
 if ($IncludeInternalDocs) {
   $appFiles += @('PACKAGING.md', 'check-health.ps1')

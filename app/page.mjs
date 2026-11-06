@@ -3123,29 +3123,20 @@ bindImg(img);
     } catch (e) { return false; }
   }
 
+  // 2026-11-06 免费化：这里原来渲染「联系方式 + 支付宝/微信收款码」。
+  // 现在不再收款，也不再放联系方式（branding 里的收款码/联系.txt 都不随包发），
+  // 只保留一句可选的说明文案（support.note），其它交给「关于」面板。
   function supportHtml(lic, compact) {
     const s = lic.support || {};
-    const b = lic.branding || {};
-    const contact = (b.contact || s.contact || '').trim();
-    const parts = [];
-    if (s.note) parts.push('<div style="color:#8b9098;font-size:13px;margin:10px 0 0">' + esc(s.note) + '</div>');
-    if (contact) {
-      parts.push('<div style="margin:14px 0 0"><div style="color:#8b9098;font-size:12px;margin-bottom:4px">联系方式</div>'
-        + '<pre style="margin:0;white-space:pre-wrap;font:13px/1.6 ui-monospace,Consolas,monospace;color:#e8eaee;'
-        + 'background:#14151a;border:1px solid #24262e;border-radius:8px;padding:10px;user-select:text">' + esc(contact) + '</pre></div>');
-    }
-    const qrs = [];
-    if (b.alipay) qrs.push('<figure style="margin:0;text-align:center"><img src="' + esc(b.alipay) + '" alt="支付宝" style="width:150px;height:150px;image-rendering:pixelated;border-radius:8px;background:#fff;padding:6px"><figcaption style="color:#8b9098;font-size:12px;margin-top:6px">支付宝</figcaption></figure>');
-    if (b.wechat) qrs.push('<figure style="margin:0;text-align:center"><img src="' + esc(b.wechat) + '" alt="微信" style="width:150px;height:150px;image-rendering:pixelated;border-radius:8px;background:#fff;padding:6px"><figcaption style="color:#8b9098;font-size:12px;margin-top:6px">微信</figcaption></figure>');
-    if (qrs.length) parts.push('<div style="display:flex;gap:16px;justify-content:center;margin:16px 0 0;flex-wrap:wrap">' + qrs.join('') + '</div>');
-    else if (!compact) parts.push('<div style="color:#6b7078;font-size:12px;margin:14px 0 0">（卖家还没放收款码。把 支付宝.png / 微信.png 放进安装目录的 branding 文件夹就会显示）</div>');
-    return parts.join('');
+    const note = String(s.note || '').trim();
+    if (!note) return '';
+    return '<div style="color:#8b9098;font-size:12.5px;line-height:1.7">' + esc(note) + '</div>';
   }
 
   function machineCodeHtml(lic) {
     if (!lic.machineCode) return '';
     return '<div style="margin:16px 0 0">'
-      + '<div style="color:#8b9098;font-size:12px;margin-bottom:4px">本机机器码（发给卖家换取许可证）</div>'
+      + '<div style="color:#8b9098;font-size:12px;margin-bottom:4px">本机机器码（换电脑时用来找回自己的设置）</div>'
       + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
       + '<code style="font:15px/1.4 ui-monospace,Consolas,monospace;color:#e8eaee;background:#14151a;'
       + 'border:1px solid #24262e;border-radius:8px;padding:8px 10px;user-select:all" id="licMachine">' + esc(lic.machineCode) + '</code>'
@@ -4518,9 +4509,9 @@ bindImg(img);
   function licenceKind(lic) {
     const e = String((lic && lic.edition) || '').toLowerCase();
     if (e === 'trial' || e === 'trial30' || e === 'month') {
-      return { label: '体验版', trial: true, color: '#8fb6ff', bg: 'rgba(143,182,255,.13)', border: 'rgba(143,182,255,.4)' };
+      return { label: '已授权', trial: true, color: '#8fb6ff', bg: 'rgba(143,182,255,.13)', border: 'rgba(143,182,255,.4)' };
     }
-    return { label: '专业版', trial: false, color: '#8CE68C', bg: 'rgba(140,230,140,.13)', border: 'rgba(140,230,140,.4)' };
+    return { label: '已授权', trial: false, color: '#8CE68C', bg: 'rgba(140,230,140,.13)', border: 'rgba(140,230,140,.4)' };
   }
   function licencePill(lic, licensed) {
     const k = licensed ? licenceKind(lic)
@@ -4557,13 +4548,12 @@ bindImg(img);
       h += '<div style="margin-top:8px">' + setKv('有效期', escHtml(exp) + (exp === '永久' ? '' : daysLeftText(exp))) + '</div>'
         + (kind.trial
           ? '<div style="color:#8fb6ff;font-size:12.5px;margin-top:6px;line-height:1.7">'
-            + '体验版：1 个月全功能（超清不限时 · 个性化 · 多设备）。<br>'
-            + '到期后自动回落免费版，不自动续费；想继续用可以买专业版（一次买断）。</div>'
+            + '这份许可证不会自动续费；到期后只是外观恢复默认，画面/触控/声音等全部功能照常免费。</div>'
           : '<div style="color:#868c96;font-size:12.5px;margin-top:6px;line-height:1.7">'
             + '超清画质不限时长 · 个性化已解锁 · 同时观看不限台数</div>');
       // 已授权也保留粘贴入口（换许可证 / 续期要用），默认折叠不占地方
       h += '<details style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
-        + '<summary style="cursor:pointer;color:#8fb6ff;font-size:13px">换许可证 / 续期：点这里粘贴新的</summary>'
+        + '<summary style="cursor:pointer;color:#8fb6ff;font-size:13px">粘贴许可证（可选：换电脑 / 找回设置时用）</summary>'
         + pasteBlock(true) + '</details>';
       return h;
     }
@@ -4575,7 +4565,7 @@ bindImg(img);
     }
     h += '<div style="color:#868c96;font-size:12.5px;margin-top:5px;line-height:1.7">'
       + (trialOn
-        ? '试用期内按专业版算：超清不限时长 · 个性化全开 · 同时观看不限台数<br>'
+        ? '许可证有效期内：个性化全开 · 同时观看不限台数<br>'
           + '试用结束后不会锁画面，自动回落到免费版（基础功能一直免费）。'
         : '免费版可用：画面 + 触控 + 声音 + 流畅模式 + 高清/标准画质（不限时）<br>'
           + '免费版限制：超清每天 1 小时 · 个性化锁定 · 同时观看最多 3 台')
@@ -5288,41 +5278,26 @@ bindImg(img);
         + '</div>';
     });
     body += '<div style="color:#868c96;font-size:12px;line-height:1.75;margin-top:4px">'
-      + '· 许可证按机器绑定（CPU + 主板），换硬盘、重装系统不受影响<br>'
-      + '· 付款后把「机器码 + 付款截图」发给作者，签发后手机上粘贴即生效<br>'
-      + '· 联系方式：</div>'
+      + '· 完全免费：不用许可证、没有广告、不用注册账号<br>'
+      + '· 只有需要按你的环境定制（多机位 / 批处理 / 特定软件适配）时，才走右边的「定制」<br>'
+      + '· 换电脑时把机器码记下来，能用它找回自己的设置</div>'
       + '<div style="margin-top:10px">' + supportHtml(lic, true) + '</div>';
-    openSheet(plans.title || '套餐与价格', body, 'plClose');
+    openSheet(plans.title || '完全免费', body, 'plClose');
   }
   function openSupport(lic) {
-    const title = (lic.support && lic.support.title) ? lic.support.title : '支持 / 购买';
-    // 三种状态分开显示（2026-10-30 加试用）：专业版 / 免费版·试用中 / 免费版
-    // 口径与设置面板一致：一律看 licensed，不看 usable（usable 试用期内也是 true）。
-    const trialLine = trialSummary(lic.trial);
-    const stKind = licenceKind(lic);
-    const stExp = (lic.expires && lic.expires !== 'never') ? String(lic.expires) : '';
-    const statusText = lic.licensed
-      ? (stKind.label + '（' + (stExp ? '有效期至 ' + stExp : '永久') + '）')
-      : ('免费版' + (trialLine ? ' · ' + trialLine : ''));
-    const body = '<div style="color:#8b9098;font-size:13px;margin-bottom:4px">当前版本：'
-      + escHtml(statusText)
-      + (lic.name ? ('（' + escHtml(lic.name) + '）') : '') + '</div>'
-      + (lic.licensed ? '' :
-        (lic.trial && lic.trial.active
-          ? '<div style="background:#1a1c22;border:1px solid #2b3a2f;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
-            + '<div style="color:#8CE68C;font-weight:600;margin-bottom:4px">试用中：全功能已解锁</div>'
-            + '· 超清画质（2560）不限时长<br>'
-            + '· 个性化：主题 / 光标形状与颜色 / 自定义导入<br>'
-            + '· 多设备同时观看不限台数<br>'
-            + '<span style="color:#6b7078">到期时间 ' + escHtml(String(lic.trial.ends || ''))
-            + '，之后自动回落免费版（基础功能永久免费）</span></div>'
-          : '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:12px 13px;margin:10px 0 0;font-size:12.5px;line-height:1.8;color:#aeb3bb">'
-            + '<div style="color:#e8eaee;font-weight:600;margin-bottom:4px">安装许可证后解锁</div>'
-            + '· 超清画质（2560）不限时长 —— 免费版每天 1 小时<br>'
-            + '· 个性化：颜色主题 / 光标形状（含导入自定义图片）/ 光标大小颜色 / 自定义主题导入<br>'
-            + '· 多设备同时观看：免费版最多 3 台<br>'
-            + '<span style="color:#6b7078">基础功能永久免费：画面、触控、声音、流畅模式、高清/标准画质</span></div>'))
+    // 2026-11-06 免费化：这个面板原来叫「支持 / 购买」，展示专业版/试用/收款码/联系方式。
+    // 现在只讲「这是什么 + 完全免费能做什么」+ 机器码（换机找回设置用）+ 分享。
+    const title = (lic.support && lic.support.title) ? lic.support.title : '关于';
+    const body = '<div style="color:#8CE58C;font-size:16px;font-weight:600;margin-bottom:8px">完全免费</div>'
+      + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.9">'
+      + '· 画面 / 触控 / 声音 / 文本剪贴板 / 大文件传输，全部功能都能用<br>'
+      + '· 高清 1920 与超清 2560 都不限时；最多 3 台设备同时观看<br>'
+      + '· 无广告、不用注册账号、没有试用期倒计时<br>'
+      + '· 个性化（主题 / 光标形状）和 3 台以上的同时观看属于许可证功能，不装也能正常用默认外观</div>'
       + machineCodeHtml(lic)
+      + (lic.licensed
+        ? '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">这台电脑已经装好许可证（可选项）。</div>'
+        : '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">许可证是可选项：不装不影响任何功能；需要时在「设置 → 许可证」里粘贴。</div>')
       + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>'
       + shareBlockHtml(lic);
     const box = openSheet(title, body, 'spClose');
@@ -5377,7 +5352,7 @@ bindImg(img);
     const showSupport = !(lic.support && lic.support.enabled === false);
     let heart = null;
     if (showSupport) {
-      heart = makeBtn('paSupport', ICON_HEART, '支持 / 购买');
+      heart = makeBtn('paSupport', ICON_HEART, ((lic.support && lic.support.title) || '关于'));
       wrap.appendChild(heart);
     }
     document.body.appendChild(wrap);
