@@ -5291,9 +5291,9 @@ bindImg(img);
     const body = '<div style="color:#8CE58C;font-size:16px;font-weight:600;margin-bottom:8px">完全免费</div>'
       + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.9">'
       + '· 画面 / 触控 / 声音 / 文本剪贴板 / 大文件传输，全部功能都能用<br>'
-      + '· 高清 1920 与超清 2560 都不限时；最多 3 台设备同时观看<br>'
+      + '· 高清 1920 与超清 2560 都不限时；多台设备同时观看，不限台数<br>'
       + '· 无广告、不用注册账号、没有试用期倒计时<br>'
-      + '· 个性化（主题 / 光标形状）和 3 台以上的同时观看属于许可证功能，不装也能正常用默认外观</div>'
+      + '· 个性化（主题 / 光标形状）和同时观看台数都不再有门槛</div>'
       + machineCodeHtml(lic)
       + (lic.licensed
         ? '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">这台电脑已经装好许可证（可选项）。</div>'

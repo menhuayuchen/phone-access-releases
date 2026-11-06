@@ -2506,7 +2506,8 @@ const cfgFreemium = productConfig.freemium || {};
 const ULTRA_FREE_SEC = (Number(cfgFreemium.ultraFreeSecPerDay) > 0) ? Math.round(Number(cfgFreemium.ultraFreeSecPerDay)) : 3600;
 // 免费版并发观看上限（2026-10-30 用户拍板：最多 3 台设备同时看）。许可证/试用期内不限。
 // 只限制"看画面"的连接数（清晰模式 /stream + 流畅模式 RTC），不影响同一台设备重连。
-const FREE_MAX_VIEWERS = (Number(cfgFreemium.freeMaxViewers) > 0) ? Math.round(Number(cfgFreemium.freeMaxViewers)) : 3;
+// 2026-11-06 免费化：并发观看不再限制（填 0 或留空 = 不限台数）
+const FREE_MAX_VIEWERS = (Number(cfgFreemium.freeMaxViewers) > 0) ? Math.round(Number(cfgFreemium.freeMaxViewers)) : 0;
 const ULTRA_USAGE_FILE = join(HERE, 'ultra-usage.json');
 let ultraUsage = { date: '', seconds: 0 };
 try {
@@ -4826,7 +4827,7 @@ function wireServer(s) {
     if (!isFullFunction()) {
       let peers = 0;
       try { peers = rtc.stats().peers || 0; } catch { }
-      if (streams + peers >= FREE_MAX_VIEWERS) {
+      if (FREE_MAX_VIEWERS > 0 && streams + peers >= FREE_MAX_VIEWERS) {
         console.log('rtc: 被并发上限拦下 viewers=' + (streams + peers) + ' limit=' + FREE_MAX_VIEWERS);
         return '429 Too Many Viewers';
       }

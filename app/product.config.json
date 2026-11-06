@@ -59,7 +59,7 @@
   "freemium": {
     "ultraFreeSecPerDay": 315360000,
     "trialDays": 7,
-    "freeMaxViewers": 3,
+    "freeMaxViewers": 0,
     "trialLedgerUrl": "",
     "trialLedgerToken": ""
   },
@@ -78,7 +78,7 @@
         "features": [
           "画面 / 触控 / 声音 / 剪贴板 / 大文件传输",
           "高清 1920 与超清 2560 都不限时",
-          "最多 3 台设备同时观看",
+          "多设备同时观看（不限台数）",
           "应用内一键检查更新，配置和许可证都会保留"
         ]
       },
