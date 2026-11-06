@@ -128,5 +128,11 @@
     "mirrorPage": "",
     "mirrorPageNote": "",
     "timeoutMs": 8000
+  },
+  "_experiments说明": "实验版开关（2026-11-07，自用，默认全关）。enabled=false 时服务端根本不挂载 /ws-exp 和 /exp/*，页面也不加载实验层——行为和主线完全一致。改完不用重启服务，下一次握手/请求就生效。cursor=电脑真实光标回传（手机端本地画箭头/I形/手型/等待圈）；ocr=矢量文字层（放大后文字重新渲染，不糊）。页面侧还要带 ?exp=cursor 之类的参数才会真的打开。",
+  "experiments": {
+    "enabled": true,
+    "cursor": true,
+    "ocr": false
   }
 }

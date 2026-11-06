@@ -5437,6 +5437,119 @@ bindImg(img);
       }).catch(() => { });
     }, 30000);
   }).catch(() => { /* 拿不到许可证信息时不打扰用户：画面照常能看，个性化保持默认 */ });
+
+  // ===== 实验层（2026-11-07，?exp=...；不带参数时整段不执行）=================
+  // 约束：这一段只能"新增"，不修改上面任何逻辑。所有异常都在内部吃掉，
+  // 最坏情况是实验功能不出现，绝不影响画面、输入、音频。
+  // 注意：整页是 String.raw 模板，所以这段代码里不能出现反引号和美元花括号。
+  var EXP_SHAPES = {
+    arrow:    { hx: 1, hy: 1, s: '<path d="M1 1 L1 16.6 L5.4 12.7 L8.4 19.6 L10.2 18.9 L7.2 12.1 L14.4 12.1 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/>' },
+    ibeam:    { hx: 4, hy: 8, s: '<path d="M1.2 1.2 H6.8 M4 1.2 V14.8 M1.2 14.8 H6.8" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/><path d="M1.2 1.2 H6.8 M4 1.2 V14.8 M1.2 14.8 H6.8" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>' },
+    hand:     { hx: 4, hy: 1.2, s: '<path d="M4 8 V2 M7 8 V3.6 M10 8.5 V5.2 M1 10 V12.5 C1 15.4 3.6 19 8 19 C12 19 14 15.4 14 12 V8.5" fill="none" stroke="#000" stroke-width="3" stroke-linecap="round"/><path d="M4 8 V2 M7 8 V3.6 M10 8.5 V5.2 M1 10 V12.5 C1 15.4 3.6 19 8 19 C12 19 14 15.4 14 12 V8.5" fill="none" stroke="#fff" stroke-width="1.3" stroke-linecap="round"/>' },
+    wait:     { hx: 7.5, hy: 7.5, s: '<circle cx="7.5" cy="7.5" r="6.2" fill="#fff" stroke="#000" stroke-width="1.4"/><path d="M7.5 4 V7.5 L10 9.2" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>' },
+    progress: { hx: 1, hy: 1, s: '<path d="M1 1 L1 16.6 L5.4 12.7 L8.4 19.6 L10.2 18.9 L7.2 12.1 L14.4 12.1 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/><circle cx="13" cy="4" r="3.2" fill="none" stroke="#000" stroke-width="1.5"/><path d="M13 2.4 V4 L14.2 4.8" fill="none" stroke="#000" stroke-width="1.2"/>' },
+    cross:    { hx: 7.5, hy: 7.5, s: '<path d="M7.5 1 V14 M1 7.5 H14" stroke="#000" stroke-width="3" stroke-linecap="round"/><path d="M7.5 1 V14 M1 7.5 H14" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
+    sizeall:  { hx: 7.5, hy: 7.5, s: '<path d="M7.5 1 V14 M1 7.5 H14 M7.5 1 L5.4 3.4 M7.5 1 L9.6 3.4 M7.5 14 L5.4 11.6 M7.5 14 L9.6 11.6 M1 7.5 L3.4 5.4 M1 7.5 L3.4 9.6 M14 7.5 L11.6 5.4 M14 7.5 L11.6 9.6" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M7.5 1 V14 M1 7.5 H14 M7.5 1 L5.4 3.4 M7.5 1 L9.6 3.4 M7.5 14 L5.4 11.6 M7.5 14 L9.6 11.6 M1 7.5 L3.4 5.4 M1 7.5 L3.4 9.6 M14 7.5 L11.6 5.4 M14 7.5 L11.6 9.6" fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
+    sizewe:   { hx: 7.5, hy: 7.5, s: '<path d="M1 7.5 H14 M1 7.5 L4 4.6 M1 7.5 L4 10.4 M14 7.5 L11 4.6 M14 7.5 L11 10.4" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M1 7.5 H14 M1 7.5 L4 4.6 M1 7.5 L4 10.4 M14 7.5 L11 4.6 M14 7.5 L11 10.4" fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
+    sizens:   { hx: 7.5, hy: 7.5, s: '<path d="M7.5 1 V14 M7.5 1 L4.6 4 M7.5 1 L10.4 4 M7.5 14 L4.6 11 M7.5 14 L10.4 11" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M7.5 1 V14 M7.5 1 L4.6 4 M7.5 1 L10.4 4 M7.5 14 L4.6 11 M7.5 14 L10.4 11" fill="none" stroke="#fff" stroke-width="1.2" stroke-linecap="round"/>' },
+    no:       { hx: 7.5, hy: 7.5, s: '<circle cx="7.5" cy="7.5" r="6" fill="#fff" stroke="#000" stroke-width="1.5"/><path d="M3.6 3.6 L11.4 11.4" stroke="#c00" stroke-width="2.2" stroke-linecap="round"/>' },
+    help:     { hx: 1, hy: 1, s: '<path d="M1 1 L1 16.6 L5.4 12.7 L8.4 19.6 L10.2 18.9 L7.2 12.1 L14.4 12.1 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/><text x="9.6" y="6.6" font-size="7.5" font-weight="700" font-family="sans-serif" fill="#1a3fd0">?</text>' },
+    uparrow:  { hx: 7.5, hy: 1, s: '<path d="M7.5 1 L13 8 H10 V14 H5 V8 H2 Z" fill="#fff" stroke="#000" stroke-width="1.3" stroke-linejoin="round"/>' }
+  };
+  function expShape(s) {
+    if (EXP_SHAPES[s]) return EXP_SHAPES[s];
+    if (s === 'sizenwse' || s === 'sizenesw') return EXP_SHAPES.sizeall;
+    return EXP_SHAPES.arrow;
+  }
+
+  // E1：电脑真实光标。采集端 draw_mouse=0，视频里没有光标，这里靠 /ws-exp
+  // 拿 {x,y,s,v}（屏幕物理像素），用 toPage() 换算成页面坐标后本地画一个。
+  // 坐标换算必须复用 toPage —— 另写一套就会重演 2026-11-06 的触屏偏移事故。
+  function expCursorStart() {
+    var SIZE = 21;                      // 显示尺寸（SVG viewBox 是 16）
+    var el = document.createElement('div');
+    el.id = 'expCursor';
+    el.style.cssText = 'position:fixed;left:0;top:0;width:' + SIZE + 'px;height:' + SIZE + 'px;'
+      + 'pointer-events:none;z-index:9998;display:none;will-change:transform;'
+      + 'background-repeat:no-repeat;background-size:' + SIZE + 'px ' + SIZE + 'px;';
+    document.body.appendChild(el);
+
+    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
+    var k = SIZE / 16;
+
+    function paint(s) {
+      var d = expShape(s);
+      st.hx = d.hx; st.hy = d.hy;
+      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' + d.s + '</svg>';
+      el.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
+    }
+    function show(on) {
+      if (st.shown === on) return;
+      st.shown = on;
+      el.style.display = on ? 'block' : 'none';
+    }
+    // 每帧重新换算：窗口大小、画面缩放(view.scale)、视频首帧前后都会变。
+    // 只在收到消息时算一次的话，视频还没就绪（videoSourceSize 还是 16x9 占位）
+    // 或者用户缩放画面之后，光标就会错位 —— 所以这里每帧用原始屏幕坐标重算。
+    function frame() {
+      st.raf = requestAnimationFrame(frame);
+      if (!st.got || !st.vis) { show(false); return; }
+      var vs;
+      try { vs = videoSourceSize(); } catch (e) { return; }
+      if (!vs || vs.w < 100 || vs.h < 100) { show(false); return; }   // 画面还没就绪
+      var p;
+      try { p = toPage(st.rx, st.ry); } catch (e) { return; }
+      if (!p || !isFinite(p.x) || !isFinite(p.y)) { show(false); return; }
+      st.tx = p.x; st.ty = p.y;
+      if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
+      var dx = st.tx - st.x, dy = st.ty - st.y;
+      if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
+      else { st.x += dx * 0.45; st.y += dy * 0.45; }
+      el.style.transform = 'translate3d(' + (st.x - st.hx * k).toFixed(1) + 'px,'
+        + (st.y - st.hy * k).toFixed(1) + 'px,0)';
+      show(true);
+    }
+    function stop() {
+      if (st.raf) { cancelAnimationFrame(st.raf); st.raf = 0; }
+      show(false);
+    }
+    function connect() {
+      var proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
+      var w;
+      try { w = new WebSocket(proto + '//' + location.host + '/ws-exp?k=' + encodeURIComponent(KEY) + '&s=' + SID); }
+      catch (e) { return; }
+      w.onopen = function () { st.fails = 0; };
+      w.onmessage = function (ev) {
+        var j;
+        try { j = JSON.parse(ev.data); } catch (e) { return; }
+        if (!j || j.t !== 'cur') return;
+        if (typeof j.x !== 'number' || typeof j.y !== 'number') return;
+        st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
+        st.vis = (j.v !== 0);
+        var sh = j.s || 'arrow';
+        if (sh !== st.shape) { st.shape = sh; paint(sh); }
+        if (!st.raf) frame();
+      };
+      w.onclose = function () {
+        stop();
+        st.fails++;
+        setTimeout(connect, st.fails <= 5 ? 2000 : 30000);
+      };
+      w.onerror = function () { try { w.close(); } catch (e) { } };
+    }
+    paint('arrow');
+    connect();
+  }
+
+  (function expInit() {
+    var raw = '';
+    try { raw = new URLSearchParams(location.search).get('exp') || ''; } catch (e) { return; }
+    if (!raw) return;                       // 不带 ?exp= ：整段实验层完全不加载
+    var want = {};
+    raw.split(',').forEach(function (x) { x = x.trim(); if (x) want[x] = 1; });
+    window.__paExp = { want: want, on: {} };
+    if (want.cursor) { try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); } }
+  })();
 })();
 </script>
 

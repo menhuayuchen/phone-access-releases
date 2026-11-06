@@ -383,12 +383,29 @@ static class Program
             case "text": { string s; if (d.TryGetValue("s", out s)) Text(s); break; }
             case "cursor":
             {
+                // 2026-11-07 实验版 E1：除了坐标，再回报**光标形状 id** 和是否可见。
+                // 手机端拿它画一个真的系统光标（箭头/文本 I 形/手型/等待圈…），
+                // 因为 draw_mouse=0 把光标从视频里剥掉了，那边本来什么都看不到。
                 POINT p; GetCursorPos(out p);
                 if (reply != null)
                 {
                     try
                     {
+                        string cs = "arrow";
+                        int vis = 1;
+                        CURSORINFO ci = new CURSORINFO();
+                        ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+                        if (GetCursorInfo(ref ci))
+                        {
+                            vis = (ci.flags & CURSOR_SHOWING) != 0 ? 1 : 0;
+                            cs = CursorShapeId(ci.hCursor);
+                            // GetCursorInfo 给的坐标和 GetCursorPos 是同一个值，但前者随
+                            // 「光标是否属于前台窗口」更准；两个都取到就用 CURSORINFO 的。
+                            p.x = ci.ptScreenPos.x;
+                            p.y = ci.ptScreenPos.y;
+                        }
                         reply.WriteLine("{\"cx\":" + p.x + ",\"cy\":" + p.y +
+                                        ",\"cs\":\"" + cs + "\",\"vis\":" + vis +
                                         ",\"blocked\":" + blockedCount +
                                         ",\"blkage\":" + BlockAgeMs() +
                                         ",\"fg\":\"" + Esc(ForegroundTitle()) + "\"}");
@@ -534,6 +551,56 @@ static class Program
 
     [StructLayout(LayoutKind.Sequential)] struct POINT { public int x, y; }
     [DllImport("user32.dll")] static extern bool GetCursorPos(out POINT p);
+
+    // ---- 实验版 E1：光标形状识别 -------------------------------------------
+    // 只认 Windows 的 14 种标准光标（LoadCursor 的共享句柄比较）。应用自定义光标
+    // （Chrome 的文本光标、游戏、Electron 程序）一律回落 arrow —— 手机上看到箭头
+    // 总比看到一个和电脑上不一样的假光标好。
+    const int CURSOR_SHOWING = 0x0001;
+
+    [StructLayout(LayoutKind.Sequential)]
+    struct CURSORINFO
+    {
+        public int cbSize;
+        public int flags;
+        public IntPtr hCursor;
+        public POINT ptScreenPos;
+    }
+
+    [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO pci);
+    [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
+
+    // IDC_* 资源 id（winuser.h）。顺序必须和 IDC_NAMES 一一对应。
+    static readonly int[] IDC_IDS = {
+        32512, 32513, 32649, 32514, 32650, 32515,
+        32642, 32643, 32644, 32645, 32646, 32648, 32651, 32516
+    };
+    static readonly string[] IDC_NAMES = {
+        "arrow", "ibeam", "hand", "wait", "progress", "cross",
+        "sizenwse", "sizenesw", "sizewe", "sizens", "sizeall", "no", "help", "uparrow"
+    };
+    static IntPtr[] idcHandles = null;
+
+    static string CursorShapeId(IntPtr h)
+    {
+        if (h == IntPtr.Zero) return "arrow";
+        try
+        {
+            if (idcHandles == null)
+            {
+                idcHandles = new IntPtr[IDC_IDS.Length];
+                for (int i = 0; i < IDC_IDS.Length; i++)
+                {
+                    try { idcHandles[i] = LoadCursor(IntPtr.Zero, new IntPtr(IDC_IDS[i])); }
+                    catch { idcHandles[i] = IntPtr.Zero; }
+                }
+            }
+            for (int i = 0; i < idcHandles.Length; i++)
+                if (idcHandles[i] != IntPtr.Zero && idcHandles[i] == h) return IDC_NAMES[i];
+        }
+        catch { }
+        return "arrow";
+    }
 
     // 进程必须声明 per-monitor-DPI 感知：否则在 150% 缩放的屏幕上，SetCursorPos/GetCursorPos 用的是
     // 被系统虚拟化过的"逻辑像素"，与 capture.exe 抓到的物理像素差一个缩放倍数（点哪偏哪）。

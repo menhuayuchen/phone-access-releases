@@ -1254,6 +1254,72 @@ async function runSunshineInit() {
   sunshineInitJob = { phase: 'error', error: '初始化没完成' + (t ? ('：' + t) : '（可能没点管理员授权）'), log: t, startedAt: sunshineInitJob.startedAt };
   return sunshineInitJob;
 }
+// ---- 实验版 E1（2026-11-07）：/ws-exp -------------------------------------
+// 只推"电脑上真实光标的位置和形状"，给手机端本地画一个光标用。
+// 为什么需要它：采集是 ddagrab=draw_mouse=0，光标从视频里被剥掉了；手机端本来
+// 只有一个跟着手指走的黄点，所以"电脑上现在光标在哪、是什么形状"完全看不到。
+//
+// 独立通道是刻意的：不碰 /ws-h264、/rtc、/ws-audio 里任何一行，出问题只会
+// 让光标不显示，画面和输入照常。
+const EXP_TICK_MS = 33;          // 30Hz：光标本体也就 125Hz 更新，30Hz + 客户端平滑已经看不出台阶
+
+function expConfig() {
+  try {
+    const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
+    return (c && c.experiments) || {};
+  } catch { return {}; }
+}
+
+function attachExpWs(server, key) {
+  const wss = new WebSocketServer({ noServer: true });
+  const clients = new Set();
+  let timer = null;
+  let lastSent = '';
+
+  const tick = () => {
+    if (!clients.size) return;
+    let c;
+    try { c = input.cursor(); } catch { return; }
+    if (!c || !(c.x >= 0)) return;
+    // injector 断了/没回过：别把上一个位置一直画在那里
+    if (!c.at || Date.now() - c.at > 1500) return;
+    const msg = JSON.stringify({ t: 'cur', x: c.x, y: c.y, s: c.s || 'arrow', v: c.v === 0 ? 0 : 1 });
+    if (msg === lastSent) return;                 // 屏幕没动：不占带宽
+    lastSent = msg;
+    for (const ws of clients) { try { if (ws.readyState === 1) ws.send(msg); } catch { } }
+  };
+
+  server.on('upgrade', (req, socket, head) => {
+    let url;
+    try { url = new URL(req.url, 'http://x'); } catch { try { socket.destroy(); } catch { } return; }
+    if (url.pathname !== '/ws-exp') return;
+    // 默认关：不打开 experiments.enabled 时这个通道根本不存在，行为和主线完全一致
+    if (expConfig().enabled !== true) {
+      try { socket.write('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch { }
+      socket.destroy();
+      return;
+    }
+    if (!sourceAllowed(req) || !authorized(req, url)) {
+      try { socket.write('HTTP/1.1 403 Forbidden\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch { }
+      socket.destroy();
+      return;
+    }
+    try { socket.setNoDelay(true); } catch { }
+    wss.handleUpgrade(req, socket, head, (ws) => wss.emit('connection', ws, req));
+  });
+
+  wss.on('connection', (ws) => {
+    clients.add(ws);
+    lastSent = '';                                // 新连接的客户端要能立刻拿到当前状态
+    if (!timer) { timer = setInterval(tick, EXP_TICK_MS); if (timer.unref) timer.unref(); tick(); }
+    ws.on('close', () => {
+      clients.delete(ws);
+      if (!clients.size && timer) { clearInterval(timer); timer = null; lastSent = ''; }
+    });
+    ws.on('error', () => { });
+  });
+}
+
 function attachAudioWs(server, key) {  server.on('upgrade', (req, socket, head) => {
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { socket.destroy(); return; }
@@ -1265,8 +1331,9 @@ function attachAudioWs(server, key) {  server.on('upgrade', (req, socket, head) 
     // 表现就是「流畅模式一直连不上、几秒后自动退回清晰」。
     // /rtc 的鉴权失败由 rtc.mjs 自己处理（写 401 + destroy），这里绝不能碰它。
     if (url.pathname !== '/ws-audio') {
-      // /rtc 由 rtc.mjs 处理，/ws-h264 由 attachH264Ws 处理；其余路径在这里销毁。
-      if (url.pathname !== '/rtc' && url.pathname !== '/ws-h264') { try { socket.destroy(); } catch { } }
+      // /rtc 由 rtc.mjs 处理，/ws-h264 由 attachH264Ws 处理，/ws-exp 由 attachExpWs 处理；
+      // 其余路径在这里销毁。
+      if (url.pathname !== '/rtc' && url.pathname !== '/ws-h264' && url.pathname !== '/ws-exp') { try { socket.destroy(); } catch { } }
       return;
     }
     if (!sourceAllowed(req)) {
@@ -4844,6 +4911,9 @@ function wireServer(s) {
   start264();
   attachH264Ws(s, KEY);
   attachH264Rtc(s, KEY);
+  // 实验版 E1：必须在 attachAudioWs **之前**注册 —— 它的 upgrade 处理器会销毁
+  // 不在白名单里的 socket，注册晚了光标通道会被自己人掐掉。
+  try { attachExpWs(s, KEY); } catch (e) { console.log('exp: /ws-exp 挂载失败（不影响主线）：' + (e && e.message)); }
   attachAudioWs(s, KEY);
   s.on('error', (e) => console.error('screen-server: bind error — ' + (e.code || e.message)));
   return s;

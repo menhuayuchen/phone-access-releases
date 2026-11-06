@@ -7,7 +7,8 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
   let sent = 0;
   let errors = 0;
   let lastError = '';
-  let cursorPos = { x: -1, y: -1 };
+  let cursorPos = { x: -1, y: -1, s: 'arrow', v: 1 };
+  let cursorAt = 0;                // 最后一次拿到光标回报的时间（实验版 /ws-exp 用它判断数据是否新鲜）
   let blocked = 0;                 // injector 报告的"注入被 UIPI 挡掉"次数
   let foreground = '';             // 挡在前面的那个前台窗口标题
   let blockedAt = 0;               // 最后一次拿到 blocked 的时间戳
@@ -32,7 +33,14 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
           if (!line.startsWith('{')) continue;
           try {
             const j = JSON.parse(line);
-            if (typeof j.cx === 'number') cursorPos = { x: j.cx, y: j.cy };
+            if (typeof j.cx === 'number') {
+              cursorPos = {
+                x: j.cx, y: j.cy,
+                s: (typeof j.cs === 'string' && j.cs) ? j.cs : 'arrow',
+                v: (j.vis === 0 ? 0 : 1),
+              };
+              cursorAt = Date.now();
+            }
             if (typeof j.blocked === 'number') { blocked = j.blocked; blockedAt = Date.now(); }
             if (typeof j.blkage === 'number') blockedAge = j.blkage;
             if (typeof j.fg === 'string') foreground = j.fg;
@@ -67,13 +75,15 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
     }
   }
 
-  // 询问 injector 当前真实光标（它会把 {cx,cy} 写回管道）
+  // 询问 injector 当前真实光标（它会把 {cx,cy,cs,vis} 写回管道）
+  // 2026-11-07 实验版 E1：400ms → 33ms（30Hz）。手机端要拿它画实时光标，
+  // 400ms 会让光标看起来"一格一格跳"。命名管道是本机往返，30Hz 没有压力。
   function pollCursor() {
     if (sock) { try { sock.write(JSON.stringify({ t: 'cursor' }) + '\n'); } catch (e) {} }
   }
-  setInterval(pollCursor, 400).unref?.();
+  setInterval(pollCursor, 33).unref?.();
 
-  function cursor() { return cursorPos; }
+  function cursor() { return { x: cursorPos.x, y: cursorPos.y, s: cursorPos.s, v: cursorPos.v, at: cursorAt }; }
 
   // 注入是否被系统挡住（前台高权限窗口 UIPI）。injector 每收到 cursor 询问就顺便回一次状态。
   function status() {
