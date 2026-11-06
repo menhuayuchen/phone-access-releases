@@ -516,6 +516,12 @@ let stopped = document.hidden, lowTimer = null, pc = null, ws = null, statsTimer
 const isVideoMode = () => (state.mode === 'raw' || state.mode === 'h264');
 function videoSourceSize() {
   if (state.mode === 'h264') {
+    // 2026-11-06 触屏偏移的真正根因：<video> 里只要有画面（不管走 track 还是 MSE/WebCodecs 喂流），
+    // videoWidth/videoHeight 就是**最终解码尺寸**，一律优先用它。
+    // 原来只在 h264.useTrack 为真时才用；MSE 路径下 useTrack=false、streamW 也没设，
+    // 于是掉到 16:9 占位（16x9），而实际画面是 16:10（2560x1600 → 1920x1200）：
+    // contentBox 按 16:9 算宽，比真实画面宽 11%，结果点哪都偏、越靠边越偏（中间几乎不偏）。
+    if (vid.videoWidth && vid.videoHeight) return { w: vid.videoWidth, h: vid.videoHeight };
     if (h264.useTrack && vid.videoWidth) return { w: vid.videoWidth, h: vid.videoHeight };
     if (h264.streamW) return { w: h264.streamW, h: h264.streamH };
     const cv = h264.canvas || document.getElementById('wccv');
