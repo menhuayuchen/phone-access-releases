@@ -4404,6 +4404,12 @@ bindImg(img);
           h += '</div></div>';
           h += '<div style="color:#6b7078;font-size:11px;margin-top:6px">这台电脑是自签证书：手机第一次打开提示"不安全"，点「高级 → 继续前往」；'
             + '继续后 HUD 应显示「WebRTC264 直连」（才是低延迟通道）。</div>';
+          if (firstIp && j.httpsPort2) {
+            const u2 = 'https://' + firstIp.ip + ':' + j.httpsPort2 + '/?k=' + encodeURIComponent(KEY);
+            h += '<div style="margin-top:6px;font-size:11px;color:#6b7078;line-height:1.7">上面那个一直超时（旧防火墙规则挡住 8660）？用这个<b>低延迟备用端口</b>（一样是 https、一样点「继续前往」）：'
+              + '<br><code style="color:#8fb6ff">' + esc(u2) + '</code> '
+              + '<button class="offCopy" data-url="' + esc(u2) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button></div>';
+          }
           if (firstIp && j.fallbackPort) {
             const fb = 'http://' + firstIp.ip + ':' + j.fallbackPort + '/?k=' + encodeURIComponent(KEY);
             h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">上面那个打不开（证书页过不去/浏览器限制）？试备用地址（不加密、延迟略高）：'

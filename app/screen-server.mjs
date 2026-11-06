@@ -4041,6 +4041,7 @@ async function handler(req, res) {
         ips: privateIps(),
         https: LAN_HTTPS,
         fallbackPort: (Number(cfgNow.ports && cfgNow.ports.screen) || 8660) + 1,
+        httpsPort2: (Number(cfgNow.ports && cfgNow.ports.screen) || 8660) + 2,
         hotspot: hs
       }));
     } catch { }
@@ -4649,6 +4650,17 @@ for (const host of hosts) {
         console.log('screen-server: http://' + host + ':' + (port + 1) + '/ （备用，不加密；https 打不开时用）');
       });
     } catch (e) { console.log('lan http fallback 失败：' + (e && e.message)); }
+    // 旧安装器留下的"端口级拒绝局域网"规则可能挡住 8660（实测 DSH phone access : block lan 8660）；
+    // 额外在 端口+2 起一个 https（没有旧规则覆盖，且 node.exe 程序级放行规则覆盖所有端口）。
+    if (lanPfx) {
+      try {
+        const s3 = wireServer(https.createServer({ pfx: lanPfx }, handler));
+        s3.listen(port + 2, host, () => {
+          started++;
+          console.log('screen-server: https://' + host + ':' + (port + 2) + '/ （低延迟备用端口）');
+        });
+      } catch (e) { console.log('lan https 备用端口失败：' + (e && e.message)); }
+    }
   }
 }
 

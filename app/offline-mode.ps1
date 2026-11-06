@@ -89,9 +89,13 @@ if (-not $hit) {
 }
 
 $url = 'https://' + $hit + ':' + $port + '/?k=' + $key
+$urlAlt = 'https://' + $hit + ':' + ($port + 2) + '/?k=' + $key
+$urlHttp = 'http://' + $hit + ':' + ($port + 1) + '/?k=' + $key
 Write-Host ''
 Write-Host '手机直连地址（手机连同一个 Wi-Fi / 电脑热点后打开）：' -ForegroundColor Green
 Write-Host ('  ' + $url) -ForegroundColor Green
+Write-Host ('  一直超时/打不开时用备用端口：' + $urlAlt) -ForegroundColor DarkGray
+Write-Host ('  证书页过不去用明文备用：' + $urlHttp) -ForegroundColor DarkGray
 Write-Host ''
 Write-Host '提示：' -ForegroundColor Cyan
 Write-Host '  · 手机第一次打开会提示"连接不是私密连接" —— 点「高级 → 继续前往」即可（自签证书）。'
