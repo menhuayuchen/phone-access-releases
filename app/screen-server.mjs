@@ -4493,11 +4493,31 @@ async function handler(req, res) {
   // 理由：页面是 server 端渲染的，一旦缓存住，改了 page.mjs 客户会一直看到旧页面——
   // 这类"更新不生效"的问题排查成本极高。安装能力靠 SW 存在，性能靠网络，两不耽误。
   if (url.pathname === '/sw.js') {
+    // 缓存"页面外壳"：手机装成 App 后，即使 Android 认为当前网络没互联网（无网 Wi-Fi/热点），
+    // 从主屏幕打开也不会出现 Chrome 的恐龙离线页——先出缓存页面，再去连局域网。
+    // 只接管页面导航（navigate），其余请求（接口/画面/文件）完全不拦。
     const sw = [
-      "// 只为了让手机能安装到桌面。不做任何缓存（避免旧页面卡住）。",
-      "self.addEventListener('install', (e) => { self.skipWaiting(); });",
+      "const CACHE = 'pa-shell-v2';",
+      "self.addEventListener('install', (e) => {",
+      "  self.skipWaiting();",
+      "  e.waitUntil(caches.open(CACHE).then((c) => c.add(new Request('/', { cache: 'reload' }))).catch(() => {}));",
+      "});",
       "self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });",
-      "self.addEventListener('fetch', (e) => { /* 不拦截：走默认网络行为 */ });",
+      "self.addEventListener('fetch', (e) => {",
+      "  const req = e.request;",
+      "  if (req.mode !== 'navigate') return;   // 只接管页面本身",
+      "  e.respondWith((async () => {",
+      "    try {",
+      "      const fresh = await fetch(req, { cache: 'no-store' });",
+      "      if (fresh && fresh.ok) { try { const c = await caches.open(CACHE); await c.put('/', fresh.clone()); } catch (e2) {} }",
+      "      return fresh;",
+      "    } catch (err) {",
+      "      const cached = await caches.match(req, { ignoreSearch: true });",
+      "      if (cached) return cached;",
+      "      throw err;",
+      "    }",
+      "  })());",
+      "});",
       ""
     ].join('\n');
     res.writeHead(200, {
@@ -4650,8 +4670,11 @@ function wireServer(s) {
   s.on('error', (e) => console.error('screen-server: bind error — ' + (e.code || e.message)));
   return s;
 }
-for (const host of hosts) {
-  const isLanHost = LAN_V4.test(host);
+// 离线模式：绑 0.0.0.0 而不是逐个 IP —— 电脑换网络/开热点/USB 共享后新 IP 立刻就能用，
+// 不用等守护重启；同时 127.0.0.1 和 tailnet 也一并覆盖。证书 SAN 仍按当前 IP 生成。
+const effectiveHosts = OFFLINE_MODE ? ['0.0.0.0'] : hosts;
+for (const host of effectiveHosts) {
+  const isLanHost = OFFLINE_MODE ? true : LAN_V4.test(host);
   let proto = 'http';
   let s = null;
   if (isLanHost) {
