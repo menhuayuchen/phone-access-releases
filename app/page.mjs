@@ -3318,6 +3318,7 @@ bindImg(img);
       const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
       rows.push(setKv('本机地址', '<span style="color:#aeb3bb">' + escHtml(addr) + (s.dnsName ? ' · ' + escHtml(s.dnsName) : '') + '</span>'));
       rows.push(setKv('在线节点', '<span style="color:#aeb3bb">' + (s.onlinePeers || 0) + ' / ' + (s.peerTotal || 0) + '</span>'));
+      rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.7;margin-top:2px">Tailscale 免费账号大约只能加 5 台设备（电脑、手机各算一台）；新设备加不进来时，先删掉不用的旧设备或升级套餐。</div>');
       // 远程 HTTPS 入口（tailscale serve）：一键开启，省得客户自己去后台折腾
       if (s.httpsUrl) {
         // 已开启：给「复制 / 直接打开」两个动作，省得客户手动抄地址
