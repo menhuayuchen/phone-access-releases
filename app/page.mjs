@@ -2,6 +2,10 @@ const PAGE_HTML = String.raw`<!doctype html>
 <html lang="zh"><head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
+<!-- 访问密钥在页面 URL 的 ?k= 里：任何外链都不能把整条 URL 当 Referer 带出去。
+     Chrome 默认 strict-origin-when-cross-origin 只发 origin，但老浏览器/WebView 不一定，
+     这里显式声明，配合外链上的 rel="noreferrer" 双保险。 -->
+<meta name="referrer" content="strict-origin-when-cross-origin">
 <title>电脑画面</title>
 <!-- 改动（第二轮 P0-1 / H1-r1）：清单地址由服务端渲染时现签注入（占位符见下行 href）。
      为什么不能写死 /manifest.json：浏览器取清单时**不带 cookie**（实测 Chrome 156），
@@ -926,7 +930,7 @@ function stopRtc264() {
   const sid = R.sid;
   R.sid = ''; R.firstVideo = false; R.startedAt = 0; R.hudText = '';
   R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0;
-  R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0;
+  R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0; R.playStart = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
   try { rtc264AudioStop(); } catch (e) { }
@@ -1053,6 +1057,7 @@ async function rtc264Stats() {
     if (bestPair) { const c = cands[bestPair.localCandidateId]; if (c) path = c.candidateType; }
     const vw = vid.videoWidth || 0;
     if (vw > 0) {
+      if (!R.firstVideo) R.playStart = Date.now();   // 出第一帧的时刻：头 2 秒的帧率不可信
       R.firstVideo = true; R.attempts = 0;
       if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
       // 首次出画面后给一次流量提醒（每台设备只提示一次）：清晰模式默认 20Mbps ≈ 8.9GB/时
@@ -1093,7 +1098,8 @@ async function rtc264Stats() {
         R.qMbps = (dBr * 8) / dtRate / 1e6;
       }
     }
-    const fpsTxt = R.qFps > 0 ? R.qFps.toFixed(1) + ' fps' : '… fps';
+    // 刚连上的头 2 秒帧率会偏低（解码器预热/首个关键帧），这时先别报数，免得手机上闪过一个假的 5 fps
+    const fpsTxt = (R.qFps > 0 && Date.now() - (R.playStart || 0) > 2500) ? R.qFps.toFixed(1) + ' fps' : '… fps';
     const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
     // 手机端 #stat 是隐藏的，HUD 才是用户看到的；HUD 只放「帧率 · 码率 · 缓冲」，
     // 累计帧数和累计流量放 #stat，给桌面排查用。
@@ -3956,7 +3962,7 @@ bindImg(img);
           + '<div style="display:flex;gap:8px;margin:10px 0 4px;flex-wrap:wrap">'
           + '<a id="ssOpen" href="' + moonDeepLink() + '" style="background:#2f6feb;color:#fff;border-radius:9px;padding:9px 15px;font-size:13px;text-decoration:none">🎮 用 Moonlight 打开</a>'
           + '<button id="ssCopyHost" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:9px 13px;font-size:12.5px;cursor:pointer">复制电脑地址</button>'
-          + '<a href="https://github.com/moonlight-stream/moonlight-android/releases" target="_blank" rel="noopener" style="color:#8fb6ff;font-size:12.5px;align-self:center">Moonlight 下载</a>'
+          + '<a href="https://github.com/moonlight-stream/moonlight-android/releases" target="_blank" rel="noopener noreferrer" style="color:#8fb6ff;font-size:12.5px;align-self:center">Moonlight 下载</a>'
           + '</div>'
           + step(1, '手机装 <b>Moonlight</b>（安卓：上面的链接；iOS：App Store 搜 Moonlight）')
           + step(2, 'Moonlight 里添加电脑：<code style="color:#8fb6ff">' + escHtml((s.sunshine && s.sunshine.name) || host) + '</code>（地址用 <code>' + escHtml(host) + '</code>）')
