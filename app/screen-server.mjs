@@ -882,7 +882,8 @@ function onHealth264() {
     return;
   }
   if (!rtc264IdleSince) rtc264IdleSince = now;
-  if (now - rtc264IdleSince > 15000 && h264.clients.size === 0 && h264.proc) {
+  // 空闲 45 秒才停编码器（原来 15 秒）：再打开页面/刷新时首帧更快，不用等 ffmpeg 重新拉起 
+  if (now - rtc264IdleSince > 45000 && h264.clients.size === 0 && h264.proc) {
     console.log('rtc264: 没有 WebRTC 会话也没有 WS 观众，停编码器');
     h264Stop();
     rtc264IdleSince = now;      // 重置：避免每 5 秒重复 kill（也让排队启动的条件失效）

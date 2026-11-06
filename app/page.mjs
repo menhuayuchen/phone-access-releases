@@ -194,6 +194,12 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
 <div id="stage" tabindex="-1">
   <img id="img" alt="">
   <video id="vid" playsinline autoplay muted></video>
+  <!-- 首帧前的占位：避免"黑屏很久像卡死"，画面一到就把这层藏起来 -->
+  <div id="loadOv" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#000;color:#9aa0aa;font-size:13px;z-index:5;pointer-events:none">
+    <div style="width:34px;height:34px;border:3px solid #2a2d36;border-top-color:#8fb6ff;border-radius:50%;animation:paSpin .9s linear infinite"></div>
+    <div style="letter-spacing:.08em">正在连接画面…</div>
+  </div>
+  <style>@keyframes paSpin{to{transform:rotate(360deg)}}</style>
   <div id="blk"></div>
   <div id="overlay"></div>
   <button id="viewReset" title="恢复画面原始大小">恢复原大小</button>
@@ -2744,6 +2750,16 @@ bindImg(img);
   setInterval(() => { if (state.mode === 'raw' && pc) rtcLossAdapt(); }, 6000);
   window.__page = { state, contentBox, toScreen, toPage, layoutPoint };   // 调试用
   setNote('');
+  // 首帧占位：画面一到（videoWidth>0 且有画面）就隐藏；20 秒兜底隐藏，避免一直挡着
+  (function () {
+    const ov = document.getElementById('loadOv');
+    if (!ov) return;
+    const t = setInterval(function () {
+      const v = document.getElementById('vid');
+      if (v && v.videoWidth > 0) { clearInterval(t); ov.style.display = 'none'; }
+    }, 120);
+    setTimeout(function () { clearInterval(t); if (ov) ov.style.display = 'none'; }, 20000);
+  })();
 })();
 
 // ---- 注册 Service Worker：让手机能把本页"安装到桌面" ------------------------
