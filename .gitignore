@@ -35,3 +35,4 @@ app/bin/sources.exe
 # release 打包的临时目录（staging 副本 + 中间产物，体积大，不进 git）
 _release/
 .release/
+.release/
