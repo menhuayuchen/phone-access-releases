@@ -30,11 +30,17 @@ $sec = ConvertTo-SecureString -String $pass -AsPlainText -Force
 
 # 2) 根 CA（存在就复用，10 年有效）
 $caSubject = 'CN=PhoneAccess Local CA, O=PhoneAccess'
-$ca = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $caSubject -and $_.HasPrivateKey } | Select-Object -First 1
+$ca = Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object {
+    $_.Subject -eq $caSubject -and $_.HasPrivateKey -and
+    ($_.Extensions | Where-Object { $_.Oid.Value -eq '2.5.29.19' })
+} | Select-Object -First 1
 if (-not $ca) {
+    # 旧版本生成的 CA 没有 basicConstraints（Android 会拒绝安装："需要提供私钥"/"无效证书"），删掉重来
+    Get-ChildItem Cert:\CurrentUser\My -ErrorAction SilentlyContinue | Where-Object { $_.Subject -eq $caSubject } | Remove-Item -Force -ErrorAction SilentlyContinue
     $ca = New-SelfSignedCertificate -Subject $caSubject -CertStoreLocation Cert:\CurrentUser\My `
         -KeyExportPolicy Exportable -KeyUsage CertSign, CRLSign, DigitalSignature -KeyUsageProperty Sign `
-        -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(10) -Type Custom
+        -KeyLength 3072 -HashAlgorithm SHA256 -NotAfter (Get-Date).AddYears(10) -Type Custom `
+        -TextExtension @('2.5.29.19={critical}{text}CA=TRUE&pathlength=1')
 }
 
 # 3) 叶子证书：SAN 覆盖当前局域网 IP + localhost（每次重新签发）

@@ -1879,3 +1879,17 @@ USB 网络共享是 RNDIS 网卡，走 USB 3.x 带宽，通常 200–400MB/s，�
   新增 `GET /ca.crt`（公钥，免鉴权）供手机下载安装。
 - 页面离线面板新增「信任证书（一次性）」：三步说明 + "下载 CA 证书"按钮 + http 备用下载地址。
 - 实测：叶子证书 issuer=PhoneAccess Local CA、SAN 含 10.120.169.250、TLS1.3；8660/8662 均 200；/ca.crt 200。
+
+### 42.32 CA 证书安装失败：缺 BasicConstraints（2026-11-06 13:5x，未发布）
+
+用户截图：Android「安装证书 → CA 证书」报"安装证书时需要提供私钥"。
+
+原因：
+1. 第一版 CA 用 New-SelfSignedCertificate -Type Custom 生成，**没有 2.5.29.19 BasicConstraints**（CA:TRUE），
+   Android 校验会拒绝（Windows 自己也只标"基本约束缺失"）；已改成
+   `-TextExtension '2.5.29.19={critical}{text}CA=TRUE&pathlength=1'`，并在脚本里对**缺 BasicConstraints 的旧 CA 删除重建**。
+2. 另一个常见原因是选错存储：第二项「VPN 及应用程序用户证书」要求证书带私钥，选它必然报同一句提示；
+   必须选第一项「CA 证书」。
+
+实测：服务端已重签并重启（新 PID），证书 issuer=PhoneAccess Local CA、CA basicConstraints=CA:TRUE(临界)、
+pathlen=1；/ca.crt 下发 1085 字节新 CA，与叶子证书链匹配；/sw.js 已含 401 兜底。
