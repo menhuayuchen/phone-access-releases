@@ -3617,7 +3617,7 @@ bindImg(img);
         resolve({ ok: xhr.status === 200 && j && j.ok, msg: (j && j.message) || ('HTTP ' + xhr.status) });
       };
       xhr.onerror = () => { liveXhr.delete(xhr); resolve({ ok: false, msg: cancelReq ? '已取消' : '网络断了', cancelled: cancelReq }); };
-      xhr.onabort = () => { liveXhr.delete(xhr); resolve({ ok: false, msg: '已取消', cancelled: true }); };
+      xhr.onabort = () => { liveXhr.delete(xhr); resolve({ ok: false, msg: '已取消', cancelled: true, cleaned: true }); };
       xhr.send(f);
     });
     // 大文件：分片 + 4 路并发（服务端按偏移写同一个文件），支持断点续传
@@ -3687,7 +3687,17 @@ bindImg(img);
           }
         };
         await Promise.all([worker(), worker(), worker(), worker()]);
-        if (cancelReq) return { ok: false, cancelled: true, msg: '已取消' };
+        if (cancelReq) {
+          // 一片都没传成 → 没东西可续，直接把暂存会话清掉，别留空壳占盘
+          if (!doneSet.size) {
+            try {
+              await fetch('/upload/abort', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: init.id }) });
+            } catch (e) { }
+            try { localStorage.removeItem(key); } catch (e) { }
+            return { ok: false, cancelled: true, cleaned: true, msg: '已取消' };
+          }
+          return { ok: false, cancelled: true, msg: '已取消' };
+        }
         if (failed) return { ok: false, msg: failed, cancelled: false };
         const r2 = await fetch('/upload/done', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: init.id }) });
         const j2 = await r2.json().catch(() => null);
@@ -3728,6 +3738,7 @@ bindImg(img);
       let okCount = 0;
       let failCount = 0;
       let stopped = false;
+      let keptNothing = false;
       const tAll = Date.now();
       for (let i = 0; i < files.length; i++) {
         if (cancelReq) { stopped = true; break; }
@@ -3755,13 +3766,15 @@ bindImg(img);
         }
         onProg(0);
         const res = f.size > BIG ? await uploadBig(f, onProg) : await uploadSimple(f, (n) => onProg(n));
-        if ((res && res.cancelled) || cancelReq) { stopped = true; break; }
+        if ((res && res.cancelled) || cancelReq) { stopped = true; keptNothing = !!(res && res.cleaned); break; }
         if (res.ok) { okCount++; doneBytes += f.size; if (bar) bar.style.width = '100%'; }
         else { failCount++; setMsg(label + ' 失败：' + (res.msg || '未知'), '#ff6b6b'); }
       }
       const secs = Math.max(0.2, (Date.now() - tAll) / 1000);
       if (stopped) {
-        setMsg('已取消：已传的分片保留 3 天，重新选同名文件可续传（上面「丢弃」可清掉）', '#ffb454');
+        setMsg(keptNothing
+          ? '已取消（还没传成任何分片，暂存已清掉，不占硬盘）'
+          : '已取消：已传的分片保留 3 天，重新选同名文件可续传（上面「丢弃」可清掉）', '#ffb454');
         if (prog) prog.textContent = '已取消';
       } else if (!failCount) {
         setMsg('完成：' + okCount + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）', '#8CE58C');

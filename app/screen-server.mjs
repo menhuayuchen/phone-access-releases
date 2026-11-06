@@ -3156,7 +3156,13 @@ async function handler(req, res) {
       const parts = Math.ceil(size / cs);
       let doneCount = 0;
       for (let i = 0; i < parts; i++) { try { if (statSync(join(dir, 'done-' + i)).isFile()) doneCount++; } catch { } }
-      if (!doneCount) continue;      // 一片都没传成 → 没什么可续的，不打扰用户
+      if (!doneCount) {
+        // 一片都没传成 → 没有可续的内容；超过 1 小时就清掉（取消/断网留下的空壳会预占文件大小）
+        if (!created || age > 3600 * 1000) {
+          try { rmSync(dir, { recursive: true, force: true }); console.log('upload: 清理空壳暂存 ' + id); } catch { }
+        }
+        continue;
+      }
       items.push({
         id: id, name: String(meta.name || '未命名'), size: size, chunkSize: cs, parts: parts,
         doneCount: doneCount, pct: Math.min(100, Math.floor(doneCount * 100 / parts)),
