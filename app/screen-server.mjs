@@ -4670,11 +4670,8 @@ function wireServer(s) {
   s.on('error', (e) => console.error('screen-server: bind error — ' + (e.code || e.message)));
   return s;
 }
-// 离线模式：绑 0.0.0.0 而不是逐个 IP —— 电脑换网络/开热点/USB 共享后新 IP 立刻就能用，
-// 不用等守护重启；同时 127.0.0.1 和 tailnet 也一并覆盖。证书 SAN 仍按当前 IP 生成。
-const effectiveHosts = OFFLINE_MODE ? ['0.0.0.0'] : hosts;
-for (const host of effectiveHosts) {
-  const isLanHost = OFFLINE_MODE ? true : LAN_V4.test(host);
+for (const host of hosts) {
+  const isLanHost = LAN_V4.test(host);
   let proto = 'http';
   let s = null;
   if (isLanHost) {
@@ -4690,27 +4687,28 @@ for (const host of effectiveHosts) {
     started++;
     console.log(`screen-server: ${proto}://${host}:${port}/`);
   });
-  // 局域网 http 备用（端口+1）：手机不接受自签证书、或浏览器/安全策略挡住 https 时还能进。
-  // 走 WS/WebCodecs（没有 WebRTC，延迟略高），且是明文——只在本机局域网暴露，靠访问密钥。
-  if (isLanHost) {
+}
+
+// 离线模式：备用监听绑 0.0.0.0（所有网卡）——电脑换网络/开热点/USB 共享后新 IP 立刻能用，
+// 不用等守护重启。只绑 8661/8662 这种备用端口：8660 必须保持"回环+tailnet 走 http、局域网 IP 走 https"，
+// 否则 tailscale serve 和守护的 /health 会连不上（实测会把服务判死、反复重启 → 502）。
+if (OFFLINE_MODE) {
+  try {
+    const s2 = wireServer(createServer(handler));
+    s2.listen(port + 1, '0.0.0.0', () => {
+      started++;
+      console.log('screen-server: http://0.0.0.0:' + (port + 1) + '/ （备用，不加密；https 打不开时用）');
+    });
+  } catch (e) { console.log('lan http fallback 失败：' + (e && e.message)); }
+  if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
+  if (lanPfx) {
     try {
-      const s2 = wireServer(createServer(handler));
-      s2.listen(port + 1, host, () => {
+      const s3 = wireServer(https.createServer({ pfx: lanPfx }, handler));
+      s3.listen(port + 2, '0.0.0.0', () => {
         started++;
-        console.log('screen-server: http://' + host + ':' + (port + 1) + '/ （备用，不加密；https 打不开时用）');
+        console.log('screen-server: https://0.0.0.0:' + (port + 2) + '/ （低延迟备用端口）');
       });
-    } catch (e) { console.log('lan http fallback 失败：' + (e && e.message)); }
-    // 旧安装器留下的"端口级拒绝局域网"规则可能挡住 8660（实测 DSH phone access : block lan 8660）；
-    // 额外在 端口+2 起一个 https（没有旧规则覆盖，且 node.exe 程序级放行规则覆盖所有端口）。
-    if (lanPfx) {
-      try {
-        const s3 = wireServer(https.createServer({ pfx: lanPfx }, handler));
-        s3.listen(port + 2, host, () => {
-          started++;
-          console.log('screen-server: https://' + host + ':' + (port + 2) + '/ （低延迟备用端口）');
-        });
-      } catch (e) { console.log('lan https 备用端口失败：' + (e && e.message)); }
-    }
+    } catch (e) { console.log('lan https 备用端口失败：' + (e && e.message)); }
   }
 }
 
