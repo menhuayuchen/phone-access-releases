@@ -29,7 +29,10 @@ $cert = $req.CreateSelfSigned($notBefore, $notAfter)
 # .NET Framework 不支持导出 PKCS#8，但支持 PKCS#12(PFX)，Node 的 https 直接吃 pfx
 $pfx = $cert.Export([System.Security.Cryptography.X509Certificates.X509ContentType]::Pfx)
 $certPath = Join-Path $OutDir 'lan-cert.pfx'
-[System.IO.File]::WriteAllBytes($certPath, $pfx)
+# 先写临时文件再原子替换：服务端可能正在重启/读取，避免读到半个文件
+$tmp = $certPath + '.new'
+[System.IO.File]::WriteAllBytes($tmp, $pfx)
+Move-Item -LiteralPath $tmp -Destination $certPath -Force
 $rsa.Dispose()
 $result = [ordered]@{ ok = $true; cert = $certPath; key = $keyPath; ips = $ips; notAfter = $notAfter.ToString('yyyy-MM-dd') }
 $result | ConvertTo-Json -Depth 4

@@ -2009,18 +2009,41 @@ const UPLOAD_MAX = 20 * 1024 * 1024 * 1024;   // 大文件：上限 20GB（局�
 // USB 网络共享（RNDIS）的网卡 IP：手机 USB 连电脑后通常会出现一个新网卡，速度远高于 Wi-Fi/热点。
 // 用 Get-NetAdapter 的 InterfaceDescription 判断（os.networkInterfaces 只给"以太网 N"这种别名），缓存 60 秒。
 let _usbIpsCache = { at: 0, ips: [] };
+let _usbRefreshing = false;
+// 异步刷新（execFile 不阻塞事件循环）：HTTP 请求只读缓存，避免 PowerShell 冷启动卡住整台服务
+function refreshUsbLanIps(cb) {
+  if (_usbRefreshing) { if (cb) cb(); return; }
+  _usbRefreshing = true;
+  const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const cmd = "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match 'RNDIS|Remote NDIS|USB' } | ForEach-Object { Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress } }";
+  execFile(psExe, ['-NoProfile', '-Command', cmd], { timeout: 8000, windowsHide: true }, (err, out) => {
+    _usbRefreshing = false;
+    let ips = [];
+    if (!err) ips = String(out || '').split(/\r?\n/).map((s) => s.trim()).filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
+    _usbIpsCache = { at: Date.now(), ips: ips };
+    if (cb) cb();
+  });
+}
 function usbLanIps() {
   const now = Date.now();
-  if (now - _usbIpsCache.at < 60000) return _usbIpsCache.ips;
-  let ips = [];
-  try {
-    const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-    const cmd = "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match 'RNDIS|Remote NDIS|USB' } | ForEach-Object { Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress } }";
-    const out = execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 8000, windowsHide: true });
-    ips = String(out).split(/\r?\n/).map((s) => s.trim()).filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
-  } catch { ips = []; }
-  _usbIpsCache = { at: now, ips };
-  return ips;
+  if (now - _usbIpsCache.at > 60000) refreshUsbLanIps();
+  return _usbIpsCache.ips;
+}
+// 启动时预热一次（手机 USB 共享一出现，下一次 /offline-info 就能带上）
+setTimeout(() => { try { refreshUsbLanIps(); } catch { } }, 4000);
+
+// 允许浏览/下载的根目录（桌面/下载/文档/图片）：不开放整个用户目录，避免密钥泄露时被读走 .ssh 等敏感文件
+function fileRoots() {
+  const home = process.env.USERPROFILE || '';
+  const list = [desktopDir(), join(home, 'Downloads'), join(home, 'Documents'), join(home, 'Pictures')];
+  return list.filter((p) => { try { return statSync(p).isDirectory(); } catch { return false; } });
+}
+function pathUnderRoots(real) {
+  const rl = String(real).toLowerCase();
+  return fileRoots().some((r) => {
+    const a = resolve(r).toLowerCase();
+    return rl === a || rl.startsWith(a + '\\');
+  });
 }
 
 // 真实桌面路径（可能被重定向到 D:\...）；reg.exe 输出是系统代码页，中文机按 GBK 解
@@ -3016,9 +3039,7 @@ async function handler(req, res) {
     }
     let real = '';
     try { real = resolve(dir); } catch { return jr(400, { ok: false, message: '路径不合法' }); }
-    const homeReal = home ? resolve(home).toLowerCase() : '';
-    const deskReal = resolve(desk).toLowerCase();
-    if (!homeReal || !(real.toLowerCase().startsWith(homeReal) || real.toLowerCase().startsWith(deskReal))) return jr(403, { ok: false, message: '只能浏览用户目录里的文件' });
+    if (!pathUnderRoots(real)) return jr(403, { ok: false, message: '只能浏览「桌面/下载/文档/图片」里的文件' });
     let ents = [];
     try { ents = readdirSync(real, { withFileTypes: true }); } catch (e) { return jr(404, { ok: false, message: '打不开这个文件夹' }); }
     const items = [];
@@ -3032,18 +3053,15 @@ async function handler(req, res) {
       items.push({ name: ent.name, path: p, dir: false, size: st.size, at: Math.round(st.mtimeMs) });
     }
     items.sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
-    const isRoot = (real.toLowerCase() === homeReal) || (real.toLowerCase() === deskReal) || roots.some((r) => resolve(r).toLowerCase() === real.toLowerCase());
+    const isRoot = roots.some((r) => resolve(r).toLowerCase() === real.toLowerCase());
     return jr(200, { ok: true, dir: real, parent: (isRoot ? null : dirname(real)), items: items });
   }
   if (url.pathname === '/download' && req.method === 'GET') {
-    const home = process.env.USERPROFILE || '';
     const raw = String(url.searchParams.get('path') || '');
     let real = '';
     try { real = resolve(raw); } catch { real = ''; }
-    const homeReal = home ? resolve(home).toLowerCase() : '';
-    const deskReal2 = resolve(desktopDir()).toLowerCase();
-    if (!real || !homeReal || !(real.toLowerCase().startsWith(homeReal) || real.toLowerCase().startsWith(deskReal2))) {
-      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); res.end('只能下载用户目录里的文件'); return;
+    if (!real || !pathUnderRoots(real)) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); res.end('只能下载「桌面/下载/文档/图片」里的文件'); return;
     }
     let st = null;
     try { st = statSync(real); } catch { }
@@ -4021,6 +4039,7 @@ async function handler(req, res) {
         offline: !!(cfgNow.screen && cfgNow.screen.offline),
         port: Number(cfgNow.ports && cfgNow.ports.screen) || 8660,
         ips: privateIps(),
+        https: LAN_HTTPS,
         hotspot: hs
       }));
     } catch { }
@@ -4028,6 +4047,13 @@ async function handler(req, res) {
   }
   if (url.pathname === '/offline/on' || url.pathname === '/offline/off') {
     const on = url.pathname === '/offline/on';
+    // 防抖：3 秒内重复切换直接忽略（避免来回点把 UAC 和重启刷爆）
+    globalThis.__paOfflineLast = globalThis.__paOfflineLast || 0;
+    if (Date.now() - globalThis.__paOfflineLast < 3000) {
+      try { res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: '操作太快，等几秒再试' })); } catch { }
+      return;
+    }
+    globalThis.__paOfflineLast = Date.now();
     try {
       const p = join(HERE, 'product.config.json');
       const c = JSON.parse(readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
@@ -4531,7 +4557,6 @@ let started = 0;
 // 离线模式（局域网/热点）：https 才能拿到安全上下文，WebRTC 才可用（http 下 RTCPeerConnection 被禁）。
 // 证书用自签 PFX（make-lan-cert.ps1 生成，SAN 覆盖当前局域网 IP）；手机第一次会提示证书不安全。
 function ensureLanCert() {
-  try { unlinkSync(join(HERE, 'lan-cert.pfx')); } catch { }
   const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
   const script = join(HERE, 'make-lan-cert.ps1');
   if (!fileExists(script)) { console.log('lan https: 缺 make-lan-cert.ps1，退回 http（WebRTC 不可用）'); return null; }
@@ -4541,6 +4566,7 @@ function ensureLanCert() {
   try { return readFileSync(join(HERE, 'lan-cert.pfx')); } catch { return null; }
 }
 let lanPfx = null, lanPfxTried = false;
+let LAN_HTTPS = false;   // 局域网是否真的起来了 https（证书生成失败时退回 http，页面要跟着换成 http 地址）
 for (const host of hosts) {
   const isLanHost = LAN_V4.test(host);
   let proto = 'http';
@@ -4548,7 +4574,7 @@ for (const host of hosts) {
   if (isLanHost) {
     if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
     if (lanPfx) {
-      try { s = https.createServer({ pfx: lanPfx }, handler); proto = 'https'; }
+      try { s = https.createServer({ pfx: lanPfx }, handler); proto = 'https'; LAN_HTTPS = true; }
       catch (e) { console.log('lan https 启动失败，退回 http：' + (e && e.message)); s = null; }
     }
   }

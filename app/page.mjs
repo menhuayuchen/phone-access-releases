@@ -4379,10 +4379,10 @@ bindImg(img);
       const on = !!j.offline;
       const hs = j.hotspot || {};
       let h = '<label style="display:flex;align-items:center;gap:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
-        + '<input type="checkbox" id="offToggle" ' + (on ? 'checked' : '') + '> 开启局域网访问（会重启画面服务，约 10 秒）</label>';
+        + '<input type="checkbox" id="offToggle" ' + (on ? 'checked' : '') + '> 开启局域网访问（会重启画面服务，约 10 秒；会弹一次管理员授权）</label>';
       if (on) {
         const firstIp = (j.ips && j.ips.length) ? j.ips[0] : null;
-        const firstUrl = firstIp ? ('https://' + firstIp.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY)) : '';
+        const firstUrl = firstIp ? ((j.https === false ? 'http://' : 'https://') + firstIp.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY)) : '';
         h += '<div style="margin-top:12px;color:#e8eaee;font-size:12.5px">手机扫码或打开（同一 Wi-Fi / 热点）：</div>';
         if (!j.ips || !j.ips.length) {
           h += '<div style="color:#ffb454;font-size:12px;margin-top:4px">没检测到局域网 IP（先连上 Wi-Fi 或开热点；用 USB 共享网络也可以）</div>';
@@ -4392,7 +4392,7 @@ bindImg(img);
             + 'style="background:#fff;padding:6px;border-radius:10px;display:block">'
             + '<div style="flex:1;min-width:210px">';
           for (const it of j.ips) {
-            const url = 'https://' + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
+            const url = (j.https === false ? 'http://' : 'https://') + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
             const tag = it.usb
               ? '<span style="background:#1d3a24;color:#8CE58C;border:1px solid #2f5f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">USB 直连 · 最快</span>'
               : '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span>';
@@ -4456,8 +4456,12 @@ bindImg(img);
         fetch('/offline-info?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => { });
       });
       const cb2560 = bodyEl.querySelector('#off2560');
-      if (cb2560) cb2560.addEventListener('change', () => {
+      if (cb2560) cb2560.addEventListener('change', async () => {
         try { localStorage.setItem('lan2560', cb2560.checked ? '1' : '0'); } catch (e) { }
+        // 立刻把发送宽度切过去：勾上 2560、取消回 1920（只改本地开关不会动服务端）
+        try {
+          await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ width: cb2560.checked ? 2560 : 1920 }) });
+        } catch (e) { }
         try { if (state.mode === 'h264') restartH264(); } catch (e) { }
       });
       const qrImg = bodyEl.querySelector('#offQr');
