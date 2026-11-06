@@ -1827,8 +1827,19 @@ try {
     $hpOk = $false
     try {
       $psExeHp = Get-PowerShellExe
-      & $psExeHp -NoProfile -ExecutionPolicy Bypass -File $hpScript -Action install -AppDir $script:InstallRoot -MsiPath $hpMsiUse -Quiet
-      $hpOk = ($LASTEXITCODE -eq 0)
+      # 2026-11-06 修正（用户实测）：机器上已经装过 Sunshine 时，这一步可能卡住整个安装。
+      # 这里再套一层总超时（420 秒）：超时就结束这一步、继续安装后面的收尾步骤，绝不让安装器卡死。
+      $hpArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $hpScript, '-Action', 'install',
+                  '-AppDir', $script:InstallRoot, '-MsiPath', $hpMsiUse, '-Quiet')
+      $hpProc = Start-Process -FilePath $psExeHp -ArgumentList $hpArgs -PassThru -WindowStyle Hidden
+      $hpTimedOut = $false
+      try { Wait-Process -Id $hpProc.Id -Timeout 420 -ErrorAction Stop } catch { $hpTimedOut = $true }
+      if ($hpTimedOut) {
+        try { Stop-Process -Id $hpProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+        Write-WarnLine '高性能模式这一步 7 分钟没结束（多半是机器上已装过 Sunshine），已跳过，继续安装其他部分'
+      } else {
+        $hpOk = ($hpProc.ExitCode -eq 0)
+      }
     } catch {
       Write-WarnLine ('高性能模式安装没能完成：' + [string]$_.Exception.Message)
     }

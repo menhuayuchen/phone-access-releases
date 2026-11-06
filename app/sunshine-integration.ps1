@@ -69,15 +69,40 @@ function Get-TailscaleIp {
 }
 
 function Get-SunshineInstalled {
+    # 2026-11-06：判断"装没装过 Sunshine"必须更宽松。
+    # 用户实测：机器上已经装了 Sunshine 时，安装器还会去跑静默 MSI，
+    # 而已安装的产品会变成"维护安装"，msiexec 可能一直等安装锁 → 整个安装流程卡住。
+    # 所以这里把能判断的信号全用上：默认路径 / 服务 / 正在跑的进程 / 注册表卸载项（名称放宽）。
     $installed = Test-Path -LiteralPath $sunshineExe
     $productCode = ''
+    $why = if ($installed) { '默认路径存在' } else { '' }
+    if (-not $installed) {
+        foreach ($p in @(
+            (Join-Path $env:ProgramFiles 'Sunshine\sunshine.exe'),
+            (Join-Path ${env:ProgramFiles(x86)} 'Sunshine\sunshine.exe'),
+            (Join-Path $env:LOCALAPPDATA 'Sunshine\sunshine.exe'),
+            (Join-Path $env:ProgramData 'Sunshine\sunshine.exe')
+        )) {
+            if ($p -and (Test-Path -LiteralPath $p)) { $installed = $true; $why = '安装在 ' + $p; break }
+        }
+    }
+    if (-not $installed) {
+        try { if (Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue) { $installed = $true; $why = 'SunshineService 存在' } } catch { }
+    }
+    if (-not $installed) {
+        try { if (Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue) { $installed = $true; $why = 'sunshine 进程正在运行' } } catch { }
+    }
     try {
         $keys = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
-                  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*')
-        $app = Get-ItemProperty $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^Sunshine' } | Select-Object -First 1
-        if ($app) { $productCode = [string]$app.PSChildName }
+                  'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+                  'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')
+        $app = Get-ItemProperty $keys -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'Sunshine' } | Select-Object -First 1
+        if ($app) {
+            $productCode = [string]$app.PSChildName
+            if (-not $installed) { $installed = $true; $why = '注册表里有 ' + $app.DisplayName }
+        }
     } catch { }
-    return [pscustomobject]@{ installed = $installed; exe = $sunshineExe; productCode = $productCode }
+    return [pscustomobject]@{ installed = $installed; exe = $sunshineExe; productCode = $productCode; why = $why }
 }
 
 function Get-SunshineHost {
@@ -334,10 +359,30 @@ if ($Action -eq 'install') {
         if (-not (Test-Path -LiteralPath $MsiPath)) { Fail ('找不到 Sunshine 安装包：' + $MsiPath) }
         $log = Join-Path $env:TEMP 'sunshine-msi-install.log'
         Say ('安装 Sunshine（静默）：' + $MsiPath)
-        $p = Start-Process msiexec.exe -ArgumentList @('/i', ('"' + $MsiPath + '"'), '/qn', '/norestart', '/l*v', ('"' + $log + '"')) -Wait -PassThru
-        if ($p.ExitCode -ne 0) { Fail ('Sunshine 安装失败，msiexec exit=' + $p.ExitCode + '（日志 ' + $log + '）') }
+        # 2026-11-06 修正（用户实测卡住）：机器上已经装过 Sunshine 时，静默 MSI 会变成"维护安装"，
+        # msiexec 可能一直等 Windows Installer 的安装锁/服务停止，原来的 Start-Process -Wait 会无限卡住，
+        # 用户看到的就是"装到一半不动了"。现在：最多等 240 秒，超时就杀掉 msiexec 继续做预配置，绝不阻塞。
+        $mi = Start-Process msiexec.exe -ArgumentList @('/i', ('"' + $MsiPath + '"'), '/qn', '/norestart', '/l*v', ('"' + $log + '"')) -PassThru
+        $msiTimedOut = $false
+        try { Wait-Process -Id $mi.Id -Timeout 240 -ErrorAction Stop } catch { $msiTimedOut = $true }
+        if ($msiTimedOut) {
+            try { Stop-Process -Id $mi.Id -Force -ErrorAction SilentlyContinue } catch { }
+            [void]$warns.Add('Sunshine 静默安装 240 秒没结束（多半是这台机器上已装过 Sunshine、安装锁被占）；已跳过安装，继续做预配置')
+            Say '安装超时：跳过 Sunshine 安装，只做预配置' 'Yellow'
+        } else {
+            $code = 0
+            try { $code = [int]$mi.ExitCode } catch { $code = -1 }
+            if ($code -eq 0) { Say 'Sunshine 安装完成' 'Green' }
+            elseif ($code -eq 1638 -or $code -eq 3010 -or $code -eq 1641) {
+                [void]$warns.Add('Sunshine 已存在（msiexec exit=' + $code + '），跳过安装，只做预配置')
+                Say 'Sunshine 已存在，跳过安装' 'Yellow'
+            } else {
+                [void]$warns.Add('Sunshine 安装返回 exit=' + $code + '（日志 ' + $log + '）；继续尝试预配置')
+                Say ('Sunshine 安装返回 exit=' + $code + '，继续尝试预配置') 'Yellow'
+            }
+        }
     } else {
-        Say 'Sunshine 已经装了，跳过安装，只做预配置。'
+        Say ('Sunshine 已经装了（' + $inst.why + '），跳过安装，只做预配置。')
     }
 
     # 1) 服务/Web UI（不需要管理员）
