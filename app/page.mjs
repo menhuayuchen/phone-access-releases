@@ -587,6 +587,7 @@ async function loadSources(force) {
     // 下拉框正开着就别重建（会把列表关掉），下一轮再说
     if (document.activeElement === srcSel && !force) return;
     rebuildSourceOptions();
+    try { if (win264On() && state.window) refreshWinRect(); } catch (e) { }
     try { if (state.mode === 'h264') sendCaptureArgs(false); } catch (e) { }
     // 选中的窗口已经关掉了 → 自动切回"全部屏幕"，别让画面停在不存在的东西上
     if (state.window && !state.windows.some((x) => x.hwnd === state.window)) {
@@ -616,6 +617,9 @@ function desktopRect() {
   return { x: x0, y: y0, w: x1 - x0, h: y1 - y0 };
 }
 function currentRect() {
+  // 单窗口采集（PrintWindow 客户区）：画面是「客户区」，输入换算必须用客户区屏幕矩形，
+  // 用窗口矩形会整体偏一个标题栏+边框的高度（用户反馈的"单窗口坐标不准"）。
+  if (win264On() && state.window && state.winRect && state.winRect.w > 0) return state.winRect;
   if (state.window) {
     const w = (state.windows || []).find((x) => x.hwnd === state.window);
     if (w) return { x: w.x, y: w.y, w: w.w, h: w.h };
@@ -627,6 +631,22 @@ function currentRect() {
   return desktopRect();   // 全部屏幕（monitor=-1, window=0）
 }
 function applyRect() { state.rect = currentRect(); }
+// 单窗口采集时向服务端要「客户区屏幕矩形」，窗口移动/改大小时跟着更新
+function refreshWinRect() {
+  if (!win264On() || !state.window) { if (state.winRect) { state.winRect = null; applyRect(); } return; }
+  fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })
+    .then((r) => r.json())
+    .then((j) => {
+      const wr = j && j.winRect;
+      if (!wr || !(wr.w > 0)) { if (state.winRect) { state.winRect = null; applyRect(); } return; }
+      const a = state.winRect || {};
+      if (a.x !== wr.x || a.y !== wr.y || a.w !== wr.w || a.h !== wr.h) {
+        state.winRect = { x: wr.x, y: wr.y, w: wr.w, h: wr.h };
+        applyRect();
+      }
+    })
+    .catch(() => { });
+}
 
 srcSel.addEventListener('change', async () => {
   const v = srcSel.value;
@@ -635,6 +655,10 @@ srcSel.addEventListener('change', async () => {
   applyRect();
   try { syncSrcBtn(); } catch (e) { }
   await postMode({ monitor: state.monitor, window: state.window });
+  try {
+    if (win264On() && state.window) setTimeout(refreshWinRect, 900);
+    else { state.winRect = null; applyRect(); }
+  } catch (e) { }
   setNote('已切换来源');
   buzz(8);
   try { syncWin264(); } catch (e) { }
@@ -3294,9 +3318,13 @@ bindImg(img);
       try { winCb.checked = win264On(); } catch (e) { }
       winCb.addEventListener('change', async () => {
         try { localStorage.setItem('win264', winCb.checked ? '1' : '0'); } catch (e) { }
+        state.winRect = null;
+        applyRect();
         await syncWin264();
-        if (winCb.checked) setMsg(state.window ? '单窗口采集已开：当前选中窗口生效（约 10–30fps）' : '单窗口采集已开：先在上方选一个「窗口」才会生效', '#8CE58C');
-        else setMsg('已切回普通全屏采集', '#8CE58C');
+        if (winCb.checked) {
+          setMsg(state.window ? '单窗口采集已开：当前选中窗口生效（约 10–30fps）' : '单窗口采集已开：先在上方选一个「窗口」才会生效', '#8CE58C');
+          setTimeout(refreshWinRect, 900);
+        } else setMsg('已切回普通全屏采集', '#8CE58C');
         if (state.mode === 'h264') restartH264();
       });
     }

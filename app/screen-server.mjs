@@ -628,9 +628,15 @@ function h264StartWindow() {
   cap.stderr.on('data', (d) => {
     if (h264.cap !== cap) return;
     errBuf += String(d);
+    // 客户区在屏幕上的物理矩形：页面用它做输入坐标换算（单窗口采集比窗口边框精确）
+    const rm = errBuf.match(/RECT (-?\d+) (-?\d+) (\d+) (\d+)/);
+    if (rm) {
+      h264.winRect = { x: Number(rm[1]), y: Number(rm[2]), w: Number(rm[3]), h: Number(rm[4]) };
+      errBuf = errBuf.replace(rm[0], '');
+    }
     if (!started) {
       const m = errBuf.match(/SIZE (\d+) (\d+)/);
-      if (m) startEncoder(Number(m[1]), Number(m[2]));
+      if (m) { errBuf = errBuf.replace(m[0], ''); startEncoder(Number(m[1]), Number(m[2])); }
     } else {
       const s = errBuf.trim();
       if (s) h264.lastError = s.split('\n').slice(-1)[0];
@@ -664,6 +670,7 @@ function h264Stop() {
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
   // 单窗口模式：采集端必须一起收掉，否则 h264Start 会被 h264.cap 挡住
   if (h264.cap) { const c = h264.cap; h264.cap = null; try { c.kill(); } catch { } }
+  h264.winRect = null;   // 停止采集后旧的客户区矩形不再可信
   const proc = h264.proc;
   if (proc) {
     // 先脱钩：这只进程的输出/退出都不再影响状态；等它真退出了才允许再 spawn
@@ -3903,6 +3910,8 @@ async function handler(req, res) {
       viewers: h264.clients.size,
       // 单窗口采集（实验）：非 0 表示正在抓这个窗口
       win: H264_WIN,
+      // 单窗口采集时，被采集窗口客户区在屏幕上的物理矩形（页面输入坐标用）
+      winRect: h264.winRect || null,
       mon: H264_MON,
       qf: H264_QF,
       // B 方案（Pion WebRTC H.264）默认通道：页面默认走它，?rtc264=0 可强制旧 WS 通道

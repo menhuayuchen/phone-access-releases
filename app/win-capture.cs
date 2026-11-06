@@ -64,6 +64,12 @@ internal static class Program
                     string line = "SIZE " + cw + " " + ch + "\n";
                     byte[] lb = System.Text.Encoding.ASCII.GetBytes(line);
                     errS.Write(lb, 0, lb.Length);
+                    // 客户区在屏幕上的物理坐标（给页面做输入坐标换算用；窗口移动/改大小时随 SIZE 一起更新）
+                    POINT cp = new POINT();
+                    ClientToScreen(h, ref cp);
+                    string rline = "RECT " + cp.X + " " + cp.Y + " " + cw + " " + ch + "\n";
+                    byte[] rb = System.Text.Encoding.ASCII.GetBytes(rline);
+                    errS.Write(rb, 0, rb.Length);
                     errS.Flush();
                 }
 
