@@ -114,6 +114,9 @@ $appFiles = @(
   '离线模式.cmd',
   # 离线模式：防火墙放行/恢复（局域网/热点/USB 直连）
   'offline-firewall.ps1',
+  # 离线模式：关闭入口（恢复只监听本机/Tailscale）
+  'offline-mode-off.ps1',
+  '关闭离线模式.cmd',
   # 许可证：校验与状态生成随包分发。私钥在 seller-keys 目录（app 之外），天然打不进来。
   'licence.ps1',
   'licence-state.ps1',

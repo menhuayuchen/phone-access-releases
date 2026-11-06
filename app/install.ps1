@@ -908,6 +908,7 @@ try {
     'entry.ps1', '手机入口.cmd',
     # 离线模式（局域网/电脑热点）：入口脚本 + 桌面快捷方式目标
     'offline-mode.ps1', '离线模式.cmd', 'make-lan-cert.ps1', 'hotspot-ctl.ps1', 'offline-firewall.ps1',
+    'offline-mode-off.ps1', '关闭离线模式.cmd',
     'uninstall.ps1', 'uninstall.cmd', '使用说明.md',
     'dsh-port.ps1', 'restart.ps1', 'restart.cmd',
     'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs',
@@ -1892,6 +1893,11 @@ try {
     -TargetPath (Join-Path $script:InstallRoot '离线模式.cmd') -WorkDir $script:InstallRoot `
     -FallbackScript 'offline-mode.ps1' `
     -Description '没有互联网/Tailscale 时用：开局域网（https + WebRTC）并打开手机直连地址'
+  # 关闭离线模式（2026-11-06）：恢复只监听本机/Tailscale，并撤销局域网的防火墙放行
+  $shortcutOfflineOff = New-DesktopShortcut -Dir $desktopDir -Name '关闭离线模式' `
+    -TargetPath (Join-Path $script:InstallRoot '关闭离线模式.cmd') -WorkDir $script:InstallRoot `
+    -FallbackScript 'offline-mode-off.ps1' `
+    -Description '关闭局域网访问：恢复只监听本机/Tailscale，并撤销防火墙放行'
   # 改动（用户要求：桌面文件夹里要有便利的控制程序和文档）：
   # 加一个「卸载」入口，并把客户说明书复制进去，客户不用回安装目录翻文件。
   # 改动（第二轮 P1-3 / I2）：同上，降级外壳必须真的去跑卸载，不能退回「启动」。
@@ -1911,12 +1917,12 @@ try {
     Write-WarnLine '安装包里缺少 使用说明.md，桌面文档没放（不影响使用）'
   }
   $shortcutCount = 0
-  foreach ($sc in @($shortcutStart, $shortcutCheck, $shortcutStop, $shortcutRestart, $shortcutEntry, $shortcutOffline, $shortcutUninstall)) { if ($sc) { $shortcutCount++ } }
+  foreach ($sc in @($shortcutStart, $shortcutCheck, $shortcutStop, $shortcutRestart, $shortcutEntry, $shortcutOffline, $shortcutOfflineOff, $shortcutUninstall)) { if ($sc) { $shortcutCount++ } }
 
   $folderReason = [string]$script:AccessFolderReason
   if ($shortcutCount -ge 2) {
     # 改动（第二轮 P3-3 / I3）：文案说 6 个、列表只写了 4 个，客户数一遍会以为少建了。
-    Write-Ok ('已生成「手机远程」文件夹（' + [string]$shortcutCount + ' 个图标：启动 / 自查 / 停止 / 重启 / 手机入口 / 离线模式 / 卸载）')
+    Write-Ok ('已生成「手机远程」文件夹（' + [string]$shortcutCount + ' 个图标：启动 / 自查 / 停止 / 重启 / 手机入口 / 离线模式 / 关闭离线模式 / 卸载）')
     Write-Host ('    位置：' + $desktopDir) -ForegroundColor Gray
     if ($folderReason -and $folderReason -ne '用户桌面') {
       Write-WarnLine ('注意：你的桌面路径写不进去，图标放在了这里 → ' + $desktopDir)
