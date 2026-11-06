@@ -1893,3 +1893,18 @@ USB 网络共享是 RNDIS 网卡，走 USB 3.x 带宽，通常 200–400MB/s，�
 
 实测：服务端已重签并重启（新 PID），证书 issuer=PhoneAccess Local CA、CA basicConstraints=CA:TRUE(临界)、
 pathlen=1；/ca.crt 下发 1085 字节新 CA，与叶子证书链匹配；/sw.js 已含 401 兜底。
+
+### 42.33 换网络后地址自动更新 + Tailscale HTTPS 一键化（2026-11-06 14:2x，未发布）
+
+用户反馈：离线模式下两台设备一起换到另一个共同网络就连不上；并要求把流程（尤其 Tailscale HTTPS）傻瓜化。
+
+- **换网络**：局域网 IP 变化检测 15 秒 → **5 秒**；换网络后服务在 ~10–20 秒内自动按新 IP 重绑
+  （证书由同一个 CA 重签，手机不需要重装 CA）；备用端口 8661/8662 绑 0.0.0.0，新 IP 立即可用；
+  离线面板**每 5 秒自动刷新地址**（正在输入 SSID/密码时跳过），不用关掉重开。
+- **Tailscale HTTPS 一键化**：设置 → 连接体检里显示「远程 HTTPS」当前地址；没开时给
+  「一键开启远程 HTTPS」按钮（POST /tailscale-https 复用 https-setup.ps1 的探测+超时逻辑），
+  失败时直接告诉客户去 Tailscale 后台 DNS → HTTPS Certificates 启用。
+  修了两个实现问题：`tailscale serve status` 的 URL 与 proxy 分行（解析要跨行）、
+  PowerShell 输出编码（GBK→UTF-8，否则中文提示乱码）。
+- 实测：/tailscale-status 返回 httpsUrl=https://dsh-laptop.tailb9b4f0.ts.net；POST /tailscale-https 返回
+  {"ok":true,"note":"已经配置好了"}。

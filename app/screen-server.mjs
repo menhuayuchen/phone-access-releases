@@ -1892,6 +1892,36 @@ function tailscaleStatusRaw() {
     });
   });
 }
+// 读 tailscale serve 里 443 -> 本机画面端口 的映射（用于"远程 HTTPS 入口"状态展示）
+let _httpsServeCache = { at: 0, url: '' };
+async function tailscaleHttpsServeUrl(port) {
+  if (Date.now() - _httpsServeCache.at < 10000) return _httpsServeCache.url;
+  let url = '';
+  try {
+    const exe = resolveTailscaleExe();
+    if (exe) {
+      const r = await new Promise((resolve) => {
+        const child = spawn(exe, ['serve', 'status'], { windowsHide: true });
+        let out = '';
+        child.stdout.on('data', (d) => { out += String(d); });
+        child.on('exit', () => resolve(out));
+        child.on('error', () => resolve(''));
+        setTimeout(() => { try { child.kill(); } catch { } resolve(out); }, 6000);
+      });
+      // serve status 的格式是两行：https://<机器名> 下面再缩进写 "|-- / proxy http://127.0.0.1:8660"
+      const lines = String(r || '').split(/\r?\n/);
+      let pending = '';
+      for (const ln of lines) {
+        const m = ln.match(/https:\/\/[^\s]+/);
+        if (m) { pending = m[0]; continue; }
+        if (pending && ln.indexOf('127.0.0.1:' + port) >= 0) { url = pending; break; }
+      }
+    }
+  } catch { }
+  _httpsServeCache = { at: Date.now(), url };
+  return url;
+}
+
 async function tailscaleSummary() {
   const t = await tailscaleStatusRaw();
   const out = {
@@ -2759,8 +2789,14 @@ async function handler(req, res) {
         sum = { installed: false, ok: false, error: String((e && e.message) || e), hint: '体检失败：' + String((e && e.message) || e) };
       }
       try {
-        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(JSON.stringify(sum));
+        try {
+          const cfgNow = (() => { try { return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } })();
+          const screenPort = Number(cfgNow.ports && cfgNow.ports.screen) || 8660;
+          sum.httpsUrl = await tailscaleHttpsServeUrl(screenPort);
+          sum.httpsHint = sum.httpsUrl ? '' : '还没有开启远程 HTTPS 入口。点下面「一键开启远程 HTTPS」；如果提示没启用证书，去 Tailscale 后台 → DNS → HTTPS Certificates 点启用，再回来点一次。';
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify(sum));
+        } catch { }
       } catch { }
     })();
     return;
@@ -2782,6 +2818,30 @@ async function handler(req, res) {
     }
     console.log('screen-server: 已拉起 Tailscale 安装程序');
     return reply(200, { ok: true, message: '已打开 Tailscale 安装程序（可能会弹管理员授权，点「是」）。装完登录，再点「重新检测」。' });
+  }
+
+  // 一键开启 tailscale serve 的 https 入口（复用 https-setup.ps1 的探测与超时保护）
+  if (url.pathname === '/tailscale-https' && req.method === 'POST') {
+    const reply = (code, obj) => {
+      try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { }
+    };
+    const exe = resolveTailscaleExe();
+    if (!exe) return reply(200, { ok: false, note: '这台电脑没装 Tailscale（或没在运行）。先装好、登录后再点。' });
+    const script = join(HERE, 'https-setup.ps1');
+    if (!fileExists(script)) return reply(200, { ok: false, note: '安装目录缺 https-setup.ps1' });
+    const cfgNow = (() => { try { return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } })();
+    const screenPort = Number(cfgNow.ports && cfgNow.ports.screen) || 8660;
+    const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const psCmd = '[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; . "' + script + '"; $r = Enable-HttpsServeForScreen -TailscaleExe "' + exe + '" -ScreenPort ' + screenPort + ' -TimeoutSec 40; $r | ConvertTo-Json -Compress';
+    try {
+      const out = execFileSync(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command', psCmd], { encoding: 'utf8', timeout: 70000, windowsHide: true });
+      let j = null;
+      try { j = JSON.parse(String(out || '').trim().split(/\r?\n/).filter(Boolean).pop() || '{}'); } catch { }
+      _httpsServeCache = { at: 0, url: '' };
+      return reply(200, { ok: !!(j && j.Ok), note: (j && j.Note) || '', url: (j && j.Url) || '' });
+    } catch (e) {
+      return reply(200, { ok: false, note: '开启失败：' + ((e && e.message) || e) });
+    }
   }
 
   // ---- 文本剪贴板（2026-11-03，A5）--------------------------------------------
@@ -4526,6 +4586,9 @@ async function handler(req, res) {
       "    try {",
       "      const fresh = await fetch(req, { cache: 'no-store' });",
       "      if (fresh && fresh.ok) { try { const c = await caches.open(CACHE); await c.put('/', fresh.clone()); } catch (e2) {} }",
+      "      // 装出来的 App 打开 / 时可能没带 k、也没 cookie（服务端 401）：用缓存的外壳兜底，",
+      "      // 外壳 HTML 里内嵌了密钥，页面自己能完成鉴权。",
+      "      if (fresh && (fresh.status === 401 || fresh.status === 403)) { const cached = await caches.match(req, { ignoreSearch: true }); if (cached) return cached; }",
       "      return fresh;",
       "    } catch (err) {",
       "      const cached = await caches.match(req, { ignoreSearch: true });",
@@ -4764,5 +4827,5 @@ if (OFFLINE_MODE) {
       console.log('screen-server: 局域网地址变化（' + (initial || '无') + ' -> ' + now + '），退出让守护按新地址重新绑定');
       setTimeout(() => { try { process.exit(0); } catch { } }, 300);
     }
-  }, 15000).unref?.();
+  }, 5000).unref?.();   // 每 5 秒检查一次局域网地址变化（换网络/开热点后更快重绑）
 }

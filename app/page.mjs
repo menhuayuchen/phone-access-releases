@@ -3243,6 +3243,16 @@ bindImg(img);
       const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
       rows.push(setKv('本机地址', '<span style="color:#aeb3bb">' + escHtml(addr) + (s.dnsName ? ' · ' + escHtml(s.dnsName) : '') + '</span>'));
       rows.push(setKv('在线节点', '<span style="color:#aeb3bb">' + (s.onlinePeers || 0) + ' / ' + (s.peerTotal || 0) + '</span>'));
+      // 远程 HTTPS 入口（tailscale serve）：一键开启，省得客户自己去后台折腾
+      if (s.httpsUrl) {
+        rows.push(setKv('远程 HTTPS', '<a href="' + escHtml(s.httpsUrl) + '" style="color:#8fb6ff">' + escHtml(s.httpsUrl) + '</a>'));
+      } else {
+        rows.push(setKv('远程 HTTPS', '<span style="color:#ffb454">未开启</span>'));
+        rows.push('<div style="display:flex;gap:8px;align-items:center;margin:6px 0 2px;flex-wrap:wrap">'
+          + '<button id="tsHttpsBtn" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">一键开启远程 HTTPS</button>'
+          + '<span id="tsHttpsMsg" style="font-size:11.5px;color:#868c96"></span></div>');
+        if (s.httpsHint) rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.6">' + escHtml(s.httpsHint) + '</div>');
+      }
     }
     if (s.peers && s.peers.length) {
       rows.push('<div style="margin-top:10px;color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">tailnet 里的设备</div>');
@@ -3284,6 +3294,20 @@ bindImg(img);
       try { s = await fetch('/tailscale-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { s = null; }
       if (!s) { bodyEl.innerHTML = '<span style="color:#ff6b6b">检测失败：读不到 Tailscale 状态。</span>'; return; }
       bodyEl.innerHTML = tsRowsHtml(s);
+      const httpsBtn = bodyEl.querySelector('#tsHttpsBtn');
+      if (httpsBtn) httpsBtn.addEventListener('click', async () => {
+        const hm = bodyEl.querySelector('#tsHttpsMsg');
+        httpsBtn.disabled = true; httpsBtn.style.opacity = '.6';
+        if (hm) { hm.textContent = '正在开启（可能要 10–40 秒）…'; hm.style.color = '#868c96'; }
+        let r = null;
+        try { r = await fetch('/tailscale-https', { method: 'POST' }).then((x) => x.json()); } catch (e) { r = null; }
+        if (hm) {
+          hm.textContent = (r && (r.note || (r.ok ? '已开启' : ''))) || '开启失败（看上面的说明）';
+          hm.style.color = (r && r.ok) ? '#8CE58C' : '#ffb454';
+        }
+        httpsBtn.disabled = false; httpsBtn.style.opacity = '1';
+        setTimeout(load, 1500);
+      });
       const ins = bodyEl.querySelector('#tsInstall');
       if (ins) ins.addEventListener('click', async () => {
         ins.disabled = true; ins.style.opacity = '.6'; ins.textContent = '正在打开安装程序…';
@@ -4534,6 +4558,15 @@ bindImg(img);
       bodyEl.innerHTML = '<span style="color:#ffb454">检测失败</span>';
     });
     refresh();
+    // 网络切换后 IP 会变：开着这个面板时每 5 秒自动刷新一次地址（正在输入 SSID/密码时跳过，别把输入冲掉）
+    if (window.__offTimer) { clearInterval(window.__offTimer); window.__offTimer = null; }
+    window.__offTimer = setInterval(() => {
+      try {
+        const act = document.activeElement;
+        if (act && act.closest && act.closest('#offBody')) return;
+        refresh();
+      } catch (e) { }
+    }, 5000);
   }
 
   function privacyBind(box) {
