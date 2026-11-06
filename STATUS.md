@@ -1864,3 +1864,18 @@ USB 网络共享是 RNDIS 网卡，走 USB 3.x 带宽，通常 200–400MB/s，�
 
 说明（Android 侧）：无网 Wi-Fi 在 Android 上属于"未验证网络"，如果手机同时开着移动数据，
 系统可能把流量走蜂窝或判定离线；Chrome 就会出离线页。建议测试时关闭移动数据、把该 Wi-Fi 设为"始终连接"。
+
+### 42.31 本地 CA：手机装一次证书后 https 受信任（可安装成 App）（2026-11-06 13:1x，未发布）
+
+用户要求生成 CA，解决"离线模式不能安装成 App + 每次都要点证书警告 + 加载慢（含证书页操作）"。
+
+- 新增 `make-lan-ca.ps1`：用 Windows 证书存储生成
+  ① 根 CA（CN=PhoneAccess Local CA，10 年，私钥保存在 CurrentUser\My，可导出）
+  ② 叶子证书（CN=PhoneAccess LAN，SAN=当前所有局域网 IP + localhost，由 CA 签名，5 年，PFX 带随机密码存 lan-cert.pass）
+  ③ `lan-ca.crt`（DER，给手机安装）。
+  先说坑：.NET Framework 的 CertificateRequest **导出的 PFX 不带私钥**（实测 HasPrivateKey=False，多种变体都失败），
+  改用 New-SelfSignedCertificate + Export-PfxCertificate（走 CSP/存储）后导出可靠；服务端加载 PFX 必须带 passphrase。
+- 服务端：优先用 CA 叶子证书（lan-server.pfx + lan-cert.pass）；失败才退回旧的自签证书。
+  新增 `GET /ca.crt`（公钥，免鉴权）供手机下载安装。
+- 页面离线面板新增「信任证书（一次性）」：三步说明 + "下载 CA 证书"按钮 + http 备用下载地址。
+- 实测：叶子证书 issuer=PhoneAccess Local CA、SAN 含 10.120.169.250、TLS1.3；8660/8662 均 200；/ca.crt 200。

@@ -4440,6 +4440,15 @@ bindImg(img);
               + '<div style="color:#6b7078;font-size:11px;line-height:1.6">备用二维码（<b>http</b>，扫码直接用）<br>注意：<b>ip:8661 必须带 http://</b>，<br>Chrome 直接输地址会先试 https，就会报 ERR_SSL_PROTOCOL_ERROR。</div>'
               + '</div></div>';
           }
+          h += '<div style="margin-top:10px;padding:10px 11px;border:1px solid #26405a;background:#101b26;border-radius:9px">'
+            + '<div style="color:#8fb6ff;font-size:12.5px;font-weight:600">信任证书（一次性：之后不再提示、可安装成 App）</div>'
+            + '<div style="color:#aeb3bb;font-size:11.5px;line-height:1.75;margin-top:6px">'
+            + '① 手机先打开 <code style="color:#8fb6ff">http://' + esc(String(firstIp.ip)) + ':' + esc(String(j.fallbackPort)) + '/ca.crt</code> 下载证书<br>'
+            + '② 设置 → 安全 → 加密与凭据 → 安装证书 → <b>CA 证书</b> → 选刚下载的文件 → 安装<br>'
+            + '③ 重新打开上面的 https 地址：不再提示「不安全」，Chrome 里也能「安装应用」'
+            + '</div>'
+            + '<a href="/ca.crt" style="display:inline-block;margin-top:8px;background:#2f6feb;color:#fff;border-radius:8px;padding:6px 12px;font-size:12px;text-decoration:none">下载 CA 证书</a>'
+            + '</div>';
           h += '<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #24262d">'
             + '<button id="lanCheckBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">检测局域网（手机连不上时点）</button>'
             + '<div id="lanCheckMsg" style="margin-top:6px;font-size:11.5px;color:#868c96;line-height:1.7"></div>'

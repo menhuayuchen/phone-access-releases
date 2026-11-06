@@ -2558,7 +2558,7 @@ async function handler(req, res) {
   // 收款码等品牌图片：未授权客户要靠它找到购买方式，必须公开
   const isBrandingAsset = url.pathname.startsWith('/branding/') && /\.(png|jpe?g)$/i.test(url.pathname);
   // 明确公开的少量资源（不含任何画面/控制/许可证数据）
-  const PUBLIC_PATHS = new Set(['/health', '/sw.js', '/icon-192.png', '/icon-512.png']);
+  const PUBLIC_PATHS = new Set(['/health', '/sw.js', '/ca.crt', '/icon-192.png', '/icon-512.png']);
   // 浏览器取 manifest 时不发 cookie，页面里现签一个短时 token 例外
   const manifestOk = url.pathname === '/manifest.json' && manifestTokenOk(url);
   if (!PUBLIC_PATHS.has(url.pathname) && !isBrandingAsset && !manifestOk && !authorized(req, url)) {
@@ -4493,6 +4493,21 @@ async function handler(req, res) {
   // 但这里**故意不做任何缓存**：fetch 处理器什么都不拦截，让浏览器照常走网络。
   // 理由：页面是 server 端渲染的，一旦缓存住，改了 page.mjs 客户会一直看到旧页面——
   // 这类"更新不生效"的问题排查成本极高。安装能力靠 SW 存在，性能靠网络，两不耽误。
+  // 本地 CA 公钥（供手机下载安装，安装后 https 受信任、可安装成 App）
+  if (url.pathname === '/ca.crt') {
+    try {
+      const caBytes = readFileSync(join(HERE, 'lan-ca.crt'));
+      res.writeHead(200, {
+        'content-type': 'application/x-x509-ca-cert',
+        'content-disposition': "attachment; filename*=UTF-8''PhoneAccess-CA.crt",
+        'cache-control': 'no-store'
+      });
+      res.end(caBytes);
+    } catch (e) {
+      try { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('CA 还没生成（先在电脑上开一次离线模式）'); } catch { }
+    }
+    return;
+  }
   if (url.pathname === '/sw.js') {
     // 缓存"页面外壳"：手机装成 App 后，即使 Android 认为当前网络没互联网（无网 Wi-Fi/热点），
     // 从主屏幕打开也不会出现 Chrome 的恐龙离线页——先出缓存页面，再去连局域网。
@@ -4636,17 +4651,24 @@ async function handler(req, res) {
 
 let started = 0;
 // 离线模式（局域网/热点）：https 才能拿到安全上下文，WebRTC 才可用（http 下 RTCPeerConnection 被禁）。
-// 证书用自签 PFX（make-lan-cert.ps1 生成，SAN 覆盖当前局域网 IP）；手机第一次会提示证书不安全。
+// 证书优先用本地 CA（make-lan-ca.ps1）：手机装一次 CA 后永久受信任，可安装成 App、没有证书警告。
 function ensureLanCert() {
   const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-  const script = join(HERE, 'make-lan-cert.ps1');
-  if (!fileExists(script)) { console.log('lan https: 缺 make-lan-cert.ps1，退回 http（WebRTC 不可用）'); return null; }
+  const caScript = join(HERE, 'make-lan-ca.ps1');
+  const legacyScript = join(HERE, 'make-lan-cert.ps1');
+  const script = fileExists(caScript) ? caScript : legacyScript;
+  if (!fileExists(script)) { console.log('lan https: 缺证书脚本，退回 http（WebRTC 不可用）'); return null; }
   try {
-    execFileSync(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-OutDir', HERE], { timeout: 40000, windowsHide: true });
+    execFileSync(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-OutDir', HERE], { timeout: 90000, windowsHide: true });
   } catch (e) { console.log('lan https: 生成证书失败 ' + (e && e.message)); }
+  // 本地 CA 方案：PFX 带密码（make-lan-ca.ps1 生成 lan-cert.pass），必须一起读，否则 mac verify failure
+  try { LAN_PASS = readFileSync(join(HERE, 'lan-cert.pass'), 'utf8').trim(); } catch { LAN_PASS = ''; }
+  if (fileExists(caScript)) {
+    try { return readFileSync(join(HERE, 'lan-server.pfx')); } catch { }
+  }
   try { return readFileSync(join(HERE, 'lan-cert.pfx')); } catch { return null; }
 }
-let lanPfx = null, lanPfxTried = false;
+let lanPfx = null, lanPfxTried = false, LAN_PASS = '';
 let LAN_HTTPS = false;   // 局域网是否真的起来了 https（证书生成失败时退回 http，页面要跟着换成 http 地址）
 // 给一个 http(s) server 挂上所有路由/长连接（主监听和局域网 http 备用都要用）
 function wireServer(s) {
@@ -4678,7 +4700,7 @@ for (const host of hosts) {
   if (isLanHost) {
     if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
     if (lanPfx) {
-      try { s = https.createServer({ pfx: lanPfx }, handler); proto = 'https'; LAN_HTTPS = true; }
+      try { s = https.createServer({ pfx: lanPfx, passphrase: LAN_PASS }, handler); proto = 'https'; LAN_HTTPS = true; }
       catch (e) { console.log('lan https 启动失败，退回 http：' + (e && e.message)); s = null; }
     }
   }
@@ -4704,7 +4726,7 @@ if (OFFLINE_MODE) {
   if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
   if (lanPfx) {
     try {
-      const s3 = wireServer(https.createServer({ pfx: lanPfx }, handler));
+      const s3 = wireServer(https.createServer({ pfx: lanPfx, passphrase: LAN_PASS }, handler));
       s3.listen(port + 2, '0.0.0.0', () => {
         started++;
         console.log('screen-server: https://0.0.0.0:' + (port + 2) + '/ （低延迟备用端口）');

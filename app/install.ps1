@@ -907,7 +907,7 @@ try {
     'licence.ps1', 'licence-state.ps1', 'trial.ps1', 'https-setup.ps1',
     'entry.ps1', '手机入口.cmd',
     # 离线模式（局域网/电脑热点）：入口脚本 + 桌面快捷方式目标
-    'offline-mode.ps1', '离线模式.cmd', 'make-lan-cert.ps1', 'hotspot-ctl.ps1', 'offline-firewall.ps1',
+    'offline-mode.ps1', '离线模式.cmd', 'make-lan-cert.ps1', 'make-lan-ca.ps1', 'hotspot-ctl.ps1', 'offline-firewall.ps1',
     'offline-mode-off.ps1', '关闭离线模式.cmd',
     'uninstall.ps1', 'uninstall.cmd', '使用说明.md',
     'dsh-port.ps1', 'restart.ps1', 'restart.cmd',
