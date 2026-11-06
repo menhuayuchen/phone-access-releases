@@ -10,7 +10,7 @@ $ErrorActionPreference = 'Continue'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 . (Join-Path $here 'product-config.ps1')
 $cfg = Get-ProductConfig -AppDir $here
-$ports = @([int]$cfg.ports.screen)
+$ports = @([int]$cfg.ports.screen, ([int]$cfg.ports.screen + 1))   # +1 = 局域网 http 备用
 $tag = 'PhoneAccess 手机远程'
 $lanRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
 

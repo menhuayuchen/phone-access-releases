@@ -4404,6 +4404,16 @@ bindImg(img);
           h += '</div></div>';
           h += '<div style="color:#6b7078;font-size:11px;margin-top:6px">这台电脑是自签证书：手机第一次打开提示"不安全"，点「高级 → 继续前往」；'
             + '继续后 HUD 应显示「WebRTC264 直连」（才是低延迟通道）。</div>';
+          if (firstIp && j.fallbackPort) {
+            const fb = 'http://' + firstIp.ip + ':' + j.fallbackPort + '/?k=' + encodeURIComponent(KEY);
+            h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">上面那个打不开（证书页过不去/浏览器限制）？试备用地址（不加密、延迟略高）：'
+              + '<code style="color:#8fb6ff">' + esc(fb) + '</code> '
+              + '<button class="offCopy" data-url="' + esc(fb) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button></div>';
+          }
+          h += '<div style="margin-top:10px;padding-top:8px;border-top:1px dashed #24262d">'
+            + '<button id="lanCheckBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">检测局域网（手机连不上时点）</button>'
+            + '<div id="lanCheckMsg" style="margin-top:6px;font-size:11.5px;color:#868c96;line-height:1.7"></div>'
+            + '</div>';
         }
         const hsOn = hs.state === 'On';
         const hsClients = Number(hs.clients || 0) || 0;
@@ -4466,6 +4476,18 @@ bindImg(img);
       });
       const qrImg = bodyEl.querySelector('#offQr');
       if (qrImg) qrImg.addEventListener('error', () => { qrImg.style.display = 'none'; });
+      const lcBtn = bodyEl.querySelector('#lanCheckBtn');
+      if (lcBtn) lcBtn.addEventListener('click', async () => {
+        const box = bodyEl.querySelector('#lanCheckMsg');
+        if (box) box.textContent = '检测中…';
+        try {
+          const j = await fetch('/lan-check?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+          if (box) {
+            box.innerHTML = (j.checks || []).map((c) => '<div>' + (c.ok ? '✅ ' : '⚠️ ') + esc(c.name + '：' + c.text) + '</div>').join('')
+              + '<div style="margin-top:6px;color:#6b7078">' + esc(j.hint || '') + '</div>';
+          }
+        } catch (e) { if (box) box.textContent = '检测失败：' + (e && e.message); }
+      });
     };
     const refresh = () => fetch('/offline-info?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => {
       bodyEl.innerHTML = '<span style="color:#ffb454">检测失败</span>';

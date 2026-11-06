@@ -4040,9 +4040,41 @@ async function handler(req, res) {
         port: Number(cfgNow.ports && cfgNow.ports.screen) || 8660,
         ips: privateIps(),
         https: LAN_HTTPS,
+        fallbackPort: (Number(cfgNow.ports && cfgNow.ports.screen) || 8660) + 1,
         hotspot: hs
       }));
     } catch { }
+    return;
+  }
+  // 局域网自检：手机打不开时用（在电脑上看：端口有没有监听、防火墙有没有放行、证书在不在）
+  if (url.pathname === '/lan-check') {
+    const cfgNow = (() => { try { return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } })();
+    const port = Number(cfgNow.ports && cfgNow.ports.screen) || 8660;
+    const out = { ok: true, offline: !!(cfgNow.screen && cfgNow.screen.offline), https: LAN_HTTPS, port: port, fallbackPort: port + 1, ips: privateIps(), listening: [], firewall: {}, cert: {}, checks: [] };
+    try {
+      const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      const cmd = "$c=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in @(" + port + "," + (port + 1) + ") } | Select-Object -ExpandProperty LocalAddress; $c -join ','";
+      const lo = String(execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '');
+      out.listening = lo.split(',').map((s) => s.trim()).filter(Boolean);
+    } catch { }
+    try {
+      const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      const tag = 'PhoneAccess 手机远程';
+      const cmd = "$b=Get-NetFirewallRule -DisplayName ('" + tag + " : 拒绝局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $a=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $w=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 WebRTC') -ErrorAction SilentlyContinue | Select-Object -First 1; ($(if($b){[string]$b.Enabled}else{'none'}))+','+($(if($a){[string]$a.Enabled}else{'none'}))+','+($(if($w){[string]$w.Enabled}else{'none'}))";
+      const fw = String(execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '').trim();
+      const parts = fw.split(',');
+      out.firewall = { blockLan: parts[0] || 'none', allowLan: parts[1] || 'none', allowWebrtc: parts[2] || 'none' };
+    } catch { }
+    try {
+      const st = statSync(join(HERE, 'lan-cert.pfx'));
+      out.cert = { exists: true, size: st.size, ageSec: Math.round((Date.now() - st.mtimeMs) / 1000) };
+    } catch { out.cert = { exists: false }; }
+    out.checks.push({ name: '离线模式', ok: out.offline, text: out.offline ? '已开启' : '未开启（手机连不进来）' });
+    out.checks.push({ name: '监听端口', ok: out.listening.length > 0, text: out.listening.length ? ('正在监听：' + out.listening.join('、') + '（' + port + '/' + (port + 1) + '）') : '没有任何地址在监听' });
+    out.checks.push({ name: '防火墙', ok: out.firewall.allowLan === 'True', text: out.firewall.allowLan === 'True' ? '已放行局域网端口' : '未放行（手机连不上：重新开一次离线模式并点「是」）' });
+    out.checks.push({ name: '证书', ok: !!out.cert.exists, text: out.cert.exists ? ('自签证书已生成（' + Math.round((out.cert.ageSec || 0) / 60) + ' 分钟前）') : '缺失（https 会退回 http）' });
+    out.hint = '手机连同一个 Wi-Fi 后打开地址；第一次提示"不安全"点「高级 → 继续前往」。如果一直转圈：1) 公司/酒店 Wi-Fi 可能禁止设备互访，改用电脑热点；2) 用 USB 网络共享（最快）；3) 试试备用地址 http://' + ((out.ips[0] && out.ips[0].ip) || '电脑IP') + ':' + (port + 1) + '/?k=…';
+    try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(out)); } catch { }
     return;
   }
   if (url.pathname === '/offline/on' || url.pathname === '/offline/off') {
@@ -4567,18 +4599,8 @@ function ensureLanCert() {
 }
 let lanPfx = null, lanPfxTried = false;
 let LAN_HTTPS = false;   // 局域网是否真的起来了 https（证书生成失败时退回 http，页面要跟着换成 http 地址）
-for (const host of hosts) {
-  const isLanHost = LAN_V4.test(host);
-  let proto = 'http';
-  let s = null;
-  if (isLanHost) {
-    if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
-    if (lanPfx) {
-      try { s = https.createServer({ pfx: lanPfx }, handler); proto = 'https'; LAN_HTTPS = true; }
-      catch (e) { console.log('lan https 启动失败，退回 http：' + (e && e.message)); s = null; }
-    }
-  }
-  if (!s) s = createServer(handler);
+// 给一个 http(s) server 挂上所有路由/长连接（主监听和局域网 http 备用都要用）
+function wireServer(s) {
   rtc.attach(s, (req, url) => {
     if (!sourceAllowed(req)) return false;
     if (!authorized(req, url)) return false;
@@ -4593,31 +4615,41 @@ for (const host of hosts) {
     }
     return true;
   });
-  // WebTransport（UDP/QUIC）帧传输：失败不影响 WS 主链路
-  try {
-    if (cfgH264.wt && cfgH264.wt.enabled !== false) {
-      const wtPort = Number(cfgH264.wt.port) || 8444;
-      const wtMod = await import(new URL('./wt/wt-server.mjs', import.meta.url));
-      wtSrv = await wtMod.startWt({
-        port: wtPort,
-        certPath: join(HERE, 'wt', 'cert.pem'),
-        keyPath: join(HERE, 'wt', 'key.pem'),
-        getInit: () => h264.initInfo
-      });
-      console.log('wt: listening udp ' + wtPort);
-    }
-  } catch (e) {
-    console.log('wt: disabled (' + (e && e.message) + ')');
-  }
   start264();
   attachH264Ws(s, KEY);
   attachH264Rtc(s, KEY);
   attachAudioWs(s, KEY);
-  s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
+  s.on('error', (e) => console.error('screen-server: bind error — ' + (e.code || e.message)));
+  return s;
+}
+for (const host of hosts) {
+  const isLanHost = LAN_V4.test(host);
+  let proto = 'http';
+  let s = null;
+  if (isLanHost) {
+    if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
+    if (lanPfx) {
+      try { s = https.createServer({ pfx: lanPfx }, handler); proto = 'https'; LAN_HTTPS = true; }
+      catch (e) { console.log('lan https 启动失败，退回 http：' + (e && e.message)); s = null; }
+    }
+  }
+  if (!s) s = createServer(handler);
+  wireServer(s);   // 路由/长连接统一由 wireServer 挂（主监听 + 局域网 http 备用共用）
   s.listen(port, host, () => {
     started++;
     console.log(`screen-server: ${proto}://${host}:${port}/`);
   });
+  // 局域网 http 备用（端口+1）：手机不接受自签证书、或浏览器/安全策略挡住 https 时还能进。
+  // 走 WS/WebCodecs（没有 WebRTC，延迟略高），且是明文——只在本机局域网暴露，靠访问密钥。
+  if (isLanHost) {
+    try {
+      const s2 = wireServer(createServer(handler));
+      s2.listen(port + 1, host, () => {
+        started++;
+        console.log('screen-server: http://' + host + ':' + (port + 1) + '/ （备用，不加密；https 打不开时用）');
+      });
+    } catch (e) { console.log('lan http fallback 失败：' + (e && e.message)); }
+  }
 }
 
 if (hosts.length === 0) {
