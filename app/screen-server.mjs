@@ -2086,6 +2086,29 @@ function blockedPortsNow() {
 }
 setTimeout(() => { try { refreshBlockedPorts(); } catch { } }, 5000);
 
+// 真实可用的局域网 IPv4：只认"网卡 Up"的接口（Windows 在网卡断开后仍会保留 IP 配置，
+// os.networkInterfaces() 也可能继续返回旧地址——实测拔掉 Wi-Fi/关掉 USB 共享后仍显示旧 IP，
+// 面板就会给客户一个连不上的死地址）。用 Get-NetIPAddress + Get-NetAdapter 状态过滤，缓存 5 秒。
+let _lanIps = { at: 0, ips: [] };
+let _lanRefreshing = false;
+function refreshLanIps(cb) {
+  if (_lanRefreshing) { if (cb) cb(); return; }
+  _lanRefreshing = true;
+  const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const cmd = "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' -and $_.InterfaceDescription -notmatch 'VMware|VirtualBox|Hyper-V|Loopback|Tailscale|WSL|Bluetooth' } | ForEach-Object { Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -match '^(10\\.|192\\.168\\.|172\\.(1[6-9]|2[0-9]|3[0-1])\\.)' } | ForEach-Object { $_.IPAddress } }";
+  execFile(psExe, ['-NoProfile', '-Command', cmd], { timeout: 8000, windowsHide: true }, (err, out) => {
+    _lanRefreshing = false;
+    let ips = [];
+    if (!err) ips = String(out || '').split(/\r?\n/).map((s) => s.trim()).filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
+    _lanIps = { at: Date.now(), ips: [...new Set(ips)] };
+    if (cb) cb();
+  });
+}
+function lanIpsNow() {
+  if (Date.now() - _lanIps.at > 5000) refreshLanIps();
+  return _lanIps.ips;
+}
+
 // 启动时预热一次（手机 USB 共享一出现，下一次 /offline-info 就能带上）
 setTimeout(() => { try { refreshUsbLanIps(); } catch { } }, 4000);
 
@@ -4054,18 +4077,27 @@ async function handler(req, res) {
   function privateIps() {
     const out = [];
     const usb = (() => { try { return usbLanIps(); } catch { return []; } })();
+    // 只列真实 Up 的网卡：Windows 在网卡断开后仍保留 IP 配置，os.networkInterfaces() 也常返回旧地址，
+    // 面板会因此给出一个连不上的死地址（实测拔 Wi-Fi/关 USB 共享后仍显示旧 IP）。
     try {
-      const ifs = os.networkInterfaces();
-      for (const name of Object.keys(ifs)) {
-        if (/vmware|virtualbox|vEthernet|loopback|tailscale/i.test(name)) continue;
-        for (const a of (ifs[name] || [])) {
-          if (!a || a.family !== 'IPv4' || a.internal) continue;
-          const ip = a.address;
-          if (/^100\./.test(ip)) continue;                     // Tailscale 单独显示
-          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(ip)) out.push({ name, ip, usb: usb.indexOf(ip) >= 0 });
-        }
-      }
+      const list = lanIpsNow();
+      for (const ip of list) out.push({ name: '局域网', ip: ip, usb: usb.indexOf(ip) >= 0 });
     } catch { }
+    if (!out.length) {
+      // 兜底：PowerShell 还没刷新完时退回 Node 的枚举（可能含旧地址，但至少不是空列表）
+      try {
+        const ifs = os.networkInterfaces();
+        for (const name of Object.keys(ifs)) {
+          if (/vmware|virtualbox|vEthernet|loopback|tailscale/i.test(name)) continue;
+          for (const a of (ifs[name] || [])) {
+            if (!a || a.family !== 'IPv4' || a.internal) continue;
+            const ip = a.address;
+            if (/^100\./.test(ip)) continue;
+            if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(ip)) out.push({ name, ip, usb: usb.indexOf(ip) >= 0 });
+          }
+        }
+      } catch { }
+    }
     // USB 网络共享排最前（最快），手机端直接选第一个地址
     out.sort((x, y) => (y.usb ? 1 : 0) - (x.usb ? 1 : 0));
     return out;
@@ -4160,6 +4192,17 @@ async function handler(req, res) {
     } catch { out.cert = { exists: false }; }
     out.checks.push({ name: '离线模式', ok: out.offline, text: out.offline ? '已开启' : '未开启（手机连不进来）' });
     out.checks.push({ name: '监听端口', ok: out.listening.length > 0, text: out.listening.length ? ('正在监听：' + out.listening.join('、') + '（' + port + '/' + (port + 1) + '）') : '没有任何地址在监听' });
+    try {
+      const psExe2 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+      const cmd2 = "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' } | Select-Object -ExpandProperty InterfaceDescription";
+      const ad = String(execFileSync(psExe2, ['-NoProfile', '-Command', cmd2], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '').trim();
+      const names = ad.split(/\r?\n/).map((s) => s.trim()).filter(Boolean);
+      const usbAd = names.find((n) => /RNDIS|Remote NDIS|USB/i.test(n));
+      out.adapters = names;
+      out.checks.push({ name: 'USB 网络共享', ok: !!usbAd, text: usbAd ? ('已识别：' + usbAd) : '未识别到 USB 共享网卡（手机没开 USB 网络共享，或手机没信号时系统把它关了）' });
+    } catch (e) {
+      out.checks.push({ name: 'USB 网络共享', ok: false, text: '检测失败：' + ((e && e.message) || e) });
+    }
     out.checks.push({ name: '防火墙', ok: out.firewall.allowLan === 'True', text: out.firewall.allowLan === 'True' ? '已放行局域网端口' : '未放行（手机连不上：重新开一次离线模式并点「是」）' });
     out.checks.push({ name: '证书', ok: !!out.cert.exists, text: out.cert.exists ? ('自签证书已生成（' + Math.round((out.cert.ageSec || 0) / 60) + ' 分钟前）') : '缺失（https 会退回 http）' });
     out.hint = '手机连同一个 Wi-Fi 后打开地址；第一次提示"不安全"点「高级 → 继续前往」。如果一直转圈：1) 公司/酒店 Wi-Fi 可能禁止设备互访，改用电脑热点；2) 用 USB 网络共享（最快）；3) 试试备用地址 http://' + ((out.ips[0] && out.ips[0].ip) || '电脑IP') + ':' + (port + 1) + '/?k=…';
@@ -4798,34 +4841,18 @@ if (OFFLINE_MODE) {
   }
 }
 
-if (hosts.length === 0) {
-  console.error('screen-server: no hosts given');
-  process.exitCode = 1;
-}
-
-// 离线模式：局域网地址变了（Wi-Fi 重连 / 热点开关 / USB 共享）就重启一次，让守护按新地址重新绑定。
-// 只比较“真实局域网网卡”，跳过 VMware/Hyper-V 等虚拟网卡，避免它们抖动导致重启循环。
+// 离线模式：局域网地址变了（换网络/开热点/USB 共享）就重启一次，让守护按新地址重新绑定。
+// 用 Get-NetIPAddress + 网卡 Up 状态判断（os.networkInterfaces 会残留断开网卡的旧地址）。
 if (OFFLINE_MODE) {
-  const lanBind = () => {
-    const out = [];
-    try {
-      const ifs = os.networkInterfaces();
-      for (const name of Object.keys(ifs)) {
-        if (/vmware|virtualbox|vEthernet|loopback|tailscale/i.test(name)) continue;
-        for (const a of (ifs[name] || [])) {
-          if (!a || a.family !== 'IPv4' || a.internal) continue;
-          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(a.address)) out.push(a.address);
-        }
-      }
-    } catch { }
-    return out.sort();
-  };
-  const initial = lanBind().join(',');
+  let base = lanIpsNow().join(',');
   setInterval(() => {
-    const now = lanBind().join(',');
-    if (now && now !== initial) {
-      console.log('screen-server: 局域网地址变化（' + (initial || '无') + ' -> ' + now + '），退出让守护按新地址重新绑定');
+    try { refreshLanIps(); } catch { }
+    const now = lanIpsNow().join(',');
+    if (!now) return;                       // 没有可用的局域网地址：不重启（否则会死循环）
+    if (!base) { base = now; return; }      // 首次拿到基线
+    if (now !== base) {
+      console.log('screen-server: 局域网地址变化（' + (base || '无') + ' -> ' + now + '），退出让守护按新地址重新绑定');
       setTimeout(() => { try { process.exit(0); } catch { } }, 300);
     }
-  }, 5000).unref?.();   // 每 5 秒检查一次局域网地址变化（换网络/开热点后更快重绑）
+  }, 5000).unref?.();
 }

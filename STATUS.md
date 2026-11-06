@@ -1908,3 +1908,21 @@ pathlen=1；/ca.crt 下发 1085 字节新 CA，与叶子证书链匹配；/sw.js
   PowerShell 输出编码（GBK→UTF-8，否则中文提示乱码）。
 - 实测：/tailscale-status 返回 httpsUrl=https://dsh-laptop.tailb9b4f0.ts.net；POST /tailscale-https 返回
   {"ok":true,"note":"已经配置好了"}。
+
+### 42.34 换网络/USB 共享后显示死地址——只列真实 Up 的网卡（2026-11-06 14:5x，未发布）
+
+用户反馈：换到另一个共同网络用新地址还是连不上；USB 网络共享电脑不认。
+
+实测发现：
+1. 这台机器上 USB 共享**曾经连上**（网卡 Remote NDIS based Internet Sharing Device #2，426Mbps，
+   电脑拿到 10.112.78.13），但随后网卡**消失**（手机侧把共享关了——手机没信号时很多机型会自动收掉
+   USB 共享），所以电脑上只剩一个绑在 10.112.78.13 的**死监听**（连自己都 ping 不通）。
+2. 面板给的地址是**旧地址**：Windows 在网卡断开后仍保留 IP 配置，`os.networkInterfaces()` 也会返回
+   断开的 WLAN 旧 IP → 面板显示一个连不上的地址。
+
+修复：
+- `privateIps()` 改为 `Get-NetAdapter(Status=Up)` + `Get-NetIPAddress`（5 秒缓存），只列真实可用的网卡；
+  Node 枚举仅作兜底。换网络时的重绑监视也用同一份数据。
+- `/lan-check` 新增「USB 网络共享」一行（是否识别到 RNDIS 网卡）和网卡列表，手机连不上时能直接看出
+  是"没建立 USB 共享"还是别的原因。
+- 修回一处误删：8661/8662 的 0.0.0.0 备用监听（之前一次替换把这段删掉了）。
