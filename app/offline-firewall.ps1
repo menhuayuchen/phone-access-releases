@@ -5,7 +5,7 @@
 # 离线模式的防火墙：默认安装时「拒绝局域网私有网段」的规则会挡住手机（局域网/热点/USB 直连）。
 #   -Action on  ：停用**所有**产品相关的局域网拒绝规则（含旧版命名）、放行产品端口与 WebRTC UDP
 #   -Action off ：恢复之前停用的拒绝规则、删除放行规则
-# 历史坑：旧安装器的规则名是「DSH phone access : block lan 8660」，新版是「手机远程 : 拒绝局域网 8660」；
+# 历史坑：旧安装器的规则名是「DSH phone access : block lan 8660」，新版是「轻屏 : 拒绝局域网 8660」；
 # 只按新版名字处理会漏掉旧规则 —— 用户手机连 8660 一直超时就是这么来的。
 # 需要管理员权限（安装器/离线入口会用 Start-Process -Verb RunAs 调用）。
 $ErrorActionPreference = 'Continue'
@@ -14,7 +14,7 @@ $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 $cfg = Get-ProductConfig -AppDir $here
 $basePort = [int]$cfg.ports.screen
 $ports = @($basePort, ($basePort + 1))   # +1 = 局域网 http 备用
-$tag = 'PhoneAccess 手机远程'
+$tag = 'PhoneAccess 轻屏'
 $lanRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
 $statePath = Join-Path $here 'offline-firewall.state.json'
 
@@ -22,7 +22,7 @@ function Get-ProductLanBlockRules {
     $out = @()
     try {
         $rules = Get-NetFirewallRule -Direction Inbound -Action Block -ErrorAction SilentlyContinue | Where-Object {
-            $_.DisplayName -match 'phone ?access|手机远程' -and $_.DisplayName -match 'lan|局域网|block'
+            $_.DisplayName -match 'phone ?access|轻屏' -and $_.DisplayName -match 'lan|局域网|block'
         }
         foreach ($r in $rules) {
             $pf = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r -ErrorAction SilentlyContinue
@@ -59,7 +59,7 @@ if ($Action -eq 'on') {
         Get-NetFirewallRule -DisplayName $allowLanName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
         $null = New-NetFirewallRule -DisplayName $allowLanName -Direction Inbound -Action Allow -Protocol TCP `
             -LocalPort $p -RemoteAddress $lanRanges -Profile Any -ErrorAction SilentlyContinue `
-            -Description '手机远程：离线模式放行局域网/热点/USB 直连'
+            -Description '轻屏：离线模式放行局域网/热点/USB 直连'
     }
 
     # 3) WebRTC 媒体（UDP 动态端口）按程序放行
@@ -69,7 +69,7 @@ if ($Action -eq 'on') {
     if (Test-Path -LiteralPath $exe) {
         $null = New-NetFirewallRule -DisplayName $progName -Direction Inbound -Action Allow -Protocol UDP `
             -Program $exe -RemoteAddress $lanRanges -Profile Any -ErrorAction SilentlyContinue `
-            -Description '手机远程：离线模式 WebRTC H.264 媒体（UDP）'
+            -Description '轻屏：离线模式 WebRTC H.264 媒体（UDP）'
     }
 } else {
     # 关：删放行规则、恢复之前停用的拒绝规则

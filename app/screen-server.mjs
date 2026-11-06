@@ -1806,7 +1806,7 @@ function rejectAuth(req, res, url, ra) {
     + '<div style="color:#aeb3bb">' + lead + '</div>'
     + '<div style="margin:22px 0 8px;font-weight:600">怎么办</div>'
     + '<ol style="margin:0;padding-left:22px;color:#c9ccd1">'
-    + '<li>回到那台电脑，打开桌面上的「手机远程」文件夹；</li>'
+    + '<li>回到那台电脑，打开桌面上的「轻屏」文件夹；</li>'
     + '<li>双击「手机入口」，屏幕会显示<b>当前可用的地址和二维码</b>；</li>'
     + '<li>用手机扫新的二维码，或把新地址复制到浏览器打开。</li>'
     + '</ol>'
@@ -2079,7 +2079,7 @@ function refreshBlockedPorts(cb) {
   if (_blockedRefreshing) { if (cb) cb(); return; }
   _blockedRefreshing = true;
   const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-  const cmd = "Get-NetFirewallRule -Direction Inbound -Action Block -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.DisplayName -match 'phone ?access|手机远程' } | ForEach-Object { $pf = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $_ -ErrorAction SilentlyContinue; if ($pf) { ($pf.LocalPort -join ',') } }";
+  const cmd = "Get-NetFirewallRule -Direction Inbound -Action Block -ErrorAction SilentlyContinue | Where-Object { $_.Enabled -eq 'True' -and $_.DisplayName -match 'phone ?access|轻屏' } | ForEach-Object { $pf = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $_ -ErrorAction SilentlyContinue; if ($pf) { ($pf.LocalPort -join ',') } }";
   execFile(psExe, ['-NoProfile', '-Command', cmd], { timeout: 8000, windowsHide: true }, (err, out) => {
     _blockedRefreshing = false;
     let ports = [];
@@ -2431,7 +2431,7 @@ function checkLicenceObject(doc, machineOverride, altOverride) {
   const mine = String(machineOverride == null ? readMachineCode() : machineOverride || '').toUpperCase();
   const altCode = String(altOverride == null ? readMachineCodeAlt() : altOverride || '').toUpperCase();
   if (!mine) {
-    return { ok: false, state: 'no-machine-code', message: '还没读到这台电脑的机器码。请等几秒（程序定期重算）或重启一次「手机远程」后再试。' };
+    return { ok: false, state: 'no-machine-code', message: '还没读到这台电脑的机器码。请等几秒（程序定期重算）或重启一次「轻屏」后再试。' };
   }
   // 改动（第二轮 P2-3 / H3-d）：机器码比较前 trim —— PowerShell 侧一直是 trim 的，
   // Node 侧原来不 trim，导致"末尾多个空格的许可证"一边过一边不过。方向上是往宽松统一，
@@ -3314,7 +3314,7 @@ async function handler(req, res) {
       return sreply(200, { ok: false, error: '高性能模式需要许可证或处于试用期内。可以先继续用网页模式。' });
     }
     if (!readSunshineCreds()) {
-      return sreply(200, { ok: false, error: '高性能模式还没初始化（缺凭据文件）。重启一次「手机远程」或重新运行安装包。' });
+      return sreply(200, { ok: false, error: '高性能模式还没初始化（缺凭据文件）。重启一次「轻屏」或重新运行安装包。' });
     }
     (async () => {
       const r = await sunshineApi('GET', '/api/pin');
@@ -3552,7 +3552,7 @@ async function handler(req, res) {
     // 从一组发行版附件里挑"安装包"：优先看起来像 setup/install 的 exe，其次任意 exe
     const pickExeAsset = (assets) => {
       const list = Array.isArray(assets) ? assets : [];
-      return list.find((a) => /\.exe$/i.test(String((a && a.name) || '')) && /setup|install|安装|手机远程/i.test(String((a && a.name) || '')))
+      return list.find((a) => /\.exe$/i.test(String((a && a.name) || '')) && /setup|install|安装|轻屏/i.test(String((a && a.name) || '')))
         || list.find((a) => /\.exe$/i.test(String((a && a.name) || '')))
         || null;
     };
@@ -3614,7 +3614,7 @@ async function handler(req, res) {
           const rel = await r.json();
           const assets = Array.isArray(rel && rel.assets) ? rel.assets : [];
           // 优先挑"看起来是安装包"的 exe；没有就退回 release 页面
-          const exe = assets.find((a) => /\.exe$/i.test(String((a && a.name) || '')) && /setup|install|安装|手机远程/i.test(String((a && a.name) || '')))
+          const exe = assets.find((a) => /\.exe$/i.test(String((a && a.name) || '')) && /setup|install|安装|轻屏/i.test(String((a && a.name) || '')))
             || assets.find((a) => /\.exe$/i.test(String((a && a.name) || '')));
           const body = String((rel && rel.body) || '');
           j = {
@@ -3665,8 +3665,15 @@ async function handler(req, res) {
         if (srcTag === 'gitee' && jUrl) {
           downloadUrl = jUrl;
           // GitHub 只做备选：按 release 约定拼资产直链（不额外请求 GitHub API，国内那个接口又慢又常被墙）
-          fallbackUrl = (gh && latest)
-            ? ('https://github.com/' + gh + '/releases/download/v' + latest + '/PhoneAccess-Setup-v' + latest + '.exe')
+          // 2026-11-06 修正：资产名不能写死（改成 LightScreen-Setup 后，原来的 PhoneAccess-Setup 备用链接直接 404）。
+          // 做法：把 Gitee 资产名里的版本号换成最新版本号，其余后缀（-release.exe 等）原样保留：
+          //   LightScreen-Setup-v1.0.16-release.exe  --(latest=1.0.17)-->  LightScreen-Setup-v1.0.17-release.exe
+          const giteeAsset = (jUrl.split('/').pop() || '').split('?')[0];
+          const ghAssetName = giteeAsset
+            ? giteeAsset.replace(/(^|[^0-9])v?\d+\.\d+\.\d+/i, function (m0, p1) { return p1 + 'v' + latest; })
+            : ('LightScreen-Setup-v' + latest + '.exe');
+          fallbackUrl = (gh && latest && ghAssetName)
+            ? ('https://github.com/' + gh + '/releases/download/v' + latest + '/' + ghAssetName)
             : '';
         } else if (mirrorOk) {
           downloadUrl = mirror;
@@ -4233,7 +4240,7 @@ async function handler(req, res) {
     } catch { }
     try {
       const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-      const tag = 'PhoneAccess 手机远程';
+      const tag = 'PhoneAccess 轻屏';
       const cmd = "$b=Get-NetFirewallRule -DisplayName ('" + tag + " : 拒绝局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $a=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $w=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 WebRTC') -ErrorAction SilentlyContinue | Select-Object -First 1; ($(if($b){[string]$b.Enabled}else{'none'}))+','+($(if($a){[string]$a.Enabled}else{'none'}))+','+($(if($w){[string]$w.Enabled}else{'none'}))";
       const fw = String(execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '').trim();
       const parts = fw.split(',');
@@ -4327,7 +4334,7 @@ async function handler(req, res) {
     let beat = '';
     try { beat = readFileSync(join(HERE, 'supervisor.heartbeat'), 'utf8').trim(); } catch (e) { beat = '(无)'; }
     const out = [
-      '== 手机远程 · 诊断报告 ==',
+      '== 轻屏 · 诊断报告 ==',
       '时间: ' + new Date().toISOString(),
       '',
       '== 编码/画面 ==',

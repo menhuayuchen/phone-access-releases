@@ -18,6 +18,7 @@
 param(
     [string]$DistRoot = '',
     [string]$OutFile = '',
+    [string]$Version = '',     # 写进 exe 的版本资源（不传就读 app\product.config.json）
     [switch]$KeepZip
 )
 
@@ -56,14 +57,35 @@ if ((Test-Path -LiteralPath $csc) -and (Test-Path -LiteralPath $sfxSrc)) {
     }
     if ($needBuild) {
         Say '正在编译启动器（Sfx.cs -> Sfx.exe）…' 'Cyan'
+        # 2026-11-06：生成版本资源，让 exe 右键属性里能看到「轻屏 / 产品版本」。
+        # 原来没有版本资源：文件说明、产品名都是空，版本是 0.0.0.0。
+        if (-not $Version) {
+            try { $Version = (Get-Content (Join-Path $productRoot 'app\product.config.json') -Raw -Encoding UTF8 | ConvertFrom-Json).version } catch { $Version = '1.0.0' }
+        }
+        if (-not $Version) { $Version = '1.0.0' }
+        $ver4 = ((@($Version -split '\.') + @('0', '0', '0', '0'))[0..3]) -join '.'
+        $verInfo = Join-Path $here 'SfxVersion.cs'
+        $verCode = @"
+using System.Reflection;
+[assembly: AssemblyTitle("轻屏 安装程序")]
+[assembly: AssemblyProduct("轻屏")]
+[assembly: AssemblyCompany("轻器")]
+[assembly: AssemblyDescription("轻屏（LightScreen）· 手机浏览器直接用电脑")] 
+[assembly: AssemblyFileVersion("$ver4")]
+[assembly: AssemblyVersion("$ver4")]
+[assembly: AssemblyInformationalVersion("$Version")]
+"@
+        [System.IO.File]::WriteAllText($verInfo, $verCode, (New-Object System.Text.UTF8Encoding($false)))
         & $csc /nologo /target:exe /codepage:65001 /optimize /out:$sfxExe `
             /r:System.dll /r:System.Core.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll $sfxSrc
-        if ($LASTEXITCODE -ne 0 -or -not (Test-Path -LiteralPath $sfxExe)) {
+            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll $sfxSrc $verInfo
+        $compileExit = $LASTEXITCODE
+        Remove-Item -LiteralPath $verInfo -Force -ErrorAction SilentlyContinue
+        if ($compileExit -ne 0 -or -not (Test-Path -LiteralPath $sfxExe)) {
             Say '[x] 启动器编译失败，先修好再打包（不要把旧 Sfx.exe 当新的发出去）' 'Red'
             exit 1
         }
-        Say ('  启动器已更新: ' + [math]::Round((Get-Item -LiteralPath $sfxExe).Length / 1KB, 1) + ' KB') 'Green'
+        Say ('  启动器已更新: ' + [math]::Round((Get-Item -LiteralPath $sfxExe).Length / 1KB, 1) + ' KB，版本资源 ' + $ver4) 'Green'
     }
 }
 

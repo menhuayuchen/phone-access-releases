@@ -1,4 +1,4 @@
-﻿# install.ps1 — 手机远程控制（基础档）· 客户版安装器
+﻿# install.ps1 — 轻屏控制（基础档）· 客户版安装器
 #
 # 目标环境：Windows 10 2004+ / Windows 11，64 位，Windows PowerShell 5.1
 # 入口：install.cmd（客户双击）→ 本脚本
@@ -38,7 +38,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } 
 # ---------------------------------------------------------------------------
 # 0. 全局状态
 # ---------------------------------------------------------------------------
-$script:AppTitle      = '手机远程控制'
+$script:AppTitle      = '轻屏控制'
 $script:InstallerVer  = '1.0'
 $script:DryRunMode    = [bool]$DryRun
 $script:NoPauseMode   = [bool]$NoPause
@@ -67,13 +67,13 @@ function Add-Log {
 function Write-Banner {
   Write-Host ''
   Write-Host '============================================================' -ForegroundColor Cyan
-  Write-Host ('   手机远程控制 · 安装程序  v' + $script:InstallerVer) -ForegroundColor Cyan
+  Write-Host ('   轻屏控制 · 安装程序  v' + $script:InstallerVer) -ForegroundColor Cyan
   Write-Host '   给不懂技术的你：全程跟着屏幕提示走就行。' -ForegroundColor Cyan
   Write-Host '   大约 5 分钟（装 Tailscale 那一步要看你的网速）。' -ForegroundColor Cyan
   Write-Host '============================================================' -ForegroundColor Cyan
   Write-Host ''
   Write-Host '如果这个窗口一闪就没了，说明双击的不是安装文件。' -ForegroundColor Yellow
-  Write-Host '请回到安装文件夹，双击 install.cmd（或“安装手机远程.cmd”）重新来一次。' -ForegroundColor Yellow
+  Write-Host '请回到安装文件夹，双击 install.cmd（或“安装轻屏.cmd”）重新来一次。' -ForegroundColor Yellow
 }
 
 function Write-Section {
@@ -189,25 +189,25 @@ function Get-AccessFolder {
   if ($script:AccessFolderCache) { return $script:AccessFolderCache }
   $cands = New-Object System.Collections.ArrayList
   $ud = Get-DesktopDir
-  if ($ud) { [void]$cands.Add((Join-Path $ud '手机远程')) }
+  if ($ud) { [void]$cands.Add((Join-Path $ud '轻屏')) }
   try {
     $pub = [Environment]::GetFolderPath('CommonDesktopDirectory')
-    if ($pub -and (Test-Path -LiteralPath $pub)) { [void]$cands.Add((Join-Path $pub '手机远程')) }
+    if ($pub -and (Test-Path -LiteralPath $pub)) { [void]$cands.Add((Join-Path $pub '轻屏')) }
   } catch { }
-  # 最后兜底：安装目录下（客户至少能在「手机远程」文件夹里找到）
+  # 最后兜底：安装目录下（客户至少能在「轻屏」文件夹里找到）
   # 注意 InstallRoot 在安装早期可能还没赋值（那时就要写失败报告），必须判空，否则 Join-Path 会抛错
   if ($script:InstallRoot) {
     [void]$cands.Add((Join-Path $script:InstallRoot '桌面快捷方式'))
   }
   if ($cands.Count -eq 0) {
     # 连临时目录兜底也进不去（极端情况）：退回临时目录，别让上层拿到空值
-    [void]$cands.Add((Join-Path $env:TEMP '手机远程'))
+    [void]$cands.Add((Join-Path $env:TEMP '轻屏'))
   }
 
   foreach ($c in $cands) {
     if (Test-DirWritable $c) {
       $script:AccessFolderCache = $c
-      $script:AccessFolderReason = if ($c -eq (Join-Path $ud '手机远程')) { '用户桌面' } else { '备用位置:' + $c }
+      $script:AccessFolderReason = if ($c -eq (Join-Path $ud '轻屏')) { '用户桌面' } else { '备用位置:' + $c }
       return $c
     }
   }
@@ -345,7 +345,7 @@ function Save-InstallReport {
     $path = Join-Path $dir $fileName
 
     $lines = New-Object System.Collections.ArrayList
-    [void]$lines.Add('手机远程控制 · ' + $(if ($Kind -eq '失败') { '安装失败报告' } else { '安装完成报告' }))
+    [void]$lines.Add('轻屏控制 · ' + $(if ($Kind -eq '失败') { '安装失败报告' } else { '安装完成报告' }))
     [void]$lines.Add(('=' * 60))
     [void]$lines.Add('这份文件可以直接发给卖家（微信里“发送文件”），里面不含登录密钥、网址和密码。')
     if ($Kind -eq '失败') {
@@ -440,7 +440,7 @@ function Fail-Install {
   $reportPath = Save-InstallReport -Kind '失败' -Reason $Reason -Advice $Advice -Tech $Tech
   if ($reportPath) {
     Write-Host '  如果照做还是不行：' -ForegroundColor Yellow
-    Write-Host '    把「手机远程\报告」里这个文件直接发给卖家（微信里选“发送文件”）：' -ForegroundColor Yellow
+    Write-Host '    把「轻屏\报告」里这个文件直接发给卖家（微信里选“发送文件”）：' -ForegroundColor Yellow
     Write-Host ('      ' + $reportPath) -ForegroundColor White
     Write-Host '    不用截图，也不用自己解释；这个文件里有卖家需要的信息。' -ForegroundColor Yellow
   } else {
@@ -745,7 +745,7 @@ function New-DesktopShortcut {
 # 端口来自 product.config.json（不写死），规则名带统一前缀，重复安装是"先删后建"，不会叠加。
 function Set-ProductFirewall {
   param([int[]]$Ports)
-  $tag = 'PhoneAccess 手机远程'
+  $tag = 'PhoneAccess 轻屏'
   $tailnet = '100.64.0.0/10'
   $lanRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
   # 清理旧版本留下的规则（旧命名 "DSH phone access" / "DSH Web (phone access)"）：
@@ -759,11 +759,11 @@ function Set-ProductFirewall {
     Get-NetFirewallRule -DisplayName $allowName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
     $null = New-NetFirewallRule -DisplayName $allowName -Direction Inbound -Action Allow -Protocol TCP `
       -LocalPort $p -RemoteAddress $tailnet -Profile Any -ErrorAction Stop `
-      -Description '手机远程：只允许 Tailscale 私有网段访问'
+      -Description '轻屏：只允许 Tailscale 私有网段访问'
     Get-NetFirewallRule -DisplayName $blockName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
     $null = New-NetFirewallRule -DisplayName $blockName -Direction Inbound -Action Block -Protocol TCP `
       -LocalPort $p -RemoteAddress $lanRanges -Profile Any -ErrorAction Stop `
-      -Description '手机远程：拒绝局域网私有网段（防止同网段设备直接连）'
+      -Description '轻屏：拒绝局域网私有网段（防止同网段设备直接连）'
   }
 }
 
@@ -1570,7 +1570,7 @@ try {
       if ($existingTask) { Unregister-ScheduledTask -TaskName $taskName -Confirm:$false -ErrorAction Stop }
       $null = Register-ScheduledTask -TaskName $taskName -Action $action -Principal $principal `
         -Trigger @($triggerLogon, $triggerRepeat) -Settings $settings -ErrorAction Stop `
-        -Description '手机远程控制：登录时自动启动，并每 2 分钟自检恢复'
+        -Description '轻屏控制：登录时自动启动，并每 2 分钟自检恢复'
       Write-Ok '开机自启和自动恢复已经注册（重启后不用你手动点任何东西）'
 
       # 已知限制（PACKAGING.md §6.2）：autostart.ps1 只等 WLAN|Wi-Fi 网卡别名拿地址。
@@ -1749,7 +1749,7 @@ try {
 
   $selfcheckPath = Join-Path $script:InstallRoot 'selfcheck.ps1'
   if ($script:DryRunMode) {
-    Write-Note '（干跑）会运行 selfcheck.ps1 做验收，并把结论显示出来（报告存到「手机远程\报告」）'
+    Write-Note '（干跑）会运行 selfcheck.ps1 做验收，并把结论显示出来（报告存到「轻屏\报告」）'
   } elseif ($SkipSelfCheck) {
     Write-Note '按参数跳过验收'
   } elseif (-not (Test-Path -LiteralPath $selfcheckPath)) {
@@ -1757,7 +1757,7 @@ try {
   } else {
     $reportDir = Get-WritableReportDir
     $script:SelfReportPath = Join-Path $reportDir ('自检报告-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
-    Write-Note '正在逐项检查（约 30 秒）。检查结果会写一份报告到「手机远程\报告」…'
+    Write-Note '正在逐项检查（约 30 秒）。检查结果会写一份报告到「轻屏\报告」…'
     $psExeForCheck = Get-PowerShellExe
     try {
       & $psExeForCheck -NoProfile -ExecutionPolicy Bypass -File $selfcheckPath -Quiet -ReportPath $script:SelfReportPath
@@ -1782,7 +1782,7 @@ try {
     if ($script:SelfVerdict -match '有问题') {
       Write-BadLine ('自检结论：' + $script:SelfVerdict)
       Write-Host ''
-      Write-Host '  自检发现了问题。请打开「手机远程\报告」里的自检报告，按里面“你该做什么”那条做。' -ForegroundColor Yellow
+      Write-Host '  自检发现了问题。请打开「轻屏\报告」里的自检报告，按里面“你该做什么”那条做。' -ForegroundColor Yellow
       Write-Host '  看不懂就把这份自检报告发给卖家，卖家会告诉你点哪里。' -ForegroundColor Yellow
     } elseif ($script:SelfVerdict -match '注意') {
       Write-WarnLine ('自检结论：' + $script:SelfVerdict)
@@ -1790,7 +1790,7 @@ try {
     } elseif ($script:SelfVerdict -match '正常') {
       Write-Ok ('自检结论：' + $script:SelfVerdict)
     } else {
-      Write-WarnLine '自检没给出结论（可能没跑完）。请双击桌面「手机远程」文件夹里的「自查」再跑一次。'
+      Write-WarnLine '自检没给出结论（可能没跑完）。请双击桌面「轻屏」文件夹里的「自查」再跑一次。'
     }
     if (Test-Path -LiteralPath $script:SelfReportPath) {
       Write-Note ('自检报告：' + $script:SelfReportPath)
@@ -1849,7 +1849,7 @@ try {
   Write-Section '第 12 步 · 收尾（桌面文件夹 + 手机入口）'
 
   if ($script:DryRunMode) {
-    Write-Note '（干跑）会在桌面创建「手机远程」文件夹，里面放 启动 / 自查 / 停止 三个图标'
+    Write-Note '（干跑）会在桌面创建「轻屏」文件夹，里面放 启动 / 自查 / 停止 三个图标'
     Write-Note '（干跑）会打开手机扫码入口'
     Write-Host ''
     Write-Host '干跑完成：没有改动任何东西（没复制文件、没改防火墙、没注册任务、没启动服务、没生成密钥）。' -ForegroundColor Green
@@ -1858,7 +1858,7 @@ try {
     exit 0
   }
 
-  # 改动（桌面整洁）：快捷方式不再放桌面根目录，统一放进「手机远程」文件夹
+  # 改动（桌面整洁）：快捷方式不再放桌面根目录，统一放进「轻屏」文件夹
   $script:ShortcutIssues = New-Object System.Collections.ArrayList
   $desktopDir = Get-AccessFolder
   try {
@@ -1867,7 +1867,7 @@ try {
   $shortcutStart = New-DesktopShortcut -Dir $desktopDir -Name '启动' `
     -TargetPath (Join-Path $script:InstallRoot 'start-phone-access.cmd') -WorkDir $script:InstallRoot `
     -FallbackScript 'start-phone-access.ps1' `
-    -Description '启动手机远程控制（一般不需要手动点，开机会自动启动）'
+    -Description '启动轻屏控制（一般不需要手动点，开机会自动启动）'
   $shortcutCheck = New-DesktopShortcut -Dir $desktopDir -Name '自查' `
     -TargetPath (Join-Path $script:InstallRoot '自检.cmd') -WorkDir $script:InstallRoot `
     -FallbackScript 'selfcheck.ps1' `
@@ -1875,7 +1875,7 @@ try {
   $shortcutStop = New-DesktopShortcut -Dir $desktopDir -Name '停止' `
     -TargetPath (Join-Path $script:InstallRoot 'stop-phone-access.cmd') -WorkDir $script:InstallRoot `
     -FallbackScript 'stop-phone-access.ps1' `
-    -Description '临时停止手机远程控制'
+    -Description '临时停止轻屏控制'
   # 改动（用户要求）：桌面文件夹里加一个「重启」，画面卡住/改了配置时双击即可
   # 改动（第二轮 P1-3 / I2）：必须传 -FallbackScript，否则 COM 建 .lnk 失败降级成 .cmd 时
   # 会退回默认的 start-phone-access.ps1 —— 双击「重启」变成「启动」，双击「卸载」也变成「启动」。
@@ -1904,12 +1904,12 @@ try {
   $shortcutUninstall = New-DesktopShortcut -Dir $desktopDir -Name '卸载' `
     -TargetPath (Join-Path $script:InstallRoot 'uninstall.cmd') -WorkDir $script:InstallRoot `
     -FallbackScript 'uninstall.ps1' `
-    -Description '把手机远程控制从这台电脑上卸掉（会二次确认）'
+    -Description '把轻屏控制从这台电脑上卸掉（会二次确认）'
   $docSrc = Join-Path $script:InstallRoot '使用说明.md'
   if (Test-Path -LiteralPath $docSrc) {
     try {
       Copy-Item -LiteralPath $docSrc -Destination (Join-Path $desktopDir '使用说明.md') -Force
-      Write-Ok '使用说明已放到桌面「手机远程」文件夹里'
+      Write-Ok '使用说明已放到桌面「轻屏」文件夹里'
     } catch {
       Write-WarnLine '使用说明没能复制到桌面（不影响使用）'
     }
@@ -1922,7 +1922,7 @@ try {
   $folderReason = [string]$script:AccessFolderReason
   if ($shortcutCount -ge 2) {
     # 改动（第二轮 P3-3 / I3）：文案说 6 个、列表只写了 4 个，客户数一遍会以为少建了。
-    Write-Ok ('已生成「手机远程」文件夹（' + [string]$shortcutCount + ' 个图标：启动 / 自查 / 停止 / 重启 / 手机入口 / 离线模式 / 关闭离线模式 / 卸载）')
+    Write-Ok ('已生成「轻屏」文件夹（' + [string]$shortcutCount + ' 个图标：启动 / 自查 / 停止 / 重启 / 手机入口 / 离线模式 / 关闭离线模式 / 卸载）')
     Write-Host ('    位置：' + $desktopDir) -ForegroundColor Gray
     if ($folderReason -and $folderReason -ne '用户桌面') {
       Write-WarnLine ('注意：你的桌面路径写不进去，图标放在了这里 → ' + $desktopDir)
@@ -1947,7 +1947,7 @@ try {
     Write-WarnLine '二维码没能生成（这台电脑没有 python）。已经帮你打开网址文件，手机浏览器里输入里面的网址。'
     try { $null = Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $urlFilePath + '"') } catch { Write-WarnLine ('网址文件在：' + $urlFilePath) }
   } else {
-    Write-WarnLine '手机入口还没生成（画面服务可能没起来）。先双击桌面「手机远程」文件夹里的「自查」看看问题出在哪。'
+    Write-WarnLine '手机入口还没生成（画面服务可能没起来）。先双击桌面「轻屏」文件夹里的「自查」看看问题出在哪。'
   }
 
   # ---- 许可证 ---------------------------------------------------------------
@@ -1995,7 +1995,7 @@ try {
     if ($licState -and $licState.machineCode) {
       Write-Host ('      ' + [string]$licState.machineCode) -ForegroundColor White
     } else {
-      Write-Host '      （机器码没算出来，双击桌面「手机远程」文件夹里的「自查」可以看到）' -ForegroundColor Yellow
+      Write-Host '      （机器码没算出来，双击桌面「轻屏」文件夹里的「自查」可以看到）' -ForegroundColor Yellow
     }
     Write-Host ''
     Write-Host '  拿到许可证文件（licence.json）后，放进这个目录：'
@@ -2013,8 +2013,8 @@ try {
   Write-Host ''
   Write-Host '  然后重启一次电脑，再连一次 —— 重启后还能连，才算真的装好。' -ForegroundColor Yellow
   Write-Host ''
-  Write-Host '  出问题：双击桌面「手机远程」文件夹里的「自查」，把里面的报告发给卖家。'
-  Write-Host '  桌面入口：打开「手机远程」文件夹 → 启动 / 自查 / 停止 / 手机入口 / 离线模式'
+  Write-Host '  出问题：双击桌面「轻屏」文件夹里的「自查」，把里面的报告发给卖家。'
+  Write-Host '  桌面入口：打开「轻屏」文件夹 → 启动 / 自查 / 停止 / 手机入口 / 离线模式'
   if ($summaryPath) {
     Write-Host ''
     Write-Host '  这次安装的报告（可以发给卖家留档）：'

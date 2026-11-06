@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    重启「手机远程」的服务（画面服务 + 守护进程 + 入口门）。
+    重启「轻屏」的服务（画面服务 + 守护进程 + 入口门）。
 
 .DESCRIPTION
     用途：改了配置、或者画面卡住/打不开时，双击一下这个就能把整条链重建一遍。
@@ -31,7 +31,7 @@ function Warn([string]$m) { Write-Host ('  [!] ' + $m) -ForegroundColor Yellow }
 
 Write-Host ''
 Write-Host '============================================================' -ForegroundColor Cyan
-Write-Host '  重启「手机远程」服务' -ForegroundColor Cyan
+Write-Host '  重启「轻屏」服务' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ''
 
@@ -85,7 +85,7 @@ if ($listen.Count -gt 0) {
     Ok ('画面服务已在监听：' + $addrs + ':' + $screenPort)
 } else {
     Warn ('画面服务没起来（端口 ' + $screenPort + ' 没有监听）')
-    Say '      可以双击桌面「手机远程」里的「自查」看详细原因。' 'Yellow'
+    Say '      可以双击桌面「轻屏」里的「自查」看详细原因。' 'Yellow'
 }
 
 if ($enableDsh) {

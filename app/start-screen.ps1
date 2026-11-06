@@ -156,7 +156,7 @@ if (Test-Path $inputSrc) {
       $useElevated = $false
     }
     elseif ((Get-Item $elevExe).LastWriteTime -lt (Get-Item $inputSrc).LastWriteTime) {
-      Write-Host '[!] 高权限注入器比安装目录里的旧（升级后没重跑安装？），请在「手机远程」里点一次「重启」并重跑安装' -ForegroundColor Yellow
+      Write-Host '[!] 高权限注入器比安装目录里的旧（升级后没重跑安装？），请在「轻屏」里点一次「重启」并重跑安装' -ForegroundColor Yellow
     }
   }
   if (-not $useElevated) {

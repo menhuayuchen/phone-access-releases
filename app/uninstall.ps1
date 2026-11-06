@@ -1,6 +1,6 @@
 ﻿<#
 .SYNOPSIS
-    一键卸载「手机远程控制」
+    一键卸载「轻屏控制」
 
 .DESCRIPTION
     按顺序把安装时做过的事情全部撤掉：
@@ -8,7 +8,7 @@
       2) 删除两个计划任务（开机自启、高权限注入）
       3) 删除防火墙规则
       4) 删除 Defender 排除项
-      5) 删除桌面「手机远程」文件夹
+      5) 删除桌面「轻屏」文件夹
       6) 删除安装目录和注入器目录
 
     默认**保留许可证**（licence.json）——客户以后重装同一台机器不用重新申请。
@@ -36,7 +36,7 @@ try { [Console]::OutputEncoding = New-Object System.Text.UTF8Encoding($false) } 
 
 Write-Host ''
 Write-Host '============================================================' -ForegroundColor Cyan
-Write-Host '  卸载「手机远程控制」' -ForegroundColor Cyan
+Write-Host '  卸载「轻屏控制」' -ForegroundColor Cyan
 Write-Host '============================================================' -ForegroundColor Cyan
 Write-Host ''
 
@@ -89,9 +89,9 @@ Write-Host '  将要删除的位置：'
 Write-Host ('    安装目录   ' + $installRoot)
 Write-Host ('    注入器目录 ' + $injectorDir)
 Write-Host ('   高权限注入器目录 ' + $inputElevDir)
-Write-Host ('    桌面文件夹 ' + (Join-Path ([Environment]::GetFolderPath('Desktop')) '手机远程'))
+Write-Host ('    桌面文件夹 ' + (Join-Path ([Environment]::GetFolderPath('Desktop')) '轻屏'))
 Write-Host '    计划任务   DSH Phone Access / DSH Input Injector'
-Write-Host ('    防火墙规则 PhoneAccess 手机远程 *')
+Write-Host ('    防火墙规则 PhoneAccess 轻屏 *')
 Write-Host ''
 if ($RemoveLicence) {
     Warn '你会连许可证一起删除（以后重装需要重新申请，要重新把机器码发给卖家）。'
@@ -212,11 +212,11 @@ Write-Host '-------- 第 5 步 · 删除桌面文件夹' -ForegroundColor Cyan
 $desktopCandidates = @()
 try {
     $d = [Environment]::GetFolderPath('Desktop')
-    if ($d) { $desktopCandidates += (Join-Path $d '手机远程') }
+    if ($d) { $desktopCandidates += (Join-Path $d '轻屏') }
 } catch { }
 try {
     $pub = [Environment]::GetFolderPath('CommonDesktopDirectory')
-    if ($pub) { $desktopCandidates += (Join-Path $pub '手机远程') }
+    if ($pub) { $desktopCandidates += (Join-Path $pub '轻屏') }
 } catch { }
 foreach ($folder in $desktopCandidates) {
     if (Test-Path -LiteralPath $folder) {

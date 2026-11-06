@@ -5,7 +5,7 @@
 )
 
 # ============================================================================
-# 手机远程访问 · 客户版一键自检（只读）
+# 轻屏访问 · 客户版一键自检（只读）
 #
 # 给谁用：不懂技术的客户。正式交付时由「自检.cmd」包一层双击运行
 #         （Windows 默认执行策略会拦 .ps1 双击，这是机器行为不是本脚本的问题）。
@@ -979,7 +979,7 @@ function Write-SelfConsoleReport {
   $totalChecked = @($Split.Red).Count + @($Split.Yellow).Count + @($Split.Unknown).Count + @($Split.Green).Count + @($Split.Notes).Count
   Write-Host ''
   Write-Host ('  ' + ('═' * 62)) -ForegroundColor DarkGray
-  Write-Host '  手机远程访问 · 一键自检（只读，不会改动任何设置）' -ForegroundColor White
+  Write-Host '  轻屏访问 · 一键自检（只读，不会改动任何设置）' -ForegroundColor White
   Write-Host ('  ' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + ' · 共检查 ' + $totalChecked + ' 项') -ForegroundColor DarkGray
   Write-Host ('  ' + ('═' * 62)) -ForegroundColor DarkGray
 
@@ -1150,7 +1150,7 @@ function Get-SelfReportLines {
   param($Split, $Results, $Verdict)
 
   $lines = New-Object System.Collections.ArrayList
-  [void]$lines.Add('手机远程访问 · 自检报告')
+  [void]$lines.Add('轻屏访问 · 自检报告')
   [void]$lines.Add(('=' * 60))
   [void]$lines.Add('生成时间：' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
   [void]$lines.Add('自检脚本版本：' + $script:SelfVersion)
@@ -1233,11 +1233,11 @@ function Get-SelfReportLines {
 function Get-SelfDefaultReportPath {
   $fileName = '自检报告-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt'
   # 改动（桌面整洁，用户要求）：报告不再散落在桌面根目录，统一放进
-  # 「桌面\手机远程\报告」。桌面只保留一个「手机远程」文件夹。
+  # 「桌面\轻屏\报告」。桌面只保留一个「轻屏」文件夹。
   $desktop = ''
   try { $desktop = [Environment]::GetFolderPath('Desktop') } catch { $desktop = '' }
   if ($desktop -and (Test-Path -LiteralPath $desktop)) {
-    $dir = Join-Path (Join-Path $desktop '手机远程') '报告'
+    $dir = Join-Path (Join-Path $desktop '轻屏') '报告'
     return (Join-Path $dir $fileName)
   }
   return (Join-Path $here $fileName)

@@ -3,7 +3,7 @@
     手机入口 · 一键查看/生成二维码，或换一把新密钥
 
 .DESCRIPTION
-    客户双击桌面「手机远程」文件夹里的「手机入口」就能用，不用记命令。
+    客户双击桌面「轻屏」文件夹里的「手机入口」就能用，不用记命令。
 
     菜单：
       1) 显示手机入口 —— 打印网址 + 生成二维码图片并打开
@@ -30,7 +30,7 @@ $cfg = $null
 try { $cfg = Get-ProductConfig -AppDir $here } catch { }
 if (-not $cfg) {
     Say '[x] 读不到配置（product.config.json 缺失或坏了）。' 'Red'
-    Say '    请重新双击桌面「手机远程」文件夹里的「启动」。'
+    Say '    请重新双击桌面「轻屏」文件夹里的「启动」。'
     if (-not $NoPause) { Read-Host '按回车退出' | Out-Null }
     exit 1
 }
@@ -203,13 +203,13 @@ function Show-Entries {
 
     $primaryIsHttps = ($primary -match '^https://')
 
-    # 改动（用户的桌面整洁要求）：二维码和网址统一放进「桌面\手机远程\二维码」，
+    # 改动（用户的桌面整洁要求）：二维码和网址统一放进「桌面\轻屏\二维码」，
     # 和报告一样都收在同一个文件夹里，桌面不放散东西。
     $qrDir = ''
     try {
         $desk = [Environment]::GetFolderPath('Desktop')
         if ($desk -and (Test-Path -LiteralPath $desk)) {
-            $qrDir = Join-Path (Join-Path $desk '手机远程') '二维码'
+            $qrDir = Join-Path (Join-Path $desk '轻屏') '二维码'
         }
     } catch { }
     if (-not $qrDir) { $qrDir = Join-Path $here '二维码' }
@@ -350,7 +350,7 @@ function Rotate-Key {
 while ($true) {
     Write-Host ''
     Write-Host '=============================================' -ForegroundColor Cyan
-    Write-Host '   手机远程 · 手机入口' -ForegroundColor Cyan
+    Write-Host '   轻屏 · 手机入口' -ForegroundColor Cyan
     Write-Host '=============================================' -ForegroundColor Cyan
     Write-Host '  1) 显示手机入口（网址 + 二维码）'
     Write-Host '  2) 换一把新密钥（旧链接全部失效）'

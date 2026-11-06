@@ -671,7 +671,7 @@ function refreshWinRect() {
 
 // 非安全上下文（http）提示：画面/触控照常走 WebRTC264（2026-11-06 起 http 也能低延迟），
 // 但有几样浏览器只给安全上下文：装成 App（Service Worker）、WebCodecs 备用高清通道、声音的 AudioWorklet。
-// 所以只做一句轻提示，不吓人；想全功能还是用 https 地址（桌面「手机远程 → 离线模式」会自动给出）。
+// 所以只做一句轻提示，不吓人；想全功能还是用 https 地址（桌面「轻屏 → 离线模式」会自动给出）。
 try {
   if (!window.isSecureContext) {
     setTimeout(function () {
@@ -3163,7 +3163,7 @@ bindImg(img);
     if (s.enabled === false) return '';
     const link = String(s.link || '').trim();
     const tpl = String(s.text || '').trim()
-      || '我在用「手机远程」：手机就能看电脑屏幕，还能点、能打字，出门在外很方便。\n下载试用（免费版日常够用）：{link}';
+      || '我在用「轻屏」：手机就能看电脑屏幕，还能点、能打字，出门在外很方便。\n下载试用（免费版日常够用）：{link}';
     const text = tpl.replace(/\{link\}/g, link || '（联系我拿安装包）');
     const title = String(s.title || '分享给朋友');
     let h = '<div style="margin:16px 0 0;padding-top:14px;border-top:1px solid #23252c">'
@@ -5330,7 +5330,7 @@ bindImg(img);
     const ss = box.querySelector('#shareSend');
     if (ss) ss.addEventListener('click', async () => {
       try {
-        await navigator.share({ title: (lic.share && lic.share.title) || '手机远程', text: shareText() });
+        await navigator.share({ title: (lic.share && lic.share.title) || '轻屏', text: shareText() });
       } catch (e) {
         if (copyText(shareText())) {
           ss.textContent = '已复制';

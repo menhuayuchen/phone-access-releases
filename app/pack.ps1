@@ -89,7 +89,7 @@ if (Test-Path -LiteralPath $prodKeyFile) {
 }
 
 Write-Host ''
-Write-Host '手机远程控制 · 基础档打包' -ForegroundColor Cyan
+Write-Host '轻屏控制 · 基础档打包' -ForegroundColor Cyan
 Write-InfoLine ('产品代码：' + $AppDir)
 Write-InfoLine ('生产目录：' + $ProdDir + '（只读，不会修改）')
 Write-InfoLine ('输出目录：' + $stage)
@@ -109,7 +109,7 @@ $appFiles = @(
   # 那个在下面的禁止清单里，属卖家侧运维脚本）
   'entry.ps1',
   '手机入口.cmd',
-  # 离线模式：桌面「手机远程」文件夹里的「离线模式」入口（2026-11-06）
+  # 离线模式：桌面「轻屏」文件夹里的「离线模式」入口（2026-11-06）
   'offline-mode.ps1',
   '离线模式.cmd',
   # 离线模式：防火墙放行/恢复（局域网/热点/USB 直连）
@@ -156,7 +156,7 @@ $appFiles = @(
   # 从 app\ 取，不再依赖只读的生产目录。生产目录那份是旧图标。
   'icon-192.png',
   'icon-512.png',
-  # 一键卸载 + 客户说明书（安装时会把说明书复制到桌面「手机远程」文件夹里）
+  # 一键卸载 + 客户说明书（安装时会把说明书复制到桌面「轻屏」文件夹里）
   'uninstall.ps1',
   'uninstall.cmd',
   '使用说明.md',
@@ -212,7 +212,7 @@ $forbiddenExact = @(
   'screen.key', 'node-path.txt',
   'screen-url.txt', 'screen-url-lan.txt', 'tailip-url.txt', 'lan-url.txt', 'login-url.txt', 'phone-url.txt',
   'phone-qr.png', 'qr-login.png', 'qr-tailip.png', 'screen-qr.png', 'screen-qr-lan.png', 'tailnet-qr.png',
-  '手机入口速查.md', '手机远程入口速查.pdf', 'README.md', 'make_doc.py',
+  '手机入口速查.md', '轻屏入口速查.pdf', 'README.md', 'make_doc.py',
   'upgrade-rc3.ps1', 'upgrade-rc3.result.txt', 'upgrade-rc3.log',
   'syntax-check.ps1', 'focus-test.ps1', 'elevated-inject-test.ps1',
   'cursor-test.cs', 'cursor-test.exe', 'cursor-probe.cs', 'win-scan.ps1',
@@ -623,9 +623,9 @@ if (Test-Path -LiteralPath $hoisted) {
 Write-OkLine ('node_modules 已铺平：' + [string]$nmFileCount + ' 个文件，' + (Format-Mb (Get-UniqueTreeSize -Dir $nmDest -Seen @{})))
 
 # 客户双击入口：英文 install.cmd 之外再给一个中文名的副本（内容同样是纯 ASCII）
-$friendlyEntry = Join-Path $stage '安装手机远程.cmd'
+$friendlyEntry = Join-Path $stage '安装轻屏.cmd'
 Copy-Item -LiteralPath (Join-Path $stage 'install.cmd') -Destination $friendlyEntry -Force
-Write-OkLine '已加中文双击入口：安装手机远程.cmd（内容与 install.cmd 相同，纯 ASCII）'
+Write-OkLine '已加中文双击入口：安装轻屏.cmd（内容与 install.cmd 相同，纯 ASCII）'
 
 # ---------------------------------------------------------------------------
 # 6. 打包后自检
@@ -788,7 +788,7 @@ if ($Zip) {
 
 Write-Host ''
 Write-Host '打包完成。发给客户前最后确认一次：' -ForegroundColor Green
-Write-Host '  1) 客户解压后双击 安装手机远程.cmd（或 install.cmd），不要双击压缩包里的文件'
+Write-Host '  1) 客户解压后双击 安装轻屏.cmd（或 install.cmd），不要双击压缩包里的文件'
 Write-Host '  2) 包体约 110–140 MB；明显偏小说明 node.exe / node_modules 没进去'
 Write-Host '  3) 这个包不含生产密钥、日志、二维码、开发脚本（本脚本已逐项扫过）'
 if ($zipPath) { Write-Host ('  4) 直接发这个 zip：' + $zipPath) }

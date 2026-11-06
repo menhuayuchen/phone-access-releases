@@ -31,7 +31,7 @@ param(
     # 要绑定的 tailnet IP；不填就自动取 `tailscale ip -4` 的第一个 100.x，取不到退回 127.0.0.1
     [string]$TailnetIp = '',
     [int]$Port = 47989,
-    [string]$SunshineName = '手机远程-高性能',
+    [string]$SunshineName = '轻屏-高性能',
     [switch]$Json,
     [switch]$Quiet
 )

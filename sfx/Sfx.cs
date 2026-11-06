@@ -1,4 +1,4 @@
-﻿// 手机远程 · 自解压启动器（SFX）
+﻿// 轻屏 · 自解压启动器（SFX）
 //
 // 设计：
 //   exe 自身末尾追加三样东西：[zip 数据][trailer 32 字节]
@@ -229,7 +229,7 @@ static class Sfx
 
         using (Form f = new Form())
         {
-            f.Text = "手机远程 · 安装";
+            f.Text = "轻屏 · 安装";
             f.FormBorderStyle = FormBorderStyle.FixedDialog;
             f.StartPosition = FormStartPosition.CenterScreen;
             f.MaximizeBox = false;
