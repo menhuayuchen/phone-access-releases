@@ -3388,13 +3388,22 @@ bindImg(img);
     const sendBtn = box.querySelector('#fileSend');
     const msg = box.querySelector('#fileMsg');
     const listEl = box.querySelector('#fileList');
+    const pcList = box.querySelector('#pcList');
     const wrap = box.querySelector('#fileProgWrap');
     const bar = box.querySelector('#fileBar');
     const prog = box.querySelector('#fileProg');
     if (!pick || !sendBtn) return;
-    const fmt = (n) => (Number(n) / 1024 / 1024) >= 1
-      ? (Number(n) / 1024 / 1024).toFixed(2) + ' MB'
-      : (Number(n) / 1024).toFixed(0) + ' KB';
+    const fmt = (n) => {
+      const v = Number(n) || 0;
+      if (v >= 1024 * 1024 * 1024) return (v / 1073741824).toFixed(2) + ' GB';
+      if (v >= 1024 * 1024) return (v / 1048576).toFixed(2) + ' MB';
+      return (v / 1024).toFixed(0) + ' KB';
+    };
+    const fmtSpeed = (bps) => {
+      if (!bps || !isFinite(bps)) return '';
+      if (bps >= 1048576) return (bps / 1048576).toFixed(1) + ' MB/s';
+      return (bps / 1024).toFixed(0) + ' KB/s';
+    };
     const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
     const load = async () => {
       if (!listEl) return;
@@ -3413,41 +3422,102 @@ bindImg(img);
           + '<span style="color:#5c6169;font-size:10.5px;white-space:nowrap">' + t + '</span></div>';
       }).join('');
     };
-    if (sendBtn) sendBtn.addEventListener('click', () => {
-      const f = pick.files && pick.files[0];
-      if (!f) { setMsg('先选一个文件', '#ffb454'); return; }
-      if (f.size > 32 * 1024 * 1024) { setMsg('文件太大（上限 32MB）', '#ff6b6b'); return; }
-      if (wrap) wrap.style.display = 'block';
-      if (bar) bar.style.width = '1%';
-      sendBtn.disabled = true; setMsg('');
-      const xhr = new XMLHttpRequest();
-      xhr.open('POST', '/file?name=' + encodeURIComponent(f.name));
-      xhr.upload.onprogress = (ev) => {
-        if (!ev.lengthComputable) return;
-        const pct = Math.round(ev.loaded * 100 / ev.total);
-        if (bar) bar.style.width = pct + '%';
-        if (prog) prog.textContent = '已上传 ' + fmt(ev.loaded) + ' / ' + fmt(ev.total) + '（' + pct + '%）';
-      };
-      xhr.onload = () => {
-        sendBtn.disabled = false;
-        let j = null;
-        try { j = JSON.parse(xhr.responseText); } catch (e) { }
-        if (xhr.status === 200 && j && j.ok) {
-          setMsg(j.message || '已上传', '#8CE58C');
-          if (bar) bar.style.width = '100%';
-          pick.value = '';
-          setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 1500);
-          load();
-        } else {
-          setMsg((j && j.message) || ('上传失败（HTTP ' + xhr.status + '）'), '#ff6b6b');
+    // 电脑文件浏览：只开放用户目录（桌面/下载/文档/图片），点文件夹进入、点下载存到手机
+    const browse = async (dir) => {
+      if (!pcList) return;
+      pcList.innerHTML = '<span style="color:#6b7078">读取中…</span>';
+      let j = null;
+      try { j = await fetch('/browse?dir=' + encodeURIComponent(dir || '') + '&_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { j = null; }
+      if (!j || !j.ok) { pcList.innerHTML = '<span style="color:#ff6b6b">' + escHtml((j && j.message) || '读取失败') + '</span>'; return; }
+      let h = '';
+      if (j.dir) {
+        h += '<div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;flex-wrap:wrap">'
+          + '<button class="pcUp" data-dir="' + escHtml(j.parent || '') + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:11.5px;cursor:pointer">↑ 上一级</button>'
+          + '<span style="color:#6b7078;font-size:11px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:100%">' + escHtml(j.dir) + '</span></div>';
+      }
+      if (!j.items.length) h += '<div style="color:#6b7078">空文件夹</div>';
+      h += j.items.map((it) => {
+        if (it.dir) {
+          return '<div class="pcRow" data-dir="' + escHtml(it.path) + '" style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #202228;cursor:pointer">'
+            + '<span style="color:#ffd479;width:12px">▸</span>'
+            + '<span style="flex:1;min-width:0;color:#c9ccd1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(it.name) + '</span>'
+            + '<span style="color:#5c6169;font-size:10.5px">文件夹</span></div>';
         }
-      };
-      xhr.onerror = () => { sendBtn.disabled = false; setMsg('上传失败：网络断了', '#ff6b6b'); };
-      xhr.send(f);
+        return '<div style="display:flex;gap:8px;align-items:center;padding:6px 0;border-bottom:1px solid #202228">'
+          + '<span style="flex:1;min-width:0;color:#c9ccd1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(it.name) + '</span>'
+          + '<span style="color:#6b7078;font-size:11px;white-space:nowrap">' + fmt(it.size) + '</span>'
+          + '<a href="/download?path=' + encodeURIComponent(it.path) + '" style="color:#8fb6ff;font-size:11.5px;white-space:nowrap">下载</a></div>';
+      }).join('');
+      pcList.innerHTML = h;
+      pcList.querySelectorAll('.pcRow, .pcUp').forEach((el) => el.addEventListener('click', (ev) => {
+        if (ev.target && ev.target.tagName === 'A') return;
+        browse(el.getAttribute('data-dir') || '');
+      }));
+    };
+    // 多文件顺序上传：总进度 + 实时速度 + 剩余时间
+    let busy = false;
+    if (sendBtn) sendBtn.addEventListener('click', async () => {
+      if (busy) return;
+      const files = pick.files ? Array.from(pick.files) : [];
+      if (!files.length) { setMsg('先选文件（可多选）', '#ffb454'); return; }
+      busy = true;
+      sendBtn.disabled = true;
+      if (wrap) wrap.style.display = 'block';
+      if (bar) bar.style.width = '0%';
+      const totalBytes = files.reduce((a, f) => a + f.size, 0);
+      const t0 = Date.now();
+      let doneBytes = 0;
+      let failed = 0;
+      for (let i = 0; i < files.length; i++) {
+        const f = files[i];
+        const label = '（' + (i + 1) + '/' + files.length + '）' + f.name;
+        setMsg('正在传 ' + label);
+        await new Promise((resolve) => {
+          const xhr = new XMLHttpRequest();
+          xhr.open('POST', '/file?name=' + encodeURIComponent(f.name));
+          xhr.upload.onprogress = (ev) => {
+            if (!ev.lengthComputable) return;
+            const loaded = doneBytes + ev.loaded;
+            const pct = totalBytes ? Math.round(loaded * 100 / totalBytes) : 0;
+            if (bar) bar.style.width = pct + '%';
+            const sec = Math.max(0.2, (Date.now() - t0) / 1000);
+            const speed = loaded / sec;
+            const left = speed > 0 ? (totalBytes - loaded) / speed : 0;
+            if (prog) prog.textContent = label + ' · ' + fmt(loaded) + ' / ' + fmt(totalBytes)
+              + '（' + pct + '%） · ' + fmtSpeed(speed) + ' · 剩余 ' + (left > 1 ? Math.ceil(left) + ' 秒' : '…');
+          };
+          xhr.onload = () => {
+            let j = null;
+            try { j = JSON.parse(xhr.responseText); } catch (e) { }
+            if (xhr.status === 200 && j && j.ok) {
+              doneBytes += f.size;
+              if (bar) bar.style.width = Math.min(100, Math.round(doneBytes * 100 / totalBytes)) + '%';
+            } else {
+              failed++;
+              setMsg((j && j.message) || ('上传失败（HTTP ' + xhr.status + '）：' + f.name), '#ff6b6b');
+            }
+            resolve();
+          };
+          xhr.onerror = () => { failed++; resolve(); };
+          xhr.send(f);
+        });
+      }
+      const secs = Math.max(0.2, (Date.now() - t0) / 1000);
+      if (!failed) {
+        setMsg('完成：' + files.length + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）', '#8CE58C');
+        pick.value = '';
+      } else {
+        setMsg('完成，但有 ' + failed + ' 个失败', '#ffb454');
+      }
+      if (prog) prog.textContent = '平均 ' + fmtSpeed(doneBytes / secs);
+      setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 2500);
+      busy = false;
+      sendBtn.disabled = false;
+      load();
     });
     load();
+    browse('');
   }
-
   // ---- 高性能模式（Sunshine/Moonlight，2026-11-03 S3）------------------------
   // 只做三件事：显示状态、列出等待配对的 Moonlight 设备、提交 4 位 PIN。
   // 配对请求走服务端 /sunshine-pairings 与 /sunshine-pin（Sunshine 凭据只在服务端）。
@@ -4485,20 +4555,23 @@ bindImg(img);
       + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
       + '上限 64KB；写入后电脑上 Ctrl+V 就能用。剪贴板内容会经过你自己的 Tailscale 网络，不经过第三方。</div>');
 
-    // 小文件传输（2026-11-03，A5 第二步）：手机 → 电脑 的「下载」文件夹；只开放这个固定目录。
-    body += setSection('文件传输（手机 → 电脑）',
+    // 大文件传输（2026-11-06）：局域网/离线模式下手机↔电脑直传，速度就是 Wi-Fi 上限。
+    body += setSection('大文件传输（手机 ↔ 电脑）',
       '<div style="color:#868c96;font-size:12px;margin-bottom:8px">'
-      + '把手机上的照片/文档发到电脑，存到电脑的「下载」文件夹；单个文件上限 32MB。</div>'
+      + '不经过任何服务器：手机和电脑在同一 Wi-Fi/热点时，速度就是 Wi-Fi 上限（几十 MB/s）。单个文件上限 20GB。</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
-      + '<input id="filePick" type="file" style="flex:1;min-width:170px;color:#c9ccd1;font-size:12.5px">'
+      + '<input id="filePick" type="file" multiple style="flex:1;min-width:170px;color:#c9ccd1;font-size:12.5px">'
       + '<button id="fileSend" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
-      + 'padding:8px 15px;font-size:12.5px;cursor:pointer">上传</button>'
+      + 'padding:8px 15px;font-size:12.5px;cursor:pointer">发送到电脑</button>'
       + '<span id="fileMsg" style="font-size:12px;color:#868c96"></span></div>'
       + '<div id="fileProgWrap" style="display:none;margin-top:9px">'
-      + '<div style="height:6px;background:#0f1014;border:1px solid #262932;border-radius:5px;overflow:hidden">'
-      + '<div id="fileBar" style="height:100%;width:0;background:#8CE68C;transition:width .2s"></div></div>'
+      + '<div style="height:7px;background:#0f1014;border:1px solid #262932;border-radius:5px;overflow:hidden">'
+      + '<div id="fileBar" style="height:100%;width:0;background:#8CE68C;transition:width .15s"></div></div>'
       + '<div id="fileProg" style="color:#868c96;margin-top:6px;font-size:11.5px"></div></div>'
-      + '<div id="fileList" style="margin-top:10px;color:#868c96;font-size:12px">正在读取…</div>');
+      + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">电脑上的文件（点「下载」存到手机）</div>'
+      + '<div id="pcList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>'
+      + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">手机传到电脑的文件（存在「下载\\PhoneAccess」）</div>'
+      + '<div id="fileList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>');
 
     // 高性能模式（Sunshine/Moonlight）——2026-11-03 S3：电脑装好 Sunshine 后，手机装 Moonlight 用 PIN 配对。
     body += setSection('高性能模式（Moonlight）',

@@ -33,7 +33,7 @@ import { readFileSync, writeFileSync, statSync, unlinkSync, appendFileSync, rena
 import { randomBytes, createPublicKey, createVerify, createHmac, createHash, timingSafeEqual } from 'node:crypto';
 import net from 'node:net';
 import { execFileSync, execFile, spawn } from 'node:child_process';
-import { join, dirname } from 'node:path';
+import { join, dirname, resolve, basename } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import sharp from 'sharp';
@@ -1994,7 +1994,23 @@ function writeSystemClipboard(text) {
 //   · 上传大小上限 32MB，超过直接断开；文件名重名自动加 (1)(2)…
 //   · 走默认鉴权（必须密钥/cookie），和画面接口同一套。
 const UPLOAD_DIR = join(process.env.USERPROFILE || HERE, 'Downloads', 'PhoneAccess');
-const UPLOAD_MAX = 32 * 1024 * 1024;
+const UPLOAD_MAX = 20 * 1024 * 1024 * 1024;   // 大文件：上限 20GB（局域网直传，速度就是 Wi-Fi 上限）
+// 真实桌面路径（可能被重定向到 D:\...）；reg.exe 输出是系统代码页，中文机按 GBK 解
+let _deskCache = null;
+function desktopDir() {
+  if (_deskCache) return _deskCache;
+  const home = process.env.USERPROFILE || '';
+  let desk = join(home, 'Desktop');
+  try {
+    const raw = execFileSync('reg', ['query', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Explorer\\User Shell Folders', '/v', 'Desktop'], { timeout: 3000, windowsHide: true });
+    let txt = '';
+    try { txt = new TextDecoder('gbk').decode(raw); } catch { txt = Buffer.from(raw).toString('utf8'); }
+    const m = txt.match(/Desktop\s+REG_\w+\s+(.+)/);
+    if (m && m[1]) desk = String(m[1]).trim().replace(/%USERPROFILE%/i, home);
+  } catch { }
+  _deskCache = desk;
+  return desk;
+}   // 大文件：上限 20GB（局域网直传，速度就是 Wi-Fi 上限）
 function safeUploadName(raw) {
   let n = String(raw || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/[\\/:*?"<>|]/g, '_').trim();
   n = n.replace(/^\.+/, '').replace(/[. ]+$/, '');
@@ -2757,29 +2773,40 @@ async function handler(req, res) {
       return freply(500, { ok: false, message: '建下载目录失败：' + ((e && e.message) || e) });
     }
     const dest = uniqueUploadPath(name);
-    const chunks = [];
+    const part = dest + '.part';
+    let ws = null;
+    try { ws = createWriteStream(part); } catch (e) {
+      return freply(500, { ok: false, message: '建文件失败：' + ((e && e.message) || e) });
+    }
     let got = 0;
-    let aborted = false;
+    let done = false;
+    const fail = (code, message) => {
+      if (done) return;
+      done = true;
+      try { ws.destroy(); } catch { }
+      try { unlinkSync(part); } catch { }
+      freply(code, { ok: false, message: message });
+    };
+    ws.on('error', (e) => fail(500, '写文件失败：' + ((e && e.message) || e)));
     req.on('data', (c) => {
-      if (aborted) return;
       got += c.length;
-      if (got > UPLOAD_MAX) {
-        aborted = true;
-        return freply(413, { ok: false, message: '文件太大（上限 32MB）' });
-      }
-      chunks.push(c);
+      if (got > UPLOAD_MAX) { fail(413, '文件太大（上限 20GB）'); try { req.destroy(); } catch { } }
     });
-    req.on('end', () => {
-      if (aborted) return;
-      if (!got) return freply(400, { ok: false, message: '空文件' });
-      try {
-        writeFileSync(dest, Buffer.concat(chunks));
-      } catch (e) {
+    req.on('aborted', () => fail(400, '上传被中断（网络断了？）'));
+    req.on('error', () => fail(500, '上传出错'));
+    req.pipe(ws);
+    ws.on('finish', () => {
+      if (done) return;
+      if (!got) { done = true; try { unlinkSync(part); } catch { } return freply(400, { ok: false, message: '空文件' }); }
+      try { renameSync(part, dest); } catch (e) {
+        done = true;
+        try { unlinkSync(part); } catch { }
         return freply(500, { ok: false, message: '保存失败：' + ((e && e.message) || e) });
       }
+      done = true;
       const saved = dest.slice(dest.lastIndexOf('\\') + 1);
       console.log('screen-server: 收到文件 ' + saved + '（' + got + ' B）');
-      freply(200, { ok: true, name: saved, size: got, message: '已收到：' + saved + '（已存到电脑的「下载」文件夹）' });
+      freply(200, { ok: true, name: saved, size: got, dir: UPLOAD_DIR, message: '已收到：' + saved + '（' + (got / 1048576).toFixed(1) + ' MB）' });
     });
     return;
   }
@@ -2804,6 +2831,68 @@ async function handler(req, res) {
     } catch (e) {
       try { res.end(); } catch { }
     }
+    return;
+  }
+
+  // ---- 大文件传输（2026-11-06）：浏览电脑文件、下载到手机 ---------------------
+  // GET /browse?dir=<绝对路径>：只在用户主目录（USERPROFILE）以下浏览；不给 dir 时列常用目录
+  // GET /download?path=<绝对路径>：流式下载（同样只允许用户主目录以下）
+  if (url.pathname === '/browse' && req.method === 'GET') {
+    const jr = (code, obj) => {
+      try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { }
+    };
+    const home = process.env.USERPROFILE || '';
+    const desk = desktopDir();
+    const rootNames = [desk, join(home, 'Downloads'), join(home, 'Documents'), join(home, 'Pictures')];
+    const roots = rootNames.filter((p) => { try { return statSync(p).isDirectory(); } catch { return false; } });
+    const dir = String(url.searchParams.get('dir') || '').trim();
+    if (!dir) {
+      return jr(200, { ok: true, dir: '', home: home, items: roots.map((p) => ({ name: basename(p), path: p, dir: true })) });
+    }
+    let real = '';
+    try { real = resolve(dir); } catch { return jr(400, { ok: false, message: '路径不合法' }); }
+    const homeReal = home ? resolve(home).toLowerCase() : '';
+    const deskReal = resolve(desk).toLowerCase();
+    if (!homeReal || !(real.toLowerCase().startsWith(homeReal) || real.toLowerCase().startsWith(deskReal))) return jr(403, { ok: false, message: '只能浏览用户目录里的文件' });
+    let ents = [];
+    try { ents = readdirSync(real, { withFileTypes: true }); } catch (e) { return jr(404, { ok: false, message: '打不开这个文件夹' }); }
+    const items = [];
+    for (const ent of ents) {
+      if (items.length >= 500) break;
+      const p = join(real, ent.name);
+      if (ent.isDirectory()) { items.push({ name: ent.name, path: p, dir: true }); continue; }
+      let st = null;
+      try { st = statSync(p); } catch { continue; }
+      if (!st.isFile()) continue;
+      items.push({ name: ent.name, path: p, dir: false, size: st.size, at: Math.round(st.mtimeMs) });
+    }
+    items.sort((a, b) => (b.dir ? 1 : 0) - (a.dir ? 1 : 0) || String(a.name).localeCompare(String(b.name)));
+    const isRoot = (real.toLowerCase() === homeReal) || (real.toLowerCase() === deskReal) || roots.some((r) => resolve(r).toLowerCase() === real.toLowerCase());
+    return jr(200, { ok: true, dir: real, parent: (isRoot ? null : dirname(real)), items: items });
+  }
+  if (url.pathname === '/download' && req.method === 'GET') {
+    const home = process.env.USERPROFILE || '';
+    const raw = String(url.searchParams.get('path') || '');
+    let real = '';
+    try { real = resolve(raw); } catch { real = ''; }
+    const homeReal = home ? resolve(home).toLowerCase() : '';
+    const deskReal2 = resolve(desktopDir()).toLowerCase();
+    if (!real || !homeReal || !(real.toLowerCase().startsWith(homeReal) || real.toLowerCase().startsWith(deskReal2))) {
+      res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8' }); res.end('只能下载用户目录里的文件'); return;
+    }
+    let st = null;
+    try { st = statSync(real); } catch { }
+    if (!st || !st.isFile()) { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('文件不存在'); return; }
+    const nm = basename(real);
+    try {
+      res.writeHead(200, {
+        'content-type': 'application/octet-stream',
+        'content-length': String(st.size),
+        'content-disposition': "attachment; filename*=UTF-8''" + encodeURIComponent(nm),
+        'cache-control': 'no-store'
+      });
+      createReadStream(real).pipe(res);
+    } catch (e) { try { res.end(); } catch { } }
     return;
   }
 
