@@ -38,9 +38,6 @@ import { fileURLToPath } from 'node:url';
 import { WebSocketServer } from 'ws';
 import sharp from 'sharp';
 
-// 省流量模式下 /frame.jpg?w=&q= 的缩小副本缓存（同一帧只重编码一次）
-const thumb = { cacheKey: '', buf: null };
-
 const HERE = dirname(fileURLToPath(import.meta.url));
 
 import { createRtc } from './rtc.mjs';
@@ -402,6 +399,9 @@ function processH264Buffer() {
       h264RtcSendFrame({ ts: h264.tsUs, key: s.key, data: s.data });
       if (wtSrv) { try { h264.frameSeq = (h264.frameSeq || 0) + 1; wtSrv.broadcast({ id: h264.frameSeq, key: s.key, data: s.data }); } catch { } }
       feed264(s.key, s.data);
+      // 送达侧帧率：MJPEG 流退役后，帧只通过「WebCodecs 客户端」或「B 方案侧车」交给手机，
+      // 这里按"这一帧确实有人要"记一次（同一帧推给多路只算一帧，靠 tsUs 去重）。
+      if (h264.clients.size || rtc264Status.sessions > 0) notePush(h264.tsUs);
     }
     h264.frames += samples.length;
     h264.pending = h264.pending.subarray(mdat.end);
@@ -741,7 +741,7 @@ function spsPpsPrefix() {
 function feed264(key, data) {
   if (!conn264 || conn264.destroyed || !conn264.writable) return;
   // 侧车写不动（进程卡住/系统卡）时丢帧，绝不让 Node 的内存无限涨
-  if (conn264.writableLength > 4 * 1024 * 1024) { rtc264FeedDrops++; return; }
+  if (conn264.writableLength > 4 * 1024 * 1024) { rtc264FeedDrops++; noteDrop(Date.now()); return; }
   try {
     const payload = key ? Buffer.concat([spsPpsPrefix(), annxB(data)]) : annxB(data);
     const head = Buffer.alloc(5);
@@ -4752,6 +4752,7 @@ async function handler(req, res) {
   if (url.pathname === '/frame.jpg') {
     lastPoll = Date.now();   // polling counts as watching (low-bandwidth mode)
     if (!frame) { res.writeHead(503); res.end('no frame yet'); return; }
+    notePush(frameStamp);    // 低频画面送达一帧（同一帧被轮询两次只算一帧）
     // 省流量模式可以要求缩小的副本：?w=1280&q=45 会缩放+重编码，同一帧只算一次，
     // 结果缓存到下一帧到来。不带参数时行为不变（原图）。
     const wRaw = Number(url.searchParams.get('w') || 0);
@@ -4764,23 +4765,11 @@ async function handler(req, res) {
     if (!w && capW < CAPTURE_W) { w = capW; if (!q) q = 70; }
     // 计时：这次真的按 >1920 宽出图，才算"正在看超清"
     if ((w || CAPTURE_W) > ULTRA_LIMIT) ultraNoteServe();
-    if (!w && !q) {
-      res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': frame.length, 'cache-control': 'no-store' });
-      res.end(frame);
-      return;
-    }
-    const cacheKey = frameStamp + ':' + w + ':' + q;
-    if (thumb.cacheKey === cacheKey && thumb.buf) {
-      res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': thumb.buf.length, 'cache-control': 'no-store' });
-      res.end(thumb.buf);
-      return;
-    }
-    sharp(frame)
-      .resize({ width: w || undefined, withoutEnlargement: true })
-      .jpeg({ quality: q || 62 })
-      .toBuffer()
+    // 统一走 encodeStream：不带参数/已经够宽时它直接透传原图；带参数时按「帧+参数」缓存，
+    // 多台手机看同一帧只编码一次。（原来这里复制了一份 sharp 逻辑和一个单槽缓存 thumb，
+    // 与 encodeStream 完全重复，2026-11-06 体检时合并。）
+    encodeStream(frame, frameStamp, w, q)
       .then((buf) => {
-        thumb.buf = buf; thumb.cacheKey = cacheKey;
         res.writeHead(200, { 'content-type': 'image/jpeg', 'content-length': buf.length, 'cache-control': 'no-store' });
         res.end(buf);
       })

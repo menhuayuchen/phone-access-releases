@@ -539,11 +539,7 @@ function buzz(ms) { try { if (navigator.vibrate) navigator.vibrate(ms); } catch 
 // ---- 来源列表 --------------------------------------------------------------
 // 实时刷新：每 2 秒拉一次 /sources，只有列表真的变了才重建 <option>（不闪、不打断选择）。
 // 用户正拉开下拉框时不重建，等下一次轮询再补上。
-function sourcesSig() {
-  const m = state.monitors.map((x) => x.i + ':' + x.w + 'x' + x.h).join('|');
-  const w = state.windows.map((x) => x.hwnd + ':' + x.title).join('|');
-  return m + '#' + w;
-}
+// （2026-11-06 清理：原来的 sourcesSig() 已无人调用，签名比较已在 loadSources 里内联。）
 
 // HTML 转义。窗口标题、前台窗口名这些内容来自电脑上**任意程序**（任何网页都能改自己
 // 的标题），属于不可信输入。凡是必须拼进 innerHTML 的地方一律先过这个函数。
@@ -717,10 +713,7 @@ function lowBwUrl() {
 // 服务端只能不停丢帧，表现为"越来越卡、延迟越来越大"。这里按服务端回报的丢帧数
 // 和排队帧数自动降档（1280 宽一帧约 45KB），带宽够了再自己升回去。
 // 默认就是 2560 满清晰，只有连续两次真的塞满才退到 1920（60 秒内不再升回，避免来回跳）
-let streamW = 2560;   // 默认满清晰（Wi-Fi 直连实测 24.5fps 0 丢帧）；真塞满了才自动降档
-let goodPolls = 0;
-let badPolls = 0;
-let holdUntil = 0;      // 降档后 60 秒内不再升回去，避免在临界链路上来回跳（每次跳都要重开流）
+let streamW = 2560;   // 默认满清晰（Wi-Fi 直连实测 24.5fps 0 丢帧）
 // 往返延迟：直接量 /health 的往返时间。局域网 2~5ms；Tailscale 中继（DERP）200~500ms。
 // 这个数决定"要不要压码率/是否该改用流畅模式"，HUD 里也直接显示。
 let rttMs = 0;
@@ -751,23 +744,14 @@ function abortStream() {
   try { img.removeAttribute('src'); } catch (e) {}
 }
 
-// ---- 高清模式（H.264 / MSE，2026-11-04）------------------------------------
-// 服务端用 ffmpeg（h264_mf）把画面编成 fMP4，这里用 MSE 播放：
-// 同画质带宽比 MJPEG 低一个数量级，手机还走硬件解码。ffmpeg 缺失/浏览器不支持时自动回落 MJPEG。
-const H264_CODECS = ['video/mp4; codecs="avc1.4D4032"', 'video/mp4; codecs="avc1.640032"', 'video/mp4; codecs="avc1.4D4028"', 'video/mp4; codecs="avc1.42E01E"'];
+// ---- 高清模式（H.264 / WebCodecs，2026-11-04）------------------------------
+// 服务端用 ffmpeg 把画面编成 H.264，这里优先走 B 方案（Pion WebRTC264），
+// 不可用时回落到 WebCodecs 解码，再不行才回落到低频 /frame.jpg。
 function h264Supported() {
   if (h264.supported !== null) return h264.supported;
   // 用 WebCodecs 能力判断（真实播放路径），不依赖 MSE 的 codec 列表
   h264.supported = !!(window.VideoDecoder && window.EncodedVideoChunk);
   return h264.supported;
-}
-function h264Jump() {
-  try {
-    if (vid.buffered.length > 0) {
-      const end = vid.buffered.end(vid.buffered.length - 1);
-      if (end - vid.currentTime > 0.15) vid.currentTime = end - 0.02;
-    }
-  } catch (e) { }
 }
 function stopH264() {
   h264.gen = (h264.gen || 0) + 1;
@@ -1048,14 +1032,25 @@ async function rtc264Stats() {
     const st = await pc.getStats();
     const cands = {};
     let br = 0, fr = 0, fd = 0, path = '', jb = 0, jbc = 0;
+    let bestPair = null, bestBytes = -1;
     st.forEach(function (r) { if (r.type === 'local-candidate' || r.type === 'remote-candidate') cands[r.id] = r; });
     st.forEach(function (r) {
       if (r.type === 'inbound-rtp' && r.kind === 'video') {
         br = r.bytesReceived || 0; fr = r.framesReceived || 0; fd = r.framesDecoded || 0;
         jb = r.jitterBufferDelay || 0; jbc = r.jitterBufferEmittedCount || 0;
       }
-      if (r.type === 'candidate-pair' && r.state === 'succeeded') { const c = cands[r.localCandidateId]; if (c) path = c.candidateType; }
+      // 原来取「最后一条 succeeded 的 candidate-pair」，同时存在多条通路时会随机显示成中继/直连；
+      // 现在优先取浏览器标记的 selected 通路，没标记就取实际流量最大的那条（2026-11-06 体检）。
+      if (r.type === 'candidate-pair' && r.state === 'succeeded') {
+        const bytes = (Number(r.bytesReceived) || 0) + (Number(r.bytesSent) || 0);
+        const sel = r.selected === true;
+        const bestSel = !!(bestPair && bestPair.selected === true);
+        if (!bestPair) { bestPair = r; bestBytes = bytes; }
+        else if (sel && !bestSel) { bestPair = r; bestBytes = bytes; }
+        else if (sel === bestSel && bytes > bestBytes) { bestPair = r; bestBytes = bytes; }
+      }
     });
+    if (bestPair) { const c = cands[bestPair.localCandidateId]; if (c) path = c.candidateType; }
     const vw = vid.videoWidth || 0;
     if (vw > 0) {
       R.firstVideo = true; R.attempts = 0;
@@ -1726,6 +1721,7 @@ btnCrisp.addEventListener('click', async () => {
   try { await fetch('/rtc-off', { method: 'POST' }); } catch (e) {}
   await postMode({});
   if (h264Supported()) {
+    stopLowBw();                        // 高清模式下不该再挂着 200ms 的低频轮询定时器
     startH264();
     setStat('高清模式（H.264）');
   } else {
@@ -2658,7 +2654,6 @@ async function pollStats() {
     }
     const out = /out=([0-9.]+)/.exec(t), cap = /cap=(\d+)/.exec(t), drop = /drop10=(\d+)/.exec(t);
     const inp = / in=([0-9.]+)/.exec(t);
-    const lagM = / lag=(\d+)/.exec(t);
     const peers = /"peers":(\d+)/.exec(t);
     const vw = /viewers=(\d+)/.exec(t);
     // 半免费：超清配额状态。用完的那一瞬间弹一次提示（画面已被服务端降为高清出图），
@@ -3226,12 +3221,6 @@ bindImg(img);
     return b;
   }
 
-  function row(label, valueHtml) {
-    return '<div style="display:flex;gap:10px;padding:7px 0;border-bottom:1px solid #202228">'
-      + '<div style="color:#8b9098;font-size:13px;min-width:72px">' + escHtml(label) + '</div>'
-      + '<div style="flex:1;font-size:13px;word-break:break-all">' + valueHtml + '</div></div>';
-  }
-
   // 通用弹层（设置 / 支持共用外观）
   function openSheet(titleText, bodyHtml, closeId) {
     const mask = document.createElement('div');
@@ -3707,7 +3696,9 @@ bindImg(img);
             onProg(loaded);
           }
         };
-        await Promise.all([worker(), worker(), worker(), worker()]);
+        const workers = [];
+        for (let wi = 0; wi < PARALLEL; wi++) workers.push(worker());
+        await Promise.all(workers);
         if (cancelReq) {
           // 一片都没传成 → 没东西可续，直接把暂存会话清掉，别留空壳占盘
           if (!doneSet.size) {
@@ -4946,45 +4937,10 @@ bindImg(img);
       + '低延迟/高帧率通道：手机装 Moonlight 后，在 Moonlight 里添加这台电脑，PIN 在这里输入完成配对。'
       + '装不了 Moonlight 也没关系，网页模式（就是现在这个）一直可用。</div>');
 
-    // 画面质量（2026-10-30 起 = "发送宽度"档位；抓屏固定原生分辨率，服务端缩放，切换立即生效）
-    // 半免费档位命名（2026-10-29 起）：超清 2560（未授权每天免费 1 小时）/ 高清 1920 / 标准 1440（免费不限时）
-    // 改动（2026-10-29 用户反馈"三档看不出差距"）：机制实测正常（1440/2560 全链路验证），差距是感知问题——
-    // 手机屏会把三档都压到屏幕宽。所以按钮上直接标流量估算，说明文案讲清"差距在放大细节和流量"。
-    // 2026-10-30 实测纠正：页面 viewport 设了 maximum-scale=1，**双指缩放是禁用的**（双指手势 = 滚动），
-    // 所以文案里不能再写"双指放大看小字"。这里只描述真实存在的差别：发送宽度 / 文字边缘 / 流量。
-    const QUAL = [[2560, '超清', '字最清楚 · 文字边缘更锐利', '约26GB/时'], [1920, '高清', '清晰流畅平衡', '约15GB/时'], [1440, '标准', '最省流量 · 弱网最流畅', '约8GB/时']];
-    const curW = Number(lic.captureWidth || 0);
-    let qInner = '<div style="display:flex;gap:8px;flex-wrap:wrap">';
-    for (const [w, label, tip, flow] of QUAL) {
-      const on = (curW === w) || (curW === 0 && w === 2560);
-      const badge = (w > 1920 && !lic.usable) ? ' · 🔒1小时/天' : '';
-      qInner += '<button class="paQ" data-w="' + w + '" title="' + escHtml(tip) + '" style="flex:1;min-width:78px;'
-        + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';'
-        + 'color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
-        + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 6px;'
-        + 'font-size:13px;cursor:pointer;line-height:1.35">' + escHtml(label)
-        + '<br><span style="font-size:11px;color:#868c96">' + w + '</span>'
-        + '<br><span style="font-size:10.5px;color:#6f7580">' + flow + badge + '</span></button>';
-    }
-    qInner += '</div>';
-    if (!lic.usable && uq && uq.ultra) {
-      qInner += '<div style="color:' + (uq.exhausted ? '#ffb454' : '#868c96') + ';font-size:12px;margin-top:8px;line-height:1.6">'
-        + (uq.exhausted
-          ? '今日超清时长已用完 · 当前按高清出图 · 明天 0 点恢复'
-          : '今日超清还剩约 ' + fmtUq(uq.remainingSec) + '（每天免费 ' + fmtUq(uq.limitSec) + '）')
-        + '</div>';
-    }
-    qInner += '<div style="color:#868c96;font-size:11.5px;margin-top:9px;line-height:1.6">'
-      + '切换后立即生效，不用重启。抓屏始终按电脑原分辨率，三档只是「发到手机上的宽度」：<br>'
-      + '数字小的更省流量；数字大的文字边缘更清楚（帧率三档一样）。<br>'
-      + '手机屏会把画面压到屏幕宽，正常看差别不大，差别主要在文字密集的界面和流量。<br>'
-      + '想看更细：选超清档；或三指及以上捏合放大电脑端窗口（等于 Ctrl+滚轮，以手心为中心）；或手机系统的放大功能（设置 → 无障碍 → 放大手势）。<br>'
-      + '高清/标准免费不限时；超清未授权每天免费 1 小时，许可证不限时长。</div>'
-      + '<div id="setQMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>';
-    // 2026-10-30 画质修复：抓屏宽度不再随档位变（详情见 screen-server.mjs 顶部注释），
-    // 所以换档不需要重启；这里也不再写「请双击桌面重启」。
-    // 画面质量（MJPEG 发送宽度）已随 MJPEG 退役；清晰度改由「高清串流（H.264）」控制
-    void qInner;
+    // 画面质量三档按钮（paQ / #setQMsg）已随 MJPEG 退役删除（2026-11-06 体检）：
+    // 清晰度现在只由下面「高清串流（H.264）」的分辨率/帧率/码率控制，
+    // 旧代码把整段 HTML 拼好后直接 void 丢掉，按钮和事件都不会存在。
+    // 服务端 /set-quality 保留，兼容手机上缓存着的旧页面。
 
     // 高清串流（H.264）手动设置：分辨率/帧率/码率
     body += setSection('高清串流（H.264）',
@@ -5132,45 +5088,6 @@ bindImg(img);
     const rl = box.querySelector('#setReload');
     if (rl) rl.addEventListener('click', () => location.reload());
 
-    // 画面质量按钮：POST /set-quality（服务端立即按新宽度发送，无需重启/重连）
-    const qMsg = box.querySelector('#setQMsg');
-    const qBtns = [...box.querySelectorAll('.paQ')];
-    qBtns.forEach((b) => b.addEventListener('click', async () => {
-      const w = Number(b.getAttribute('data-w'));
-      if (!w || b.dataset.busy === '1') return;
-      qBtns.forEach((x) => { x.dataset.busy = '1'; x.style.opacity = '.6'; });
-      if (qMsg) { qMsg.style.color = '#8fb6ff'; qMsg.textContent = '正在应用…'; }
-      let r = null;
-      try {
-        r = await fetch('/set-quality', {
-          method: 'POST',
-          headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ captureWidth: w })
-        }).then((x) => x.json());
-      } catch (e) { r = null; }
-      if (!r || !r.ok) {
-        qBtns.forEach((x) => { x.dataset.busy = ''; x.style.opacity = '1'; });
-        if (qMsg) { qMsg.style.color = '#ff6b6b'; qMsg.textContent = (r && r.message) || '设置失败'; }
-        return;
-      }
-      // 已生效：画质现在只是"发送宽度"，服务端逐帧按新宽度缩放，不需要重启也不用重连。
-      // 直接把高亮刷到新档位上，避免用户以为没点中。
-      const applied = Number((r && r.captureWidth) || 0);
-      if (applied) {
-        qBtns.forEach((x) => {
-          const on = Number(x.getAttribute('data-w')) === applied;
-          x.style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
-          x.style.color = on ? '#8fb6ff' : '#c9ccd1';
-          x.style.borderColor = on ? '#3f6fd0' : '#343842';
-        });
-      }
-      if (qMsg) {
-        qMsg.style.color = '#8CE58C';
-        // 服务端 message 附带"实际发送宽度 + 超清配额提醒"，原样透出
-        qMsg.textContent = (r && r.message) || '已生效，不用重启。';
-      }
-      qBtns.forEach((x) => { x.dataset.busy = ''; x.style.opacity = '1'; });
-    }));
     // 检查更新：客户主动点才发一次请求，平时不联网
     const ck = box.querySelector('#setCheckUpd');
     const msg = box.querySelector('#setUpdMsg');
