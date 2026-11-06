@@ -32,20 +32,42 @@ $fw = Join-Path $here 'offline-firewall.ps1'
 if (Test-Path -LiteralPath $fw) {
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     Write-Host '[i] 正在放行局域网端口（会弹一次管理员授权，请点「是」）…' -ForegroundColor Cyan
+    $fwProc = $null
     try {
-        Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fw, '-Action', 'on') -Verb RunAs -Wait -WindowStyle Hidden
+        $fwProc = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fw, '-Action', 'on') -Verb RunAs -PassThru -WindowStyle Hidden
     } catch {
-        Write-Host '[!] 放行失败（没点授权/不是管理员）：手机可能连不上，可以先手动点「重启」再试' -ForegroundColor Yellow
+        Write-Host '[!] 放行失败（没点授权/不是管理员）：手机可能连不上，可以稍后手动点「重启」再试' -ForegroundColor Yellow
+    }
+    # 别无限等 UAC：最多等 30 秒，人不在电脑前也不至于卡死（防火墙规则是幂等的，之后再开也行）
+    if ($fwProc) {
+        for ($i = 0; $i -lt 60 -and -not $fwProc.HasExited; $i++) { Start-Sleep -Milliseconds 500 }
+        if (-not $fwProc.HasExited) { Write-Host '[i] 管理员授权还没点，防火墙放行先跳过（不影响局域网监听）' -ForegroundColor Yellow }
     }
 }
 
-# 2) 重启画面服务（守护进程会在约 10 秒内重新拉起）
-$killed = 0
+# 2) 重启画面服务
+#    坑（2026-11-06 实测）：服务是以管理员权限由守护进程拉起的，普通权限 Stop-Process 杀不掉（会抛异常被吞），
+#    结果脚本傻等 48 秒后报"还没在局域网地址上监听"—— 用户看到的就是「卡在重启画面服务」。
+#    正确做法：POST /offline/on 让服务自己写配置并退出，守护进程会在 10 秒内按新配置重新拉起。
+$restarted = $false
 try {
-    $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'screen-server\.mjs' })
-    foreach ($p in $procs) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed++ } catch { } }
+    $body = [System.Text.Encoding]::UTF8.GetBytes('{}')
+    $r = Invoke-WebRequest -Uri ('http://127.0.0.1:' + $port + '/offline/on?k=' + [uri]::EscapeDataString($key)) `
+        -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 8 -UseBasicParsing
+    if ($r.StatusCode -eq 200) { $restarted = $true }
 } catch { }
-Write-Host ('[i] 正在重启画面服务（停掉 ' + $killed + ' 个进程，等它重新监听）…') -ForegroundColor Cyan
+if (-not $restarted) {
+    # 服务没在跑（或没有密钥）：直接拉起整套服务更省事
+    Write-Host '[i] 画面服务当前没响应，改为直接启动…' -ForegroundColor Yellow
+    $starter = Join-Path $here 'start-phone-access.ps1'
+    if (Test-Path -LiteralPath $starter) {
+        try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $starter -Quiet | Out-Null } catch { }
+    } else {
+        try { Start-Process -FilePath 'cmd.exe' -ArgumentList @('/c', ('"' + (Join-Path $here 'start-screen.cmd') + '"')) -WindowStyle Hidden } catch { }
+    }
+} else {
+    Write-Host '[i] 已让画面服务按「离线模式」重启（守护进程会自动拉起，约 10 秒）…' -ForegroundColor Cyan
+}
 
 # 3) 等局域网地址上的端口起来
 # 跳过虚拟网卡（VMware/Hyper-V 等）：它们的 IP 手机根本连不到，会让二维码/地址指错
@@ -73,18 +95,41 @@ try {
 } catch { }
 if ($usbIps.Count -gt 0) { $ips = @($usbIps) + @($ips | Where-Object { $usbIps -notcontains $_ }) }
 $hit = ''
-for ($i = 0; $i -lt 60; $i++) {
+$lanHttps = $null
+for ($i = 0; $i -lt 75; $i++) {
     Start-Sleep -Milliseconds 800
     try {
         $l = @(Get-NetTCPConnection -State Listen -LocalPort $port -ErrorAction SilentlyContinue |
             Where-Object { $ips -contains $_.LocalAddress })
         if ($l.Count -gt 0) { $hit = $l[0].LocalAddress; break }
     } catch { }
+    # 每 8 轮问一次服务的真实状态（offline 配置文件 ≠ 进程状态，必须问进程）
+    if ($i -gt 0 -and ($i % 10) -eq 0) {
+        try {
+            $j = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json
+            $p2 = if ($j.ports -and $j.ports.screen) { [int]$j.ports.screen } else { $port }
+            $info = Invoke-RestMethod -Uri ('http://127.0.0.1:' + $p2 + '/offline-info?k=' + [uri]::EscapeDataString($key)) -TimeoutSec 5
+            $lanHttps = [bool]$info.https
+        } catch { }
+    }
 }
 
 if (-not $hit) {
-    Write-Host '[x] 等了约 48 秒，画面服务还没在局域网地址上监听。' -ForegroundColor Red
-    Write-Host '    先双击桌面「手机远程」文件夹里的「自查」看服务状态；或点「重启」再试。' -ForegroundColor Yellow
+    Write-Host '[x] 等了约 60 秒，画面服务还没在局域网地址上监听。' -ForegroundColor Red
+    # 分清两种原因，别让用户猜
+    $cfgOffline = $null
+    try { $j = [System.IO.File]::ReadAllText($cfgPath, [System.Text.Encoding]::UTF8) | ConvertFrom-Json; $cfgOffline = [bool]$j.screen.offline } catch { }
+    if ($cfgOffline -and $lanHttps -eq $false) {
+        Write-Host '    原因：配置里的离线模式已经是开的，但正在跑的服务还是按「非离线」起的（说明它没被重启成功）。' -ForegroundColor Yellow
+        Write-Host '    办法：再双击一次本脚本；还不行就双击同目录的「重启」，然后再双击本脚本。' -ForegroundColor Yellow
+    } elseif ($lanHttps -eq $true) {
+        Write-Host '    原因：服务已经在离线模式了，但这台电脑的局域网地址对不上（可能刚换了网络）。' -ForegroundColor Yellow
+        Write-Host ('    现在服务监听的地址：' + ((Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -eq $port } | Select-Object -ExpandProperty LocalAddress -Unique) -join ', ')) -ForegroundColor DarkGray
+        Write-Host '    办法：等几秒再运行一次本脚本（局域网地址变了服务会自动重启）。' -ForegroundColor Yellow
+    } else {
+        Write-Host '    原因：画面服务没起来（可能被别的程序占用了端口）。' -ForegroundColor Yellow
+        Write-Host '    办法：双击桌面「自查」看报告，或点「重启」。' -ForegroundColor Yellow
+    }
     exit 1
 }
 

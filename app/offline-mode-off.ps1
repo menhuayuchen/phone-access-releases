@@ -37,20 +37,38 @@ $fw = Join-Path $here 'offline-firewall.ps1'
 if (Test-Path -LiteralPath $fw) {
     $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
     Write-Host '[i] 正在恢复防火墙规则（会弹一次管理员授权，请点「是」）…' -ForegroundColor Cyan
+    $fwProc = $null
     try {
-        Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fw, '-Action', 'off') -Verb RunAs -Wait -WindowStyle Hidden
+        $fwProc = Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fw, '-Action', 'off') -Verb RunAs -PassThru -WindowStyle Hidden
     } catch {
         Write-Host '[!] 防火墙恢复没完成（没点授权/不是管理员）：局域网端口可能仍处于放行状态，但不影响使用' -ForegroundColor Yellow
+    }
+    # 别无限等 UAC：最多 30 秒（用户可能不在电脑前）
+    if ($fwProc) {
+        for ($i = 0; $i -lt 60 -and -not $fwProc.HasExited; $i++) { Start-Sleep -Milliseconds 500 }
+        if (-not $fwProc.HasExited) { Write-Host '[i] 管理员授权还没点，防火墙恢复先跳过（不影响关闭局域网监听）' -ForegroundColor Yellow }
     }
 }
 
 # 3) 重启画面服务，让监听地址回到 127.0.0.1 + tailnet
-$killed = 0
+#    坑（同 offline-mode.ps1，2026-11-06 实测）：服务是管理员权限跑的，普通权限 Stop-Process 杀不掉，
+#    会静默失败 → 局域网监听一直不撤。改成 POST /offline/off 让服务自己退出，守护进程按新配置拉起。
+$restarted = $false
 try {
-    $procs = @(Get-CimInstance Win32_Process -Filter "Name='node.exe'" | Where-Object { $_.CommandLine -match 'screen-server\.mjs' })
-    foreach ($p in $procs) { try { Stop-Process -Id $p.ProcessId -Force -ErrorAction Stop; $killed++ } catch { } }
+    $key = ''
+    try { $key = (Get-Content -LiteralPath (Join-Path $here 'screen.key') -Raw -ErrorAction Stop).Trim() } catch { }
+    $body = [System.Text.Encoding]::UTF8.GetBytes('{}')
+    $r = Invoke-WebRequest -Uri ('http://127.0.0.1:' + $port + '/offline/off?k=' + [uri]::EscapeDataString($key)) `
+        -Method POST -Body $body -ContentType 'application/json' -TimeoutSec 8 -UseBasicParsing
+    if ($r.StatusCode -eq 200) { $restarted = $true }
 } catch { }
-Write-Host ('[i] 正在重启画面服务（已停 ' + $killed + ' 个进程，守护会在约 10 秒内拉起）…') -ForegroundColor Cyan
+if ($restarted) {
+    Write-Host '[i] 已让画面服务按「关闭离线模式」重启（守护进程会自动拉起，约 10 秒）…' -ForegroundColor Cyan
+} else {
+    Write-Host '[i] 画面服务没响应，改为直接启动…' -ForegroundColor Yellow
+    $starter = Join-Path $here 'start-phone-access.ps1'
+    if (Test-Path -LiteralPath $starter) { try { & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $starter -Quiet | Out-Null } catch { } }
+}
 
 # 4) 等回环端口恢复
 $ok = $false
