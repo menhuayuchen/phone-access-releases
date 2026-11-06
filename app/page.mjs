@@ -945,7 +945,12 @@ async function startRtc264() {
     if (!offer || !offer.sdp || !offer.sid) throw new Error('bad offer');
     R.sid = offer.sid;
     const ice = [];
-    if (offer.turnOk && offer.turnPort) {
+    // 局域网/电脑热点（离线模式）：手机和电脑在同一网段，直接用 host 候选互连；
+    // tailnet 的 TURN 在这里连不通，加进来只会拖慢 ICE 收集。
+    const onLanHost = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(location.hostname || '');
+    if (onLanHost) {
+      // 不加任何 iceServers（host 候选直连）
+    } else if (offer.turnOk && offer.turnPort) {
       // 只用 tailnet IP 的 TURN（不用域名：省掉 MagicDNS 解析时间，避免收候选变慢）；
       // 也不用公网 STUN：PC 宣告的是 tailnet 地址，手机的 srflx 帮不上忙，
       // 反而会因为它连不通（国内）拖慢 ICE 收集——实测这一条就慢 2 秒多。
@@ -4204,7 +4209,7 @@ bindImg(img);
           h += '<div style="color:#ffb454;font-size:12px;margin-top:4px">没检测到局域网 IP（先连上 Wi-Fi 或开热点）</div>';
         } else {
           for (const it of j.ips) {
-            const url = 'http://' + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
+            const url = 'https://' + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
             h += '<div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">'
               + '<code style="color:#8fb6ff;font-size:12px">' + esc(url) + '</code>'
               + '<button class="offCopy" data-url="' + esc(url) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer">复制</button>'
@@ -4531,7 +4536,8 @@ bindImg(img);
       '<div id="offBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
       + '没有互联网、也没装 Tailscale 时：电脑开热点（或手机开热点让电脑连），手机连上同一个网络后打开这里的地址。'
-      + '局域网是 http 地址，WebRTC 用不了，会自动走 WS H.264；「添加到主屏幕」也会受限。</div>');
+      + '局域网/热点现在用 https（电脑自签证书）：手机第一次打开会提示"不安全"，点「继续/高级→继续」即可。'
+      + '这样才是安全上下文，WebRTC 能用、延迟最低（http 下会自动退回 WS 通道，延迟更高）。</div>');
 
     // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
     body += setSection('诊断',

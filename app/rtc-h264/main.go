@@ -24,6 +24,7 @@ import (
 	"net/http"
 	"os"
 	"strconv"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -231,6 +232,40 @@ func tailnetIPs() []string {
 			}
 			ip := ipnet.IP.To4()
 			if ip[0] == 100 && ip[1] >= 64 && ip[1] <= 127 {
+				out = append(out, ip.String())
+			}
+		}
+	}
+	return out
+}
+
+// 离线模式（局域网/电脑热点）下，ICE 还要把本机局域网 IPv4 作为 host 候选广播出去，
+// 否则手机在同一个 Wi-Fi 里只能看到 tailnet 地址、连不上。跳过虚拟网卡（VMware/Hyper-V 等）。
+func lanIPs() []string {
+	var out []string
+	ifaces, err := net.Interfaces()
+	if err != nil {
+		return out
+	}
+	for _, ifc := range ifaces {
+		if ifc.Flags&net.FlagUp == 0 || ifc.Flags&net.FlagLoopback != 0 {
+			continue
+		}
+		name := strings.ToLower(ifc.Name)
+		if strings.Contains(name, "vmware") || strings.Contains(name, "vethernet") || strings.Contains(name, "virtualbox") || strings.Contains(name, "tailscale") || strings.Contains(name, "loopback") {
+			continue
+		}
+		addrs, err := ifc.Addrs()
+		if err != nil {
+			continue
+		}
+		for _, a := range addrs {
+			ipnet, ok := a.(*net.IPNet)
+			if !ok || ipnet.IP.To4() == nil {
+				continue
+			}
+			ip := ipnet.IP.To4()
+			if (ip[0] == 10) || (ip[0] == 192 && ip[1] == 168) || (ip[0] == 172 && ip[1] >= 16 && ip[1] <= 31) {
 				out = append(out, ip.String())
 			}
 		}
@@ -610,11 +645,16 @@ func main() {
 	}
 	se := webrtc.SettingEngine{}
 	ips := tailnetIPs()
+	// 局域网/热点（离线模式）也要能直连：把本机局域网 IPv4 一起作为 host 候选广播
+	lan := lanIPs()
+	if len(lan) > 0 {
+		ips = append(ips, lan...)
+	}
 	if len(ips) > 0 {
 		se.SetNAT1To1IPs(ips, webrtc.ICECandidateTypeHost)
 		logf("ICE 对外地址：%v", ips)
 	} else {
-		logf("没有发现 tailnet IP，只会有本机候选（真机跨网会连不上）")
+		logf("没有发现 tailnet/局域网 IP，只会有本机候选（真机跨网会连不上）")
 	}
 	api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se))
 

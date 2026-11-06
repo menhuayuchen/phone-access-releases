@@ -1642,3 +1642,24 @@ e2e 首帧 0.4 秒、画面正常；关 → 恢复 p1；UI 勾选与 `/h264-qual
 - 开了单窗口采集后，服务端 winRect=(311,305,578,364) = 客户区；
 - 页面 state.rect 与 winRect 一致、视频 578x364 → 点击按客户区换算，不再偏标题栏。
 - 未开单窗口采集（走裁剪路径）时仍用窗口矩形，坐标本来就准。
+
+### 42.18 离线模式延迟高 → 局域网改走 HTTPS + WebRTC（2026-11-06 09:0x，未发布）
+
+用户反馈："离线模式没有 WebRTC，延迟很高"。
+
+根因：WebRTC 需要安全上下文（secure context）。离线模式原来是 http://<局域网IP>:8660，
+Chrome 在非安全上下文里禁用 RTCPeerConnection → 页面只能走 WS H.264，延迟自然高。
+
+修法：
+1. **局域网/热点改用 HTTPS**：服务端对 RFC1918 地址起 https（127.0.0.1 和 tailnet 仍 http，
+   tailscale serve 照旧）。证书用 `make-lan-cert.ps1` 生成自签 PFX（SAN 覆盖当前所有局域网 IP），
+   存在安装目录 lan-cert.pfx，每次启动重新生成以跟上 IP 变化。
+2. **侧车广播局域网候选**：rtc-h264 的 ICE 对外地址原来只有 tailnet IP；现在把本机局域网 IPv4
+   也加进 NAT1To1（跳过 VMware/Hyper-V 虚拟网卡）。实测日志：`ICE 对外地址：[100.108.92.22 10.120.169.250]`。
+3. **页面**：在局域网 IP 上不再加 tailnet TURN（连不通只会拖慢 ICE），直接用 host 候选直连；
+   离线模式面板里的地址改成 https。
+4. pack.ps1 带上 make-lan-cert.ps1。
+
+实测（PC 本机，忽略自签证书）：打开 https://10.120.169.250:8660 → `isSecureContext=true`、
+`RTCPeerConnection` 可用、RTC264 状态 connected、视频 1920×1200、HUD「WebRTC264 直连(NAT) · 帧390/解388 · 缓15ms」。
+手机端需要第一次点「高级 → 继续前往」接受自签证书。

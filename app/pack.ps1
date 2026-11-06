@@ -116,6 +116,8 @@ $appFiles = @(
   'sunshine-integration.ps1',
   # 离线模式：电脑热点开关（Windows Mobile Hotspot / WinRT，2026-11-05）
   'hotspot-ctl.ps1',
+  # 离线模式：局域网 https 自签证书生成（WebRTC 需要安全上下文，2026-11-06）
+  'make-lan-cert.ps1',
   # 7 天试用锚点（2026-10-30）：licence-state.ps1 会 dot-source 它，缺了会退回"试用不可用"。
   'trial.ps1',
   'https-setup.ps1',

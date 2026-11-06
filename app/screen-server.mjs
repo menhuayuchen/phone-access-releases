@@ -4226,8 +4226,31 @@ async function handler(req, res) {
 }
 
 let started = 0;
+// 离线模式（局域网/热点）：https 才能拿到安全上下文，WebRTC 才可用（http 下 RTCPeerConnection 被禁）。
+// 证书用自签 PFX（make-lan-cert.ps1 生成，SAN 覆盖当前局域网 IP）；手机第一次会提示证书不安全。
+function ensureLanCert() {
+  try { unlinkSync(join(HERE, 'lan-cert.pfx')); } catch { }
+  const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const script = join(HERE, 'make-lan-cert.ps1');
+  if (!fileExists(script)) { console.log('lan https: 缺 make-lan-cert.ps1，退回 http（WebRTC 不可用）'); return null; }
+  try {
+    execFileSync(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', script, '-OutDir', HERE], { timeout: 40000, windowsHide: true });
+  } catch (e) { console.log('lan https: 生成证书失败 ' + (e && e.message)); }
+  try { return readFileSync(join(HERE, 'lan-cert.pfx')); } catch { return null; }
+}
+let lanPfx = null, lanPfxTried = false;
 for (const host of hosts) {
-  const s = createServer(handler);
+  const isLanHost = LAN_V4.test(host);
+  let proto = 'http';
+  let s = null;
+  if (isLanHost) {
+    if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
+    if (lanPfx) {
+      try { s = https.createServer({ pfx: lanPfx }, handler); proto = 'https'; }
+      catch (e) { console.log('lan https 启动失败，退回 http：' + (e && e.message)); s = null; }
+    }
+  }
+  if (!s) s = createServer(handler);
   rtc.attach(s, (req, url) => {
     if (!sourceAllowed(req)) return false;
     if (!authorized(req, url)) return false;
@@ -4265,7 +4288,7 @@ for (const host of hosts) {
   s.on('error', (e) => console.error(`screen-server: cannot bind ${host}:${port} — ${e.code || e.message}`));
   s.listen(port, host, () => {
     started++;
-    console.log(`screen-server: http://${host}:${port}/`);
+    console.log(`screen-server: ${proto}://${host}:${port}/`);
   });
 }
 
