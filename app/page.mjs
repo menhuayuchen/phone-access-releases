@@ -4115,7 +4115,7 @@ bindImg(img);
   function p13nInner(lic) {
     const P = window.__paP13n;
     if (!P) return '<div style="color:#868c96;font-size:12.5px">个性化模块未加载</div>';
-    const licensed = !!lic.usable;
+    const licensed = true;   // 2026-11-06 免费化：个性化对所有人生效
     const lock = licensed ? '' : ' <span style="font-size:11px">🔒</span>';
     let h = '';
     if (!licensed) {
@@ -4206,7 +4206,7 @@ bindImg(img);
   function p13nBind(box, lic) {
     const P = window.__paP13n;
     if (!P) return;
-    const licensed = !!lic.usable;
+    const licensed = true;   // 2026-11-06 免费化：个性化对所有人生效
     const msg = box.querySelector('#p13nMsg');
     const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
     const buy = box.querySelector('#p13nBuy');
@@ -4226,11 +4226,11 @@ bindImg(img);
       box.querySelectorAll('.p13nT').forEach((b) => b.addEventListener('click', () => {
         const t = P.themeByKey(b.getAttribute('data-k'));
         if (t && t.free) return;
-        setMsg('许可证功能：点上方「看看怎么解锁」或右下角 ❤', '#ffb454');
+        setMsg('', '#868c96');
       }));
       box.querySelectorAll('.p13nS').forEach((b) => b.addEventListener('click', () => {
         if (b.getAttribute('data-s') === 'dot') return;
-        setMsg('许可证功能：点上方「看看怎么解锁」或右下角 ❤', '#ffb454');
+        setMsg('', '#868c96');
       }));
       return;
     }
@@ -5372,9 +5372,9 @@ bindImg(img);
     // 半免费（2026-10-29 起）：未授权不再整屏遮罩——基本功能全部可用。
     // 免费模式的限制：超清每天 1 小时（服务端出图强制）+ 个性化锁定（页面侧）。
     window.__paLic = lic;
-    try { window.__paP13n.applyAll(!!lic.usable); } catch (e) { }
+    try { window.__paP13n.applyAll(true); } catch (e) { }
     bottomButtons(lic);
-    if (!lic.usable) {
+    if (false) {   // 2026-11-06 免费化：不再因未授权回落默认外观
       let noted = false;
       try { noted = !!sessionStorage.getItem('paFreeNoted'); sessionStorage.setItem('paFreeNoted', '1'); } catch (e) { }
       if (!noted) setTimeout(() => setNote('当前为免费版：超清每天 1 小时 · 个性化锁定。点右下角齿轮看详情或粘贴许可证', 9000), 1500);
@@ -5395,7 +5395,7 @@ bindImg(img);
         const was = !!(window.__paLic && window.__paLic.usable);
         window.__paLic = j;
         if (!!j.usable !== was) {
-          try { window.__paP13n.applyAll(!!j.usable); } catch (e) { }
+          try { window.__paP13n.applyAll(true); } catch (e) { }
           if (j.usable) setNote('许可证已生效：超清不限时长 · 个性化已解锁', 6000);
         }
       }).catch(() => { });
