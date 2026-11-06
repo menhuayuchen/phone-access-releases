@@ -2299,7 +2299,7 @@ overlay.addEventListener('pointermove', (e) => {
   // 画面缩放放大后：单指拖动平移本机画面
   if (viewPan && e.pointerId === viewPan.id) {
     const dx = e.clientX - viewPan.x, dy = e.clientY - viewPan.y;
-    if (!viewPan.moved && (Math.abs(dx) > 8 || Math.abs(dy) > 8)) {
+    if (!viewPan.moved && (Math.abs(dx) > 14 || Math.abs(dy) > 14)) {   // 与单指容差一致
       viewPan.moved = true;
       try { overlay.setPointerCapture(e.pointerId); } catch (err) {}
     }
@@ -2331,7 +2331,7 @@ overlay.addEventListener('pointermove', (e) => {
   if (!state.control || !ptr || ptr.up) return;
   const q = layoutPoint(e.clientX, e.clientY);
   const dx = q.x - ptr.x, dy = q.y - ptr.y;
-  if (!moved && Math.hypot(dx, dy) > 8) {
+  if (!moved && Math.hypot(dx, dy) > 14) {   // 2026-11-06：容差 8→14，正常手指抖动不再被误判成拖拽（否则点击根本不触发）
     moved = true;
     if (longTimer) { clearTimeout(longTimer); longTimer = null; }
     if (dragBtn < 0) { dragBtn = 0; queue({ t: 'down', b: 0 }); }
@@ -2353,7 +2353,7 @@ overlay.addEventListener('pointerup', (e) => {
     // 多指手势后的抬手不算点击（缩放态下抬手指被误当成单点的根因）
     if (multiGesture || activePtr.size > 0) return;
     if (!vp.moved) {
-      const qi = layoutPoint(e.clientX, e.clientY);
+      const qi = layoutPoint(vp.x, vp.y);   // 2026-11-06：放大状态的点按也用「按下点」（原来用抬手点，手指一抖就偏）
       const pi = toScreen(qi.x, qi.y);
       const nowI = Date.now();
       const dblI = nowI - lastTapAt < 320;
@@ -2378,9 +2378,12 @@ overlay.addEventListener('pointerup', (e) => {
       const now = Date.now();
       const dbl = now - lastTapAt < 320;
       lastTapAt = dbl ? 0 : now;
-      queue({ t: 'move', x: p.x, y: p.y });
+      // 2026-11-06 触屏不准的主要来源：原来用「抬手位置」当点击落点，手指按下到抬起抖 5-20px 是常态，
+      // 于是点哪偏哪（越快点越明显）。点击应当落在**按下时**瞄准的位置，抬手位置只用来判断是不是拖拽。
+      const pd = toScreen(ptr.x, ptr.y);
+      queue({ t: 'move', x: pd.x, y: pd.y });
       queue({ t: 'click', b: 0, n: dbl ? 2 : 1 });
-      ripple(q.x, q.y);
+      ripple(ptr.x, ptr.y);
       buzz(12);
     }
   } else if (dragBtn === 1) {
