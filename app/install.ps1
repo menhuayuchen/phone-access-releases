@@ -748,6 +748,11 @@ function Set-ProductFirewall {
   $tag = 'PhoneAccess 手机远程'
   $tailnet = '100.64.0.0/10'
   $lanRanges = @('10.0.0.0/8', '172.16.0.0/12', '192.168.0.0/16')
+  # 清理旧版本留下的规则（旧命名 "DSH phone access" / "DSH Web (phone access)"）：
+  # 实测 "DSH phone access : block lan 8660" 会让离线模式下的手机一直连不上（8660 超时），必须删掉。
+  try {
+    Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match '^DSH (phone access|Web \(phone access\))' } | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+  } catch { }
   foreach ($p in $Ports) {
     $allowName = $tag + ' : 只允许 Tailscale ' + [string]$p
     $blockName = $tag + ' : 拒绝局域网 ' + [string]$p
