@@ -109,6 +109,9 @@ $appFiles = @(
   # 那个在下面的禁止清单里，属卖家侧运维脚本）
   'entry.ps1',
   '手机入口.cmd',
+  # 离线模式：桌面「手机远程」文件夹里的「离线模式」入口（2026-11-06）
+  'offline-mode.ps1',
+  '离线模式.cmd',
   # 许可证：校验与状态生成随包分发。私钥在 seller-keys 目录（app 之外），天然打不进来。
   'licence.ps1',
   'licence-state.ps1',

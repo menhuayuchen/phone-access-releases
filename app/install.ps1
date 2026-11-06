@@ -901,6 +901,8 @@ try {
     # trial.ps1 由 licence-state.ps1 dot-source（7 天试用的锚点），缺了会让试用静默失效
     'licence.ps1', 'licence-state.ps1', 'trial.ps1', 'https-setup.ps1',
     'entry.ps1', '手机入口.cmd',
+    # 离线模式（局域网/电脑热点）：入口脚本 + 桌面快捷方式目标
+    'offline-mode.ps1', '离线模式.cmd', 'make-lan-cert.ps1', 'hotspot-ctl.ps1',
     'uninstall.ps1', 'uninstall.cmd', '使用说明.md',
     'dsh-port.ps1', 'restart.ps1', 'restart.cmd',
     'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs',
@@ -1879,6 +1881,12 @@ try {
     -TargetPath (Join-Path $script:InstallRoot '手机入口.cmd') -WorkDir $script:InstallRoot `
     -FallbackScript 'entry.ps1' `
     -Description '查看手机入口二维码，或换一把新密钥'
+  # 离线模式（2026-11-06）：没有互联网/没有 Tailscale 时用局域网/电脑热点直连。
+  # 双击后自动打开 screen.offline 开关、重启画面服务，并用默认浏览器打开手机直连地址（https）。
+  $shortcutOffline = New-DesktopShortcut -Dir $desktopDir -Name '离线模式' `
+    -TargetPath (Join-Path $script:InstallRoot '离线模式.cmd') -WorkDir $script:InstallRoot `
+    -FallbackScript 'offline-mode.ps1' `
+    -Description '没有互联网/Tailscale 时用：开局域网（https + WebRTC）并打开手机直连地址'
   # 改动（用户要求：桌面文件夹里要有便利的控制程序和文档）：
   # 加一个「卸载」入口，并把客户说明书复制进去，客户不用回安装目录翻文件。
   # 改动（第二轮 P1-3 / I2）：同上，降级外壳必须真的去跑卸载，不能退回「启动」。
@@ -1898,12 +1906,12 @@ try {
     Write-WarnLine '安装包里缺少 使用说明.md，桌面文档没放（不影响使用）'
   }
   $shortcutCount = 0
-  foreach ($sc in @($shortcutStart, $shortcutCheck, $shortcutStop, $shortcutRestart, $shortcutEntry, $shortcutUninstall)) { if ($sc) { $shortcutCount++ } }
+  foreach ($sc in @($shortcutStart, $shortcutCheck, $shortcutStop, $shortcutRestart, $shortcutEntry, $shortcutOffline, $shortcutUninstall)) { if ($sc) { $shortcutCount++ } }
 
   $folderReason = [string]$script:AccessFolderReason
   if ($shortcutCount -ge 2) {
     # 改动（第二轮 P3-3 / I3）：文案说 6 个、列表只写了 4 个，客户数一遍会以为少建了。
-    Write-Ok ('已生成「手机远程」文件夹（' + [string]$shortcutCount + ' 个图标：启动 / 自查 / 停止 / 重启 / 手机入口 / 卸载）')
+    Write-Ok ('已生成「手机远程」文件夹（' + [string]$shortcutCount + ' 个图标：启动 / 自查 / 停止 / 重启 / 手机入口 / 离线模式 / 卸载）')
     Write-Host ('    位置：' + $desktopDir) -ForegroundColor Gray
     if ($folderReason -and $folderReason -ne '用户桌面') {
       Write-WarnLine ('注意：你的桌面路径写不进去，图标放在了这里 → ' + $desktopDir)
@@ -1995,7 +2003,7 @@ try {
   Write-Host '  然后重启一次电脑，再连一次 —— 重启后还能连，才算真的装好。' -ForegroundColor Yellow
   Write-Host ''
   Write-Host '  出问题：双击桌面「手机远程」文件夹里的「自查」，把里面的报告发给卖家。'
-  Write-Host '  桌面入口：打开「手机远程」文件夹 → 启动 / 自查 / 停止 / 手机入口'
+  Write-Host '  桌面入口：打开「手机远程」文件夹 → 启动 / 自查 / 停止 / 手机入口 / 离线模式'
   if ($summaryPath) {
     Write-Host ''
     Write-Host '  这次安装的报告（可以发给卖家留档）：'
