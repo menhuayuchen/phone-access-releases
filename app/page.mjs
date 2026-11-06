@@ -5541,6 +5541,45 @@ bindImg(img);
     connect();
   }
 
+  // E1 附加开关（2026-11-07）：只看真光标 —— 把"点哪指哪"的黄点(#dot)和外接鼠标箭头(#mcur)藏起来。
+  // 只影响显示，不影响输入：黄点只是指示器，点击照常发到电脑。
+  // 必须用 body class + CSS !important 压制：主线是直接改 dot.style.display 的，
+  // 普通样式压不住内联样式（!important 的样式表规则可以）。
+  function expDotToggle() {
+    var LS = 'pa.exp.nodot';
+    var on0 = false;
+    try { on0 = localStorage.getItem(LS) === '1'; } catch (e) { }
+
+    var css = document.createElement('style');
+    css.textContent = 'body.expNoDot #dot, body.expNoDot #mcur { display:none !important; }';
+    document.head.appendChild(css);
+
+    var btn = document.createElement('button');
+    btn.id = 'expDotBtn';
+    btn.type = 'button';
+    btn.textContent = '真光标';
+    btn.title = '切换：只显示电脑上的真实光标（隐藏跟随手指的黄点）';
+    // z-index 9999：全屏时 #stage 是 9996，比它低会被盖住
+    btn.style.cssText = 'position:fixed;left:8px;bottom:12px;z-index:9999;'
+      + 'padding:6px 10px;border-radius:14px;line-height:1;font-size:11px;font-family:inherit;'
+      + 'touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;';
+    document.body.appendChild(btn);
+
+    function apply(on) {
+      document.body.classList.toggle('expNoDot', !!on);
+      btn.style.background = on ? '#2f6feb' : 'rgba(20,22,26,.55)';
+      btn.style.color = on ? '#fff' : '#9aa0aa';
+      btn.style.border = '1px solid ' + (on ? '#2f6feb' : 'rgba(255,255,255,.14)');
+      btn.style.opacity = on ? '1' : '.72';
+      try { localStorage.setItem(LS, on ? '1' : '0'); } catch (e) { }
+    }
+    btn.addEventListener('click', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      apply(!document.body.classList.contains('expNoDot'));
+    });
+    apply(on0);
+  }
+
   (function expInit() {
     var raw = '';
     try { raw = new URLSearchParams(location.search).get('exp') || ''; } catch (e) { return; }
@@ -5548,7 +5587,10 @@ bindImg(img);
     var want = {};
     raw.split(',').forEach(function (x) { x = x.trim(); if (x) want[x] = 1; });
     window.__paExp = { want: want, on: {} };
-    if (want.cursor) { try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); } }
+    if (want.cursor) {
+      try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); }
+      try { expDotToggle(); window.__paExp.on.dotToggle = true; } catch (e) { console.warn('exp dot toggle:', e); }
+    }
   })();
 })();
 </script>
