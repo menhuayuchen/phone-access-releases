@@ -3131,6 +3131,41 @@ async function handler(req, res) {
     });
     return;
   }
+  // GET /upload/pending -> 未完成的分片上传清单（断点续传提示用）；顺带清掉 3 天前的残留暂存
+  if (url.pathname === '/upload/pending' && req.method === 'GET') {
+    const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+    const TTL = 3 * 24 * 3600 * 1000;
+    const items = [];
+    let ids = [];
+    try { ids = readdirSync(STAGING_DIR); } catch { ids = []; }
+    for (const id of ids) {
+      if (!/^[a-f0-9]{16}$/.test(id)) continue;
+      const dir = join(STAGING_DIR, id);
+      let meta = null;
+      try { meta = JSON.parse(readFileSync(join(dir, 'meta.json'), 'utf8')); } catch { continue; }
+      const size = Number(meta.size) || 0;
+      const cs = Number(meta.chunkSize) || UP_CHUNK;
+      if (size <= 0) continue;
+      const created = Number(meta.created) || 0;
+      let age = created ? Date.now() - created : 0;
+      if (!Number.isFinite(age) || age < 0) age = 0;
+      if (created && age > TTL) {
+        try { rmSync(dir, { recursive: true, force: true }); console.log('upload: 清理过期暂存 ' + id); } catch { }
+        continue;
+      }
+      const parts = Math.ceil(size / cs);
+      let doneCount = 0;
+      for (let i = 0; i < parts; i++) { try { if (statSync(join(dir, 'done-' + i)).isFile()) doneCount++; } catch { } }
+      if (!doneCount) continue;      // 一片都没传成 → 没什么可续的，不打扰用户
+      items.push({
+        id: id, name: String(meta.name || '未命名'), size: size, chunkSize: cs, parts: parts,
+        doneCount: doneCount, pct: Math.min(100, Math.floor(doneCount * 100 / parts)),
+        created: created, ageMs: age
+      });
+    }
+    items.sort((a, b) => b.created - a.created);
+    return jr(200, { ok: true, items: items.slice(0, 8), maxBytes: UPLOAD_MAX });
+  }
 
   // ---- 大文件传输（2026-11-06）：浏览电脑文件、下载到手机 ---------------------
   // GET /browse?dir=<绝对路径>：只在用户主目录（USERPROFILE）以下浏览；不给 dir 时列常用目录

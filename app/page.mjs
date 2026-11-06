@@ -3498,6 +3498,8 @@ bindImg(img);
     const wrap = box.querySelector('#fileProgWrap');
     const bar = box.querySelector('#fileBar');
     const prog = box.querySelector('#fileProg');
+    const cancelBtn = box.querySelector('#fileCancel');
+    const resumeEl = box.querySelector('#fileResume');
     if (!pick || !sendBtn) return;
     const BIG = 8 * 1024 * 1024;      // 超过 8MB 走分片并行
     const PARALLEL = 4;               // 4 路并发（吃满 Wi-Fi）
@@ -3513,6 +3515,46 @@ bindImg(img);
       return (bps / 1024).toFixed(0) + ' KB/s';
     };
     const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
+    // 取消支持（2026-11-06）：所有在飞的 XHR 都登记在这里，点「取消」一次性 abort。
+    const liveXhr = new Set();
+    let cancelReq = false;
+    const killXhr = () => { for (const x of liveXhr) { try { x.abort(); } catch (e) { } } liveXhr.clear(); };
+    // 断点续传提示：服务端暂存里的未完成会话（3 天内有效）
+    let pending = [];
+    const paintPending = async () => {
+      if (!resumeEl) return;
+      let j = null;
+      try { j = await fetch('/upload/pending?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { j = null; }
+      pending = (j && j.ok && j.items) ? j.items : [];
+      if (!pending.length) { resumeEl.innerHTML = ''; return; }
+      const ago = (ms) => {
+        const m = Math.round((Number(ms) || 0) / 60000);
+        if (m < 1) return '刚刚';
+        if (m < 60) return m + ' 分钟前';
+        const h = Math.round(m / 60);
+        if (h < 24) return h + ' 小时前';
+        return Math.round(h / 24) + ' 天前';
+      };
+      resumeEl.innerHTML = '<div style="margin-top:9px;background:#151a22;border:1px solid #263143;border-radius:9px;padding:9px 10px">'
+        + '<div style="color:#8fb6ff;font-size:12px;font-weight:600;margin-bottom:5px">发现没传完的文件（可续传）</div>'
+        + pending.map((it) => '<div style="display:flex;gap:8px;align-items:center;padding:3px 0;font-size:11.5px;color:#aeb3bb">'
+          + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' + escHtml(it.name)
+          + ' <span style="color:#6b7078">' + fmt(it.size) + ' · 已传 ' + it.pct + '%（' + it.doneCount + '/' + it.parts + ' 片）· ' + ago(it.ageMs) + '</span></span>'
+          + '<button class="upDrop" data-id="' + it.id + '" data-key="' + escHtml('upq:' + it.name + ':' + it.size) + '"'
+          + ' style="background:#2a2d36;color:#ffb4b4;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer">丢弃</button></div>').join('')
+        + '<div style="color:#5c6169;font-size:11px;margin-top:5px;line-height:1.6">在下面重新选中同名文件就会从这个进度继续（浏览器不允许直接读旧文件，必须重新选一次）。</div>'
+        + '</div>';
+      resumeEl.querySelectorAll('.upDrop').forEach((el) => el.addEventListener('click', async () => {
+        if (el.disabled) return;
+        el.disabled = true;
+        el.textContent = '清理中…';
+        try { localStorage.removeItem(el.getAttribute('data-key') || ''); } catch (e) { }
+        try {
+          await fetch('/upload/abort', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: el.getAttribute('data-id') || '' }) });
+        } catch (e) { }
+        await paintPending();
+      }));
+    };
     const load = async () => {
       if (!listEl) return;
       let j = null;
@@ -3565,14 +3607,17 @@ bindImg(img);
     // 小文件：单连接流式 POST
     const uploadSimple = (f, onProg) => new Promise((resolve) => {
       const xhr = new XMLHttpRequest();
+      liveXhr.add(xhr);
       xhr.open('POST', '/file?name=' + encodeURIComponent(f.name));
       xhr.upload.onprogress = (ev) => { if (ev.lengthComputable) onProg(ev.loaded); };
       xhr.onload = () => {
+        liveXhr.delete(xhr);
         let j = null;
         try { j = JSON.parse(xhr.responseText); } catch (e) { }
         resolve({ ok: xhr.status === 200 && j && j.ok, msg: (j && j.message) || ('HTTP ' + xhr.status) });
       };
-      xhr.onerror = () => resolve({ ok: false, msg: '网络断了' });
+      xhr.onerror = () => { liveXhr.delete(xhr); resolve({ ok: false, msg: cancelReq ? '已取消' : '网络断了', cancelled: cancelReq }); };
+      xhr.onabort = () => { liveXhr.delete(xhr); resolve({ ok: false, msg: '已取消', cancelled: true }); };
       xhr.send(f);
     });
     // 大文件：分片 + 4 路并发（服务端按偏移写同一个文件），支持断点续传
@@ -3598,6 +3643,7 @@ bindImg(img);
           init = { id: j.id, chunkSize: j.chunkSize, parts: j.parts, done: [] };
         }
         try { localStorage.setItem(key, init.id); } catch (e) { }
+        if (cancelReq) return { ok: false, cancelled: true, msg: '已取消' };
         const cs = init.chunkSize;
         const parts = init.parts;
         const doneSet = new Set(init.done || []);
@@ -3610,6 +3656,7 @@ bindImg(img);
           const end = Math.min(f.size, start + cs);
           const blob = f.slice(start, end);
           const xhr = new XMLHttpRequest();
+          liveXhr.add(xhr);
           xhr.open('POST', '/upload/part?id=' + init.id + '&index=' + i);
           let last = 0;
           xhr.upload.onprogress = (ev) => {
@@ -3620,14 +3667,17 @@ bindImg(img);
             onProg(loaded);
           };
           xhr.onload = () => {
+            liveXhr.delete(xhr);
             if (xhr.status === 200) { doneSet.add(i); resolve(true); }
             else { failed = failed || ('分片 ' + (i + 1) + '/' + parts + ' 失败 HTTP ' + xhr.status); resolve(false); }
           };
-          xhr.onerror = () => { failed = failed || '网络断了'; resolve(false); };
+          xhr.onerror = () => { liveXhr.delete(xhr); failed = failed || (cancelReq ? '已取消' : '网络断了'); resolve(false); };
+          xhr.onabort = () => { liveXhr.delete(xhr); resolve(false); };
           xhr.send(blob);
         });
         const worker = async () => {
           for (;;) {
+            if (cancelReq) return;
             const i = next++;
             if (i >= parts) return;
             if (doneSet.has(i)) continue;
@@ -3637,7 +3687,8 @@ bindImg(img);
           }
         };
         await Promise.all([worker(), worker(), worker(), worker()]);
-        if (failed) return { ok: false, msg: failed };
+        if (cancelReq) return { ok: false, cancelled: true, msg: '已取消' };
+        if (failed) return { ok: false, msg: failed, cancelled: false };
         const r2 = await fetch('/upload/done', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id: init.id }) });
         const j2 = await r2.json().catch(() => null);
         if (!j2 || !j2.ok) return { ok: false, msg: (j2 && j2.message) || ('完成失败 HTTP ' + r2.status) };
@@ -3648,19 +3699,38 @@ bindImg(img);
       }
     };
     let busy = false;
+    const setBusy = (on) => {
+      busy = on;
+      if (sendBtn) sendBtn.disabled = on;
+      if (cancelBtn) {
+        cancelBtn.style.display = on ? 'inline-block' : 'none';
+        cancelBtn.disabled = false;
+        cancelBtn.textContent = '取消';
+      }
+    };
+    if (cancelBtn) cancelBtn.addEventListener('click', () => {
+      if (!busy) { cancelBtn.style.display = 'none'; return; }
+      cancelReq = true;
+      killXhr();
+      cancelBtn.disabled = true;
+      cancelBtn.textContent = '取消中…';
+      setMsg('正在取消…', '#ffb454');
+    });
     if (sendBtn) sendBtn.addEventListener('click', async () => {
       if (busy) return;
       const files = pick.files ? Array.from(pick.files) : [];
       if (!files.length) { setMsg('先选文件（可多选）', '#ffb454'); return; }
-      busy = true;
-      sendBtn.disabled = true;
+      cancelReq = false;
+      setBusy(true);
       if (wrap) wrap.style.display = 'block';
       if (bar) bar.style.width = '0%';
       let doneBytes = 0;
       let okCount = 0;
       let failCount = 0;
+      let stopped = false;
       const tAll = Date.now();
       for (let i = 0; i < files.length; i++) {
+        if (cancelReq) { stopped = true; break; }
         const f = files[i];
         const label = '（' + (i + 1) + '/' + files.length + '）' + f.name;
         const t0 = Date.now();
@@ -3677,26 +3747,37 @@ bindImg(img);
           if (prog) prog.textContent = label + (tag ? '（' + tag + '）' : '') + ' · ' + fmt(loaded) + ' / ' + fmt(f.size)
             + '（' + pct + '%） · ' + fmtSpeed(speed) + ' · 剩余 ' + (left > 1 ? Math.ceil(left) + ' 秒' : '…');
         };
+        // 续传提示：服务端暂存里还有同名同大小的会话
+        const back = pending.find((it) => it.name === f.name && it.size === f.size);
+        if (back) {
+          if (back.pct >= 100) setMsg(label + '：分片已传完，正在完成合并…', '#8CE58C');
+          else if (back.pct > 0) setMsg(label + '：检测到没传完，从 ' + back.pct + '% 继续', '#8CE58C');
+        }
         onProg(0);
         const res = f.size > BIG ? await uploadBig(f, onProg) : await uploadSimple(f, (n) => onProg(n));
+        if ((res && res.cancelled) || cancelReq) { stopped = true; break; }
         if (res.ok) { okCount++; doneBytes += f.size; if (bar) bar.style.width = '100%'; }
         else { failCount++; setMsg(label + ' 失败：' + (res.msg || '未知'), '#ff6b6b'); }
       }
       const secs = Math.max(0.2, (Date.now() - tAll) / 1000);
-      if (!failCount) {
+      if (stopped) {
+        setMsg('已取消：已传的分片保留 3 天，重新选同名文件可续传（上面「丢弃」可清掉）', '#ffb454');
+        if (prog) prog.textContent = '已取消';
+      } else if (!failCount) {
         setMsg('完成：' + okCount + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）', '#8CE58C');
         pick.value = '';
         if (prog) prog.textContent = '平均 ' + fmtSpeed(doneBytes / secs);
       } else {
         setMsg('完成 ' + okCount + ' 个、失败 ' + failCount + ' 个（大文件重试会断点续传）', '#ffb454');
       }
-      setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 3000);
-      busy = false;
-      sendBtn.disabled = false;
+      setBusy(false);
+      if (!stopped) setTimeout(() => { if (wrap) wrap.style.display = 'none'; }, 3000);
+      await paintPending();
       load();
     });
     load();
     browse('');
+    paintPending();
   }
   // ---- 高性能模式（Sunshine/Moonlight，2026-11-03 S3）------------------------
   // 只做三件事：显示状态、列出等待配对的 Moonlight 设备、提交 4 位 PIN。
@@ -4806,7 +4887,10 @@ bindImg(img);
       + '<input id="filePick" type="file" multiple style="flex:1;min-width:170px;color:#c9ccd1;font-size:12.5px">'
       + '<button id="fileSend" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
       + 'padding:8px 15px;font-size:12.5px;cursor:pointer">发送到电脑</button>'
+      + '<button id="fileCancel" style="display:none;background:#3a2225;color:#ffb4b4;border:1px solid #5a2e33;border-radius:9px;'
+      + 'padding:8px 13px;font-size:12.5px;cursor:pointer">取消</button>'
       + '<span id="fileMsg" style="font-size:12px;color:#868c96"></span></div>'
+      + '<div id="fileResume"></div>'
       + '<div id="fileProgWrap" style="display:none;margin-top:9px">'
       + '<div style="height:7px;background:#0f1014;border:1px solid #262932;border-radius:5px;overflow:hidden">'
       + '<div id="fileBar" style="height:100%;width:0;background:#8CE68C;transition:width .15s"></div></div>'
