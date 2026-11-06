@@ -4786,15 +4786,24 @@ bindImg(img);
     const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
     let beatTimer = null;
     const stopBeat = () => { if (beatTimer) { clearInterval(beatTimer); beatTimer = null; } };
+    // 2026-11-06 修复（防窥屏自己关掉 / 状态不同步）：
+    //   ① 立即发一次心跳：原来启动后要等 20 秒才发第一条，服务端 120 秒收不到心跳就自动解除，
+    //      刚开的那 20 秒是"裸奔"窗口，手机一旦切后台就容易被判超时。
+    //   ② 间隔 20s → 10s：手机浏览器切到后台会把定时器节流到约 1 次/分钟，20 秒的定时器常被拖到 60s+，
+    //      再碰上网络抖动就超过 120 秒，服务端会以为控制端掉线而自动解除。
+    //   ③ 幂等：定时器已在跑就不重建。原来 paint() 每次刷新都会 startBeat()，把定时器反复清零，
+    //      心跳可能永远发不出去（表现就是"防窥屏开一会儿自己关了"）。
+    const beatOnce = async () => {
+      try {
+        const r = await fetch('/privacy/beat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: dev }) });
+        const st = await r.json();
+        if (!st || !st.active) stopBeat();
+      } catch (e) { }
+    };
     const startBeat = () => {
-      stopBeat();
-      beatTimer = setInterval(async () => {
-        try {
-          const r = await fetch('/privacy/beat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: dev }) });
-          const st = await r.json();
-          if (!st || !st.active) stopBeat();
-        } catch (e) { }
-      }, 20000);
+      if (beatTimer) return;
+      beatOnce();
+      beatTimer = setInterval(beatOnce, 10000);
     };
     const paint = (st) => {
       const active = !!(st && st.active);
@@ -4863,6 +4872,23 @@ bindImg(img);
       } catch (e) { imgMsg.textContent = '失败'; }
     });
     refresh();
+    // 2026-11-06：面板开着时每 5 秒对一次状态。原来只刷新一次，
+    // 服务端因心跳超时自动解除、或被别的设备接管后，页面还显示"已开启"，用户以为还遮着（其实是安全问题）。
+    if (window.__prvPoll) { clearInterval(window.__prvPoll); window.__prvPoll = null; }
+    window.__prvPoll = setInterval(() => {
+      try {
+        if (!document.getElementById('prvToggle')) { clearInterval(window.__prvPoll); window.__prvPoll = null; return; }
+        refresh();
+      } catch (e) { }
+    }, 5000);
+    // 手机从后台回到前台：立刻补一次心跳，别等服务端 120 秒超时
+    if (!window.__prvVisHooked) {
+      window.__prvVisHooked = true;
+      document.addEventListener('visibilitychange', () => {
+        if (document.visibilityState !== 'visible') return;
+        try { if (window.__prvMine) { fetch('/privacy/beat', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: dev }) }).catch(() => { }); } } catch (e) { }
+      });
+    }
   }
 
   function openSettings(lic) {
