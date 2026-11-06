@@ -3725,6 +3725,36 @@ async function handler(req, res) {
       setTimeout(() => { try { child.kill(); } catch { } finish({ ok: false, error: 'timeout' }); }, 45000);
     });
   }
+  // 二维码：离线模式的手机直连地址（用随包的 qrlib + python 生成；没有 python 就 404，页面自动隐藏）
+  let pyCmdCache = null, pyCmdTried = false;
+  function pythonCmd() {
+    if (pyCmdTried) return pyCmdCache;
+    pyCmdTried = true;
+    const cands = [['python', []], ['py', ['-3']]];
+    for (const c of cands) {
+      try { execFileSync(c[0], c[1].concat(['--version']), { timeout: 4000, windowsHide: true, stdio: 'ignore' }); pyCmdCache = c; return pyCmdCache; } catch { }
+    }
+    return null;
+  }
+  if (url.pathname === '/qr') {
+    const d = String(url.searchParams.get('d') || '');
+    if (!d || d.length > 2048) { try { res.writeHead(400); res.end(); } catch { } return; }
+    const h = createHash('md5').update(d).digest('hex');
+    const outFile = join(HERE, 'qr-cache-' + h + '.png');
+    if (!fileExists(outFile)) {
+      const py = pythonCmd();
+      const script = join(HERE, 'make-qr.py');
+      if (!py || !fileExists(script)) { try { res.writeHead(404); res.end('no-python'); } catch { } return; }
+      try { execFileSync(py[0], py[1].concat([script, d, outFile]), { timeout: 20000, windowsHide: true, stdio: 'ignore' }); }
+      catch (e) { try { res.writeHead(500); res.end('qr-failed'); } catch { } return; }
+    }
+    try {
+      const png = readFileSync(outFile);
+      res.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'public, max-age=600' });
+      res.end(png);
+    } catch { try { res.writeHead(500); res.end('qr-missing'); } catch { } }
+    return;
+  }
   if (url.pathname === '/offline-info') {
     const cfgNow = (() => { try { return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } })();
     const hs = await runHotspot(['-Action', 'status']);
@@ -3875,8 +3905,12 @@ async function handler(req, res) {
         H264_MON = Math.round(mon);
         H264_NATIVE = false;   // 副屏几何/分辨率不一定和主屏一样，先走缩放路径
       }
-      if (m.rect && Number(m.rect.w) > 0) H264_RECT = { x: Number(m.rect.x) || 0, y: Number(m.rect.y) || 0, w: Number(m.rect.w), h: Number(m.rect.h) };
-      else if (m.rect === null) H264_RECT = null;
+      if (m.rect && Number(m.rect.w) > 0) {
+        const rr = { x: Number(m.rect.x) || 0, y: Number(m.rect.y) || 0, w: Number(m.rect.w), h: Number(m.rect.h) };
+        // 主屏整屏的裁剪等于不裁剪：清掉 rect，保留原生零拷贝/60fps 路径
+        if (H264_MON === 0 && rr.x <= 0 && rr.y <= 0 && rr.w >= CAP_W && rr.h >= CAP_H) H264_RECT = null;
+        else H264_RECT = rr;
+      } else if (m.rect === null) H264_RECT = null;
       if (typeof m.qf === 'boolean' && m.qf !== H264_QF) { H264_QF = m.qf; saveH264QualityFirst(H264_QF); }
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
@@ -3885,7 +3919,9 @@ async function handler(req, res) {
         H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
       }
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
-      if (!H264_NATIVE && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
+      // （按**即将生效的**宽度判断原生路径，否则从 1920 调到 2560 会被误降成 30fps）
+      const willNative = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0 && !H264_RECT;
+      if (!willNative && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
       H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0;    // 原生路径只对主屏生效
       if (H264_RECT) H264_NATIVE = false;   // 选了窗口/局部区域时必须走裁剪滤镜
       // 重启编码器让新参数生效。RTC264 会话没有 WS 观众，也必须重启，
@@ -4295,4 +4331,31 @@ for (const host of hosts) {
 if (hosts.length === 0) {
   console.error('screen-server: no hosts given');
   process.exitCode = 1;
+}
+
+// 离线模式：局域网地址变了（Wi-Fi 重连 / 热点开关 / USB 共享）就重启一次，让守护按新地址重新绑定。
+// 只比较“真实局域网网卡”，跳过 VMware/Hyper-V 等虚拟网卡，避免它们抖动导致重启循环。
+if (OFFLINE_MODE) {
+  const lanBind = () => {
+    const out = [];
+    try {
+      const ifs = os.networkInterfaces();
+      for (const name of Object.keys(ifs)) {
+        if (/vmware|virtualbox|vEthernet|loopback|tailscale/i.test(name)) continue;
+        for (const a of (ifs[name] || [])) {
+          if (!a || a.family !== 'IPv4' || a.internal) continue;
+          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(a.address)) out.push(a.address);
+        }
+      }
+    } catch { }
+    return out.sort();
+  };
+  const initial = lanBind().join(',');
+  setInterval(() => {
+    const now = lanBind().join(',');
+    if (now && now !== initial) {
+      console.log('screen-server: 局域网地址变化（' + (initial || '无') + ' -> ' + now + '），退出让守护按新地址重新绑定');
+      setTimeout(() => { try { process.exit(0); } catch { } }, 300);
+    }
+  }, 15000).unref?.();
 }

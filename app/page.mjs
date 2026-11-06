@@ -648,6 +648,16 @@ function refreshWinRect() {
     .catch(() => { });
 }
 
+// 非安全上下文（http）提示：浏览器在 http 下禁用 WebRTC，只能走 WS 通道（延迟更高）。
+// 局域网请用 https 地址（桌面「手机远程 → 离线模式」入口会自动给出）。
+try {
+  if (!window.isSecureContext || !window.RTCPeerConnection) {
+    setTimeout(function () {
+      try { setNote('当前是 http 打开的：WebRTC 用不了，延迟会更高。改用 https 地址（手机入口 → 离线模式）可走低延迟通道。', 14000); } catch (e) { }
+    }, 3000);
+  }
+} catch (e) { }
+
 srcSel.addEventListener('change', async () => {
   const v = srcSel.value;
   if (v.startsWith('m')) { state.monitor = Number(v.slice(1)); state.window = 0; }
@@ -896,6 +906,8 @@ function sendCaptureArgs(force) {
   } catch (e) { }
 }
 function win264On() { try { return localStorage.getItem('win264') === '1'; } catch (e) { return false; } }
+// 局域网自动 2560 的开关（必须在最外层：startH264 也要用；默认开）
+function lan264On() { try { return localStorage.getItem('lan2560') !== '0'; } catch (e) { return true; } }
 function syncWin264() {
   let hwnd = 0;
   try { hwnd = (win264On() && state.window) ? Number(state.window) : 0; } catch (e) { hwnd = 0; }
@@ -1167,6 +1179,10 @@ function rtc264Wanted() {
   let p = null;
   try { p = new URLSearchParams(location.search).get('rtc264'); } catch (e) { }
   if (p === '0') return false;
+  // http 不是安全上下文：WebRTC 实际用不了（Chrome 可能仍暴露 RTCPeerConnection 但连接必失败），
+  // 直接走 WS 通道，省掉一次必然失败的 3 秒尝试。
+  const secure = (typeof window.isSecureContext === 'boolean') ? window.isSecureContext : true;
+  if (!secure) return false;
   if (p === '1' || p === 'relay') return !!window.RTCPeerConnection;
   return !!(h264.rtcEnabled && window.RTCPeerConnection);
 }
@@ -1198,6 +1214,15 @@ async function startH264() {
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   h264.wt = (st && st.wt) || null;
   h264.rtcEnabled = !!(st && st.rtc && st.rtc.enabled);
+  // 局域网（https，有 WebRTC）默认拉满 2560：带宽/延迟都够，文字更清晰；设置里可关。
+  // 必须**等它生效**再建 WebRTC 会话，否则编码器先按 1920 起、视频尺寸就定死成 1920 了。
+  try {
+    const onLan = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(location.hostname || '');
+    if (onLan && lan264On() && !win264On() && st && Number(st.width) < 2560) {
+      try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ width: 2560 }) }); } catch (e) { }
+      try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { }
+    }
+  } catch (e) { }
   if (!st || !st.enabled) { startMjpeg(); return; }
   if (!(window.VideoDecoder && window.EncodedVideoChunk)) { startMjpeg(); return; }   // 没有 WebCodecs 就回落 MJPEG
   stopH264();
@@ -4187,10 +4212,18 @@ bindImg(img);
   // 服务端负责真的盖住电脑本机屏幕；页面只负责开关、心跳（证明控制端还在）和换图。
   // 设备 id 存 localStorage：同一台手机刷新页面后仍是"第一个开的"那台，能自己关掉。
   // ---- 离线模式（没有互联网 / 没有 Tailscale）--------------------------------
-  // 电脑开热点（Windows Mobile Hotspot）或手机开热点让电脑连；产品在局域网 IP 上监听，
-  // 手机打开 http://<电脑IP>:<port>/?k=KEY 即可。注意 http 不是安全上下文：WebRTC 不可用。
+  // 电脑开热点（Windows Mobile Hotspot）或手机开热点让电脑连；产品在局域网 IP 上监听（https），
+  // 手机打开 https://<电脑IP>:<port>/?k=KEY。https 是安全上下文，WebRTC 可用、延迟最低。
   const HOTSPOT_SSID = 'PhoneAccess-Offline';
   const HOTSPOT_PASS = 'phoneaccess';
+  function hsCfg() {
+    let ssid = HOTSPOT_SSID, pass = HOTSPOT_PASS;
+    try {
+      ssid = localStorage.getItem('hs.ssid') || ssid;
+      pass = localStorage.getItem('hs.pass') || pass;
+    } catch (e) { }
+    return { ssid: ssid, pass: pass };
+  }
   function offlineBind(box) {
     const bodyEl = box.querySelector('#offBody');
     if (!bodyEl) return;
@@ -4204,25 +4237,44 @@ bindImg(img);
       let h = '<label style="display:flex;align-items:center;gap:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
         + '<input type="checkbox" id="offToggle" ' + (on ? 'checked' : '') + '> 开启局域网访问（会重启画面服务，约 10 秒）</label>';
       if (on) {
-        h += '<div style="margin-top:12px;color:#e8eaee;font-size:12.5px">手机打开（同一 Wi-Fi / 热点）：</div>';
+        const firstIp = (j.ips && j.ips.length) ? j.ips[0] : null;
+        const firstUrl = firstIp ? ('https://' + firstIp.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY)) : '';
+        h += '<div style="margin-top:12px;color:#e8eaee;font-size:12.5px">手机扫码或打开（同一 Wi-Fi / 热点）：</div>';
         if (!j.ips || !j.ips.length) {
-          h += '<div style="color:#ffb454;font-size:12px;margin-top:4px">没检测到局域网 IP（先连上 Wi-Fi 或开热点）</div>';
+          h += '<div style="color:#ffb454;font-size:12px;margin-top:4px">没检测到局域网 IP（先连上 Wi-Fi 或开热点；用 USB 共享网络也可以）</div>';
         } else {
+          h += '<div style="display:flex;gap:14px;align-items:flex-start;margin-top:8px;flex-wrap:wrap">'
+            + '<img id="offQr" src="/qr?d=' + encodeURIComponent(firstUrl) + '" width="150" height="150" alt="二维码" '
+            + 'style="background:#fff;padding:6px;border-radius:10px;display:block">'
+            + '<div style="flex:1;min-width:210px">';
           for (const it of j.ips) {
             const url = 'https://' + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
-            h += '<div style="display:flex;gap:8px;align-items:center;margin-top:6px;flex-wrap:wrap">'
+            h += '<div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">'
               + '<code style="color:#8fb6ff;font-size:12px">' + esc(url) + '</code>'
               + '<button class="offCopy" data-url="' + esc(url) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer">复制</button>'
               + '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span></div>';
           }
+          h += '</div></div>';
+          h += '<div style="color:#6b7078;font-size:11px;margin-top:6px">这台电脑是自签证书：手机第一次打开提示"不安全"，点「高级 → 继续前往」；'
+            + '继续后 HUD 应显示「WebRTC264 直连」（才是低延迟通道）。</div>';
         }
         const hsOn = hs.state === 'On';
+        const hsClients = Number(hs.clients || 0) || 0;
         h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
-          + '<div style="color:#c9ccd1;font-size:12.5px">电脑热点：' + (hsOn ? '已开启' : (hs.capability === 'Enabled' ? '已关闭' : (hs.capability ? ('不可用（' + esc(hs.capability) + '）') : '未知'))) + '</div>'
-          + '<div style="margin-top:6px;color:#6b7078;font-size:11px">手机连 Wi-Fi「' + HOTSPOT_SSID + '」，密码「' + HOTSPOT_PASS + '」；连上后电脑的地址通常是 192.168.137.1</div>'
+          + '<div style="color:#c9ccd1;font-size:12.5px">电脑热点：' + (hsOn ? ('已开启' + (hsClients > 0 ? '（已连 ' + hsClients + ' 台）' : '')) : (hs.capability === 'Enabled' ? '已关闭' : (hs.capability ? ('不可用（' + esc(hs.capability) + '）') : '未知'))) + '</div>'
+          + '<div style="display:flex;gap:10px;align-items:center;margin-top:8px;flex-wrap:wrap">'
+          + '<label style="font-size:12px;color:#aeb3bb">Wi-Fi 名 <input id="hsSsid" value="' + esc(hs.ssid || HOTSPOT_SSID) + '" style="width:150px;background:#0f1014;color:#e8eaee;border:1px solid #262932;border-radius:8px;padding:6px 9px;font-size:12px"></label>'
+          + '<label style="font-size:12px;color:#aeb3bb">密码 <input id="hsPass" type="text" value="' + esc(HOTSPOT_PASS) + '" style="width:120px;background:#0f1014;color:#e8eaee;border:1px solid #262932;border-radius:8px;padding:6px 9px;font-size:12px"></label>'
+          + '</div>'
+          + '<div style="margin-top:6px;color:#6b7078;font-size:11px">手机连这个 Wi-Fi，然后打开上面的 https 地址（热点下电脑通常是 192.168.137.1）。</div>'
           + '<div style="margin-top:8px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
           + '<button id="hsToggle" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 14px;font-size:12.5px;cursor:pointer">' + (hsOn ? '关闭电脑热点' : '开启电脑热点') + '</button>'
           + '<span id="hsMsg" style="font-size:12px;color:#868c96"></span></div></div>';
+        h += '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
+          + '<label style="display:flex;align-items:center;gap:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
+          + '<input type="checkbox" id="off2560" ' + (lan264On() ? 'checked' : '') + '> 局域网自动 2560 超清（更清晰，流量更大）</label>'
+          + '<div style="color:#6b7078;font-size:11px;margin-top:4px">没有 Wi-Fi 也可以：手机 USB 连电脑 → 打开手机「USB 网络共享」，页面会自动多出 USB 网段的地址。</div>'
+          + '</div>';
       }
       bodyEl.innerHTML = h;
       const tog = bodyEl.querySelector('#offToggle');
@@ -4239,17 +4291,30 @@ bindImg(img);
       if (hsBtn) hsBtn.addEventListener('click', async () => {
         const hsNow = (info && info.hotspot) || {};
         const wantOn = hsNow.state !== 'On';
+        const ssidEl = bodyEl.querySelector('#hsSsid');
+        const passEl = bodyEl.querySelector('#hsPass');
+        const cfg = hsCfg();
+        const ssid = (ssidEl && ssidEl.value.trim()) || cfg.ssid;
+        const pass = (passEl && passEl.value.trim()) || cfg.pass;
+        try { localStorage.setItem('hs.ssid', ssid); localStorage.setItem('hs.pass', pass); } catch (e) { }
         hsBtn.disabled = true;
         const msg = bodyEl.querySelector('#hsMsg');
         if (msg) msg.textContent = wantOn ? '正在开热点…' : '正在关热点…';
         try {
-          const r = await fetch('/hotspot/' + (wantOn ? 'on' : 'off'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ssid: HOTSPOT_SSID, pass: HOTSPOT_PASS }) }).then((x) => x.json());
-          if (msg) msg.textContent = r && r.ok ? (wantOn ? '已开启，手机连 Wi-Fi「' + HOTSPOT_SSID + '」' : '已关闭') : ('失败：' + ((r && (r.error || (r.job && r.job.error))) || '未知'));
+          const r = await fetch('/hotspot/' + (wantOn ? 'on' : 'off'), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ ssid: ssid, pass: pass }) }).then((x) => x.json());
+          if (msg) msg.textContent = r && r.ok ? (wantOn ? '已开启，手机连 Wi-Fi「' + ssid + '」' : '已关闭') : ('失败：' + ((r && (r.error || (r.job && r.job.error))) || '未知'));
         } catch (e) {
           if (msg) msg.textContent = '失败：' + (e && e.message);
         }
         fetch('/offline-info?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => { });
       });
+      const cb2560 = bodyEl.querySelector('#off2560');
+      if (cb2560) cb2560.addEventListener('change', () => {
+        try { localStorage.setItem('lan2560', cb2560.checked ? '1' : '0'); } catch (e) { }
+        try { if (state.mode === 'h264') restartH264(); } catch (e) { }
+      });
+      const qrImg = bodyEl.querySelector('#offQr');
+      if (qrImg) qrImg.addEventListener('error', () => { qrImg.style.display = 'none'; });
     };
     const refresh = () => fetch('/offline-info?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(paint).catch(() => {
       bodyEl.innerHTML = '<span style="color:#ffb454">检测失败</span>';
