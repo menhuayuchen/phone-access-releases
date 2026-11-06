@@ -112,6 +112,8 @@ $appFiles = @(
   # 离线模式：桌面「手机远程」文件夹里的「离线模式」入口（2026-11-06）
   'offline-mode.ps1',
   '离线模式.cmd',
+  # 离线模式：防火墙放行/恢复（局域网/热点/USB 直连）
+  'offline-firewall.ps1',
   # 许可证：校验与状态生成随包分发。私钥在 seller-keys 目录（app 之外），天然打不进来。
   'licence.ps1',
   'licence-state.ps1',

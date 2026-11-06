@@ -27,6 +27,18 @@ try {
     Write-Host ('[!] 写配置失败：' + $_.Exception.Message) -ForegroundColor Yellow
 }
 
+# 1.5) 防火墙：放行局域网/热点/USB 直连（需要管理员，会弹一次 UAC）
+$fw = Join-Path $here 'offline-firewall.ps1'
+if (Test-Path -LiteralPath $fw) {
+    $psExe = Join-Path $env:SystemRoot 'System32\WindowsPowerShell\v1.0\powershell.exe'
+    Write-Host '[i] 正在放行局域网端口（会弹一次管理员授权，请点「是」）…' -ForegroundColor Cyan
+    try {
+        Start-Process -FilePath $psExe -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $fw, '-Action', 'on') -Verb RunAs -Wait -WindowStyle Hidden
+    } catch {
+        Write-Host '[!] 放行失败（没点授权/不是管理员）：手机可能连不上，可以先手动点「重启」再试' -ForegroundColor Yellow
+    }
+}
+
 # 2) 重启画面服务（守护进程会在约 10 秒内重新拉起）
 $killed = 0
 try {
@@ -54,6 +66,12 @@ try {
     })
 } catch { }
 if ($defaultIps.Count -gt 0) { $ips = $defaultIps + @($ips | Where-Object { $defaultIps -notcontains $_ }) }
+# USB 网络共享（RNDIS）最快：有就排最前面
+$usbIps = @()
+try {
+    $usbIps = @(Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match 'RNDIS|Remote NDIS|USB' } | ForEach-Object { (Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue).IPAddress } | Where-Object { $_ })
+} catch { }
+if ($usbIps.Count -gt 0) { $ips = @($usbIps) + @($ips | Where-Object { $usbIps -notcontains $_ }) }
 $hit = ''
 for ($i = 0; $i -lt 60; $i++) {
     Start-Sleep -Milliseconds 800

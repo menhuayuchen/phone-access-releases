@@ -4393,10 +4393,13 @@ bindImg(img);
             + '<div style="flex:1;min-width:210px">';
           for (const it of j.ips) {
             const url = 'https://' + it.ip + ':' + j.port + '/?k=' + encodeURIComponent(KEY);
+            const tag = it.usb
+              ? '<span style="background:#1d3a24;color:#8CE58C;border:1px solid #2f5f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">USB 直连 · 最快</span>'
+              : '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span>';
             h += '<div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">'
               + '<code style="color:#8fb6ff;font-size:12px">' + esc(url) + '</code>'
               + '<button class="offCopy" data-url="' + esc(url) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:4px 9px;font-size:11.5px;cursor:pointer">复制</button>'
-              + '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span></div>';
+              + tag + '</div>';
           }
           h += '</div></div>';
           h += '<div style="color:#6b7078;font-size:11px;margin-top:6px">这台电脑是自签证书：手机第一次打开提示"不安全"，点「高级 → 继续前往」；'
@@ -4426,7 +4429,7 @@ bindImg(img);
         const want = tog.checked;
         tog.disabled = true;
         try { await fetch('/offline/' + (want ? 'on' : 'off'), { method: 'POST' }); } catch (e) { }
-        bodyEl.innerHTML = '<span style="color:#8CE58C">已保存，正在重启画面服务（约 10 秒）；之后重新打开这个设置</span>';
+        bodyEl.innerHTML = '<span style="color:#8CE58C">已保存，正在重启画面服务（约 10 秒）。如果弹出管理员授权，请点「是」（放行局域网端口，手机才能连上）。</span>';
       });
       bodyEl.querySelectorAll('.offCopy').forEach((btn) => btn.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(btn.getAttribute('data-url')); btn.textContent = '已复制'; } catch (e) { }
@@ -4743,13 +4746,16 @@ bindImg(img);
       + '<input type="checkbox" id="prvLock" checked> 同时锁住电脑前的键盘和鼠标（更彻底，推荐）</label>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:4px">关掉则只拦 Win/Alt+Tab 这类能绕过遮罩的快捷键；手机上的操作始终不受影响。</div>');
 
-    // 离线模式（没有互联网 / 没有 Tailscale）：局域网访问 + 电脑热点
+    // 离线模式（没有互联网 / 没有 Tailscale）：局域网访问 + 电脑热点 + USB 网络共享
     body += setSection('离线模式（没有网络 / Tailscale）',
       '<div id="offBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
       + '没有互联网、也没装 Tailscale 时：电脑开热点（或手机开热点让电脑连），手机连上同一个网络后打开这里的地址。'
       + '局域网/热点现在用 https（电脑自签证书）：手机第一次打开会提示"不安全"，点「继续/高级→继续」即可。'
-      + '这样才是安全上下文，WebRTC 能用、延迟最低（http 下会自动退回 WS 通道，延迟更高）。</div>');
+      + '这样才是安全上下文，WebRTC 能用、延迟最低（http 下会自动退回 WS 通道，延迟更高）。'
+      + '<br><b style="color:#8fb6ff">USB 直连最快</b>（传大文件首选）：手机用数据线连电脑 → 手机设置里打开「USB 网络共享」→ '
+      + '几秒后这里会多出一个标记 USB 的地址，走 USB 带宽（通常 200–400 MB/s），比 Wi-Fi/热点快得多。'
+      + '<br>开启/关闭离线模式时会弹一次管理员授权（放行局域网端口），点「是」即可。</div>');
 
     // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
     body += setSection('诊断',

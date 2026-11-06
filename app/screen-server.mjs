@@ -2006,6 +2006,23 @@ try {
   }
 } catch { }
 const UPLOAD_MAX = 20 * 1024 * 1024 * 1024;   // 大文件：上限 20GB（局域网直传，速度就是 Wi-Fi 上限）
+// USB 网络共享（RNDIS）的网卡 IP：手机 USB 连电脑后通常会出现一个新网卡，速度远高于 Wi-Fi/热点。
+// 用 Get-NetAdapter 的 InterfaceDescription 判断（os.networkInterfaces 只给"以太网 N"这种别名），缓存 60 秒。
+let _usbIpsCache = { at: 0, ips: [] };
+function usbLanIps() {
+  const now = Date.now();
+  if (now - _usbIpsCache.at < 60000) return _usbIpsCache.ips;
+  let ips = [];
+  try {
+    const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const cmd = "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.InterfaceDescription -match 'RNDIS|Remote NDIS|USB' } | ForEach-Object { Get-NetIPAddress -InterfaceIndex $_.ifIndex -AddressFamily IPv4 -ErrorAction SilentlyContinue | ForEach-Object { $_.IPAddress } }";
+    const out = execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 8000, windowsHide: true });
+    ips = String(out).split(/\r?\n/).map((s) => s.trim()).filter((s) => /^\d+\.\d+\.\d+\.\d+$/.test(s));
+  } catch { ips = []; }
+  _usbIpsCache = { at: now, ips };
+  return ips;
+}
+
 // 真实桌面路径（可能被重定向到 D:\...）；reg.exe 输出是系统代码页，中文机按 GBK 解
 let _deskCache = null;
 function desktopDir() {
@@ -3927,11 +3944,11 @@ async function handler(req, res) {
       return;
     }
   }
-  // ---- 离线模式（没有互联网/Tailscale）：局域网访问 + 电脑热点 --------------------
-  // 网页走 http://<电脑局域网IP>:<port>/?k=KEY；注意 http 不是安全上下文，
-  // WebRTC 不可用（页面会自动走 WS H.264），PWA 安装也会受限。
+  // ---- 离线模式（没有互联网/Tailscale）：局域网访问 + 电脑热点 + USB 网络共享 ---------
+  // 网页走 https://<电脑局域网IP>:<port>/?k=KEY（自签证书；https 才有 WebRTC 低延迟）。
   function privateIps() {
     const out = [];
+    const usb = (() => { try { return usbLanIps(); } catch { return []; } })();
     try {
       const ifs = os.networkInterfaces();
       for (const name of Object.keys(ifs)) {
@@ -3940,10 +3957,12 @@ async function handler(req, res) {
           if (!a || a.family !== 'IPv4' || a.internal) continue;
           const ip = a.address;
           if (/^100\./.test(ip)) continue;                     // Tailscale 单独显示
-          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(ip)) out.push({ name, ip });
+          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(ip)) out.push({ name, ip, usb: usb.indexOf(ip) >= 0 });
         }
       }
     } catch { }
+    // USB 网络共享排最前（最快），手机端直接选第一个地址
+    out.sort((x, y) => (y.usb ? 1 : 0) - (x.usb ? 1 : 0));
     return out;
   }
   function runHotspot(args) {
@@ -4021,6 +4040,16 @@ async function handler(req, res) {
       try { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: String(e.message || e) })); } catch { }
       return;
     }
+    // 防火墙：默认安装时"拒绝局域网私有网段"会挡住手机，开/关离线模式时用管理员权限放行/恢复。
+    // 会弹一次 UAC（页面/入口脚本都要提示用户点"是"）。
+    try {
+      const fw = join(HERE, 'offline-firewall.ps1');
+      if (fileExists(fw)) {
+        const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+        const argLine = "-NoProfile -ExecutionPolicy Bypass -File \"" + fw + "\" -Action " + (on ? 'on' : 'off');
+        spawn(psExe, ['-NoProfile', '-Command', "Start-Process -FilePath '" + psExe + "' -ArgumentList '" + argLine.replace(/'/g, "''") + "' -Verb RunAs -WindowStyle Hidden"], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+      }
+    } catch { }
     // 监听地址要跟着变：让守护进程重启服务（约 10 秒）
     setTimeout(() => { try { process.exit(0); } catch { } }, 800);
     return;
