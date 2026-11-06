@@ -136,6 +136,15 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
   #bar button, .bar button, header button { padding: 5px 8px !important; font-size: 12.5px !important; }
   #bar select, .bar select { font-size: 12.5px !important; padding: 4px 6px !important; }
 }
+/* 设置里的折叠窗：标题可点，内容收起；更紧凑的卡片外观 */
+.setSec { margin-top:12px; background:#1a1c22; border:1px solid #292c35; border-radius:12px; overflow:hidden; }
+.secHead { display:flex; align-items:center; justify-content:space-between; gap:10px; padding:11px 14px; cursor:pointer; user-select:none; -webkit-tap-highlight-color:transparent; }
+.secHead:active { background:#20232b; }
+.secTitle { color:#c9ccd1; font-size:12.5px; font-weight:700; letter-spacing:.04em; }
+.secChev { color:#6b7078; font-size:12px; transition:transform .18s; flex-shrink:0; }
+.setSec.closed .secChev { transform:rotate(-90deg); }
+.setSec.closed .secBody { display:none; }
+.secBody { padding:2px 14px 13px; border-top:1px solid #22242b; }
 </style>
 <style>
 /* 选择显示来源：手机上原生 <select> 弹层会截断长列表，改成全屏底部面板 */
@@ -2193,13 +2202,21 @@ if (kbundo) {
 
 // ---- 手势：Pointer Events（Chrome/Safari 都支持）--------------------------
 let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoomG = null, viewG = null, zoomCtrl = false, lastTapAt = 0;
+// 多指手势期间置 true：抬手时不能把"最后一个手指离开"当成单点（缩放后尤其明显）
+let multiGesture = false;
 
 overlay.addEventListener('pointerdown', (e) => {
   activePtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  // 放大平移时又落下第二根手指 → 取消平移，让双指滚轮/三指手势接管
-  if (viewPan && e.isPrimary === false) { viewPan = null; }
+  // 多指（第二根及以后）落下：取消单指状态与画面平移，别让抬手被当成点击
+  const multiPt = (activePtr.size > 1) || e.isPrimary === false;
+  if (multiPt) {
+    multiGesture = true;
+    viewPan = null;
+    if (state.control) cancelSinglePointer();
+  }
   // 画面缩放放大后：单指拖动 = 平移画面（不再发送远程移动）
   if (zoomMode === 'view' && view.scale > 1.001 && e.pointerType !== 'mouse') {
+    if (multiPt) return;   // 多指手势：不建平移，也不在抬手时算点击
     viewPan = { id: e.pointerId, x: e.clientX, y: e.clientY, tx: view.tx, ty: view.ty, t: Date.now(), moved: false };
     // 先不 setPointerCapture：否则第二根手指落下时双指手势容易被吞
     return;
@@ -2303,6 +2320,8 @@ overlay.addEventListener('pointerup', (e) => {
   activePtr.delete(e.pointerId); scrollAnchor = null;
   if (viewPan) {
     const vp = viewPan; viewPan = null;
+    // 多指手势后的抬手不算点击（缩放态下抬手指被误当成单点的根因）
+    if (multiGesture || activePtr.size > 0) return;
     if (!vp.moved) {
       const qi = layoutPoint(e.clientX, e.clientY);
       const pi = toScreen(qi.x, qi.y);
@@ -2388,6 +2407,7 @@ function releaseZoomCtrl() {
 
 overlay.addEventListener('touchstart', (e) => {
   if (!state.control) return;
+  if (e.touches.length >= 2) multiGesture = true;   // 双指/三指手势：抬手后不能算单点
   if (e.touches.length === 2) {
     const pts = touchPoints(e);
     const c = pointsCenter(pts);
@@ -2523,6 +2543,8 @@ overlay.addEventListener('touchend', (e) => {
   if (e.touches.length === 0) {
     if (longTimer) { clearTimeout(longTimer); longTimer = null; }
     ptr = null; dragBtn = -1; moved = false;
+    // 所有手指都抬起后延迟复位：先让这一轮的 pointerup 处理完，再允许下一次单点
+    setTimeout(() => { multiGesture = false; }, 0);
   }
 }, { passive: true });
 
@@ -2532,6 +2554,7 @@ overlay.addEventListener('touchcancel', () => {
   zoomG = null;
   viewG = null;
   ptr = null; dragBtn = -1; moved = false;
+  setTimeout(() => { multiGesture = false; }, 0);
   releaseZoomCtrl();
 }, { passive: true });
 // 切后台/失焦/关页面时一定要把 Ctrl 补起来，否则电脑上会卡着 Ctrl
@@ -2749,6 +2772,25 @@ bindImg(img);
   statsTimer = setInterval(pollStats, 2000);   // 顺带每 6 秒做一次 WebRTC 丢包自适应
   setInterval(() => { if (state.mode === 'raw' && pc) rtcLossAdapt(); }, 6000);
   window.__page = { state, contentBox, toScreen, toPage, layoutPoint };   // 调试用
+  // 设置里的折叠窗：点标题展开/收起，记住状态（localStorage）
+  try {
+    document.addEventListener('click', function (ev) {
+      const h = ev.target && ev.target.closest ? ev.target.closest('.secHead') : null;
+      if (!h) return;
+      const sec = h.parentElement;
+      if (!sec || !sec.classList.contains('setSec')) return;
+      sec.classList.toggle('closed');
+      try {
+        const key = 'setSec.closed';
+        const arr = JSON.parse(localStorage.getItem(key) || '[]');
+        const t = sec.getAttribute('data-title') || '';
+        const i = arr.indexOf(t);
+        if (sec.classList.contains('closed')) { if (i < 0) arr.push(t); }
+        else if (i >= 0) arr.splice(i, 1);
+        localStorage.setItem(key, JSON.stringify(arr));
+      } catch (e2) { }
+    }, false);
+  } catch (e) { }
   setNote('');
   // 首帧占位：画面一到（videoWidth>0 且有画面）就隐藏；20 秒兜底隐藏，避免一直挡着
   (function () {
@@ -3180,13 +3222,26 @@ bindImg(img);
   }
 
   // ---- 设置面板 ---------------------------------------------------------------
-  // 用"分区标题 + 卡片"的排版，比之前一列纯文本好扫读；徽章用胶囊+圆点表示状态。
+  // 用"可折叠分区卡片"的排版：标题一行、点一下收起，展开状态会记住
+  // 默认收起的"高级"分区：第一次打开面板时界面更干净（客户点开才看）
+  const DEFAULT_CLOSED = [
+    '本机机器码', '文本剪贴板', '高性能模式（Moonlight）', '高清串流（H.264）',
+    '个性化', '防窥屏（电脑前的人看不到）', '诊断'
+  ];
+  function secClosedList() {
+    try {
+      const raw = localStorage.getItem('setSec.closed');
+      if (raw === null) return null;                  // 从没手动收过：用默认收起列表
+      const a = JSON.parse(raw);
+      return Array.isArray(a) ? a : null;
+    } catch (e) { return null; }
+  }
   function setSection(title, inner) {
-    return '<div style="margin-top:15px">'
-      + '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em;'
-      + 'margin:0 0 7px 2px">' + escHtml(title) + '</div>'
-      + '<div style="background:#1a1c22;border:1px solid #292c35;border-radius:11px;padding:13px 14px">'
-      + inner + '</div></div>';
+    const saved = secClosedList();
+    const closed = (saved === null) ? (DEFAULT_CLOSED.indexOf(title) >= 0) : (saved.indexOf(title) >= 0);
+    return '<div class="setSec' + (closed ? ' closed' : '') + '" data-title="' + escHtml(title) + '">'
+      + '<div class="secHead"><span class="secTitle">' + escHtml(title) + '</span><span class="secChev">▾</span></div>'
+      + '<div class="secBody">' + inner + '</div></div>';
   }
   function setKv(k, v) {
     return '<div style="display:flex;gap:12px;padding:4px 0">'
