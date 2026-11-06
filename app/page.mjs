@@ -942,6 +942,7 @@ function stopRtc264() {
   const sid = R.sid;
   R.sid = ''; R.firstVideo = false; R.startedAt = 0; R.hudText = '';
   R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0;
+  R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
   try { rtc264AudioStop(); } catch (e) { }
@@ -1083,10 +1084,28 @@ async function rtc264Stats() {
     } else { R.lastFr = fr; R.lastBr = br; R.frozenSince = 0; }
     const how = path === 'relay' ? '中继' : (path === 'srflx' || path === 'prflx' ? '直连(NAT)' : (path === 'host' ? '直连' : pc.iceConnectionState));
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
-    const res = vw ? vw + 'x' + vid.videoHeight : '无画面';
-    // 手机端 #stat 是隐藏的，HUD 才是用户看到的；两边都写同一份文案
-    RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · 帧' + fr + '/解' + fd + ' · 缓' + bufMs + 'ms' + autoqTag();
-    setStat(RTC264.hudText + ' · 收' + Math.round(br / 1024) + 'KB');
+    const res = vw ? vw + 'x' + vid.videoHeight : '连接中';
+    // 帧率/码率：用相邻两次采样的差值算。HUD 以前显示的是「帧1776/解1775」这种累计计数，
+    // 越看越大、根本不是帧率（用户反馈"帧率显示有问题"就是它）。
+    const prevRate = R.rate;
+    R.rate = { t: nowMs, fr: fr, fd: fd, br: br };
+    if (prevRate && nowMs > prevRate.t) {
+      const dtRate = (nowMs - prevRate.t) / 1000;
+      const dFd = fd - prevRate.fd, dFr = fr - prevRate.fr, dBr = br - prevRate.br;
+      if (dtRate > 0.2 && dFd >= 0 && dFr >= 0 && dBr >= 0) {
+        R.qFps = dFd / dtRate;          // 解码出来真正显示的帧率
+        R.qRxFps = dFr / dtRate;        // 网络收到的帧率（和上面差得多 = 在丢帧）
+        R.qMbps = (dBr * 8) / dtRate / 1e6;
+      }
+    }
+    const fpsTxt = R.qFps > 0 ? R.qFps.toFixed(1) + ' fps' : '… fps';
+    const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
+    // 手机端 #stat 是隐藏的，HUD 才是用户看到的；HUD 只放「帧率 · 码率 · 缓冲」，
+    // 累计帧数和累计流量放 #stat，给桌面排查用。
+    RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · ' + fpsTxt
+      + (mbpsTxt ? ' · ' + mbpsTxt : '')
+      + ' · 缓' + bufMs + 'ms' + autoqTag();
+    setStat(RTC264.hudText + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB');
   } catch (e) { }
 }
 function serverUp264() {
@@ -2709,10 +2728,12 @@ async function pollStats() {
     } else if (state.lowBw) {
       // 兜底的低频画面：显示轮询参数，避免误读成视频帧率
       hud.textContent = '低频画面 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
+    } else {
+      // 普通 MJPEG：out=服务端真正推给观看者的帧率，in=抓屏产出，drop10=最近 10 秒跳过的帧
       const capMs = cap ? Number(cap[1]) : 0;
       const capFps = capMs > 0 ? (1000 / capMs).toFixed(1) : '?';
       const dN = drop ? Number(drop[1]) : 0;
-      hud.textContent = out[1] + ' fps'
+      hud.textContent = (out ? out[1] : '?') + ' fps'
         + (inp ? '（抓屏 ' + inp[1] + '）' : '')
         + ' · 上限 ' + capFps
         + (streamW < 2560 ? ' · ' + streamW + ' 宽' : '')
