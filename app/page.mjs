@@ -4931,7 +4931,7 @@ bindImg(img);
       const mode = r.mode === 'shutdown' ? '关机' : '休眠';
       h += '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #202228;font-size:13px">'
         + '<span style="flex:1;min-width:0;color:#c9ccd1">' + esc2(mode) + ' ' + esc2(r.offTime)
-        + (r.wakeTime ? (' → 唤醒 ' + esc2(r.wakeTime)) : '') + ' <span style="color:#6b7078">· ' + esc2(rep) + '</span></span>'
+        + (r.wakeTime ? ((r.mode === 'shutdown') ? (' <span style="color:#ff6b6b;font-weight:700">→ 唤醒 ' + esc2(r.wakeTime) + '（关机后无效）</span>') : (' → 唤醒 ' + esc2(r.wakeTime))) : '') + ' <span style="color:#6b7078">· ' + esc2(rep) + '</span></span>'
         + '<button data-pwdel="' + i + '" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">删</button></div>';
     });
     if (tasks.length) {
@@ -4950,6 +4950,7 @@ bindImg(img);
       + '<button id="pwAdd" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">加入</button>'
       + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
       + '</div>'
+      + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机（S5）之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把「方式」改成「休眠」。</div>'
       + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7"></div>'
       + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原桌面）；完全关机后叫不醒，只能靠 BIOS 定时开机或 Wake-on-LAN。</div>'
       + '</div>';
@@ -4963,6 +4964,20 @@ bindImg(img);
     const paint = (st) => {
       pwCache = { enabled: !!(st && st.enabled), rules: (st && Array.isArray(st.rules)) ? st.rules : [] };
       wrap.innerHTML = powerRowsHtml(st);
+      // 红色警示：选「关机」又填了唤醒时间 → 立刻提示这次唤醒不会生效
+      (function wireWarn() {
+        const m = wrap.querySelector('#pwMode');
+        const t = wrap.querySelector('#pwWake');
+        const w = wrap.querySelector('#pwWarn');
+        const sync = function () {
+          if (!w) return;
+          const okTime = t && /^[0-2]?\d:[0-5]\d$/.test(String(t.value || '').trim());
+          w.style.display = (m && m.value === 'shutdown' && okTime) ? 'block' : 'none';
+        };
+        if (m) m.addEventListener('change', sync);
+        if (t) t.addEventListener('input', sync);
+        sync();
+      })();
       const tg = wrap.querySelector('#pwToggle');
       if (tg) tg.addEventListener('click', async () => {
         const doc = { enabled: !pwCache.enabled, rules: pwCache.rules };
@@ -4988,6 +5003,7 @@ bindImg(img);
           id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat,
           date: repeat === 'once' ? date : '', mode: mode
         }]);
+        if (mode === 'shutdown' && wake) { msg('注意：这条是「关机」+ 唤醒时间，唤醒不会生效（见上方红字）', '#ff6b6b'); }
         await post({ enabled: true, rules });
       });
       const ap = wrap.querySelector('#pwApply');
@@ -5691,6 +5707,101 @@ bindImg(img);
     connect();
   }
 
+  // E2：矢量文字层（2026-11-07）。画面放大到 1.4 倍以上并停手 350ms 后，
+  // 把「当前视口对应的原始画面矩形」发给 /exp/ocr，拿回每行的文字和位置，
+  // 用矢量字重画一遍盖在视频上 —— 放大后不再是像素糊，而是真的清晰文字。
+  //
+  // 为什么只在放大时做：实测服务端 800x500 区域 OCR 稳定态约 500-700ms
+  // （2560x1600 全屏要 6 秒，绝对不能全屏做），只有"用户主动放大看细节"这个场景
+  // 值得等这半秒；平时看全屏时像素本来就够清楚。
+  function expOcrStart() {
+    var layer = null;
+    var lastRect = null, lastAt = 0;
+    var busy = false, gen = 0, lastScale = 1, timer = null;
+
+    function ensureLayer() {
+      if (layer) return layer;
+      layer = document.createElement('div');
+      layer.id = 'expTextLayer';
+      layer.style.cssText = 'position:fixed;inset:0;pointer-events:none;z-index:9997;overflow:hidden;';
+      document.body.appendChild(layer);
+      return layer;
+    }
+    function clearLayer() { gen++; if (layer) layer.innerHTML = ''; }
+
+    // 视口四角反算回"原始画面像素"矩形（复用主线的 toScreen，不另写一套）
+    function viewRect() {
+      var r = stage.getBoundingClientRect();
+      var a = toScreen(r.left, r.top);
+      var b = toScreen(r.left + r.width, r.top + r.height);
+      return { x: a.x, y: a.y, w: Math.max(1, b.x - a.x), h: Math.max(1, b.y - a.y) };
+    }
+
+    function render(j, rc) {
+      var el = ensureLayer();
+      var box = contentBox();
+      var k = (box.width * view.scale) / rc.w;        // 原始像素 -> 页面像素
+      var html = '';
+      for (var i = 0; i < j.lines.length; i++) {
+        var L = j.lines[i];
+        if (!L || L.score < 0.55) continue;            // 认不准的不画，宁可留像素
+        var p = toPage(rc.x + L.x, rc.y + L.y);
+        var fs = L.h * k * 0.8;                        // bbox 高度比字号大约 25%
+        if (fs < 7 || fs > 160) continue;
+        html += '<div style="position:absolute;left:' + p.x.toFixed(1) + 'px;top:' + (p.y - L.h * k * 0.1).toFixed(1) + 'px;'
+          + 'font-size:' + fs.toFixed(1) + 'px;line-height:1;white-space:pre;'
+          + 'font-family:\'Microsoft YaHei\',\'PingFang SC\',system-ui,sans-serif;color:#fff;'
+          + 'text-shadow:0 0 2px #000,0 0 2px #000,0 0 3px #000;">'
+          + escHtml(L.text) + '</div>';
+      }
+      el.innerHTML = html;
+    }
+
+    function request() {
+      if (busy) return;
+      var rc = viewRect();
+      if (rc.w < 180 || rc.h < 110) return;
+      if (rc.w * rc.h > 1200 * 900) return;            // 服务端也会拒，别浪费往返
+      if (lastRect && Math.abs(lastRect.x - rc.x) < 24 && Math.abs(lastRect.y - rc.y) < 24
+        && Math.abs(lastRect.w - rc.w) < 40 && Math.abs(lastRect.h - rc.h) < 40) return;
+      if (Date.now() - lastAt < 1200) return;
+      busy = true; lastRect = rc; lastAt = Date.now();
+      var my = ++gen;
+      fetch('/exp/ocr?k=' + encodeURIComponent(KEY) + '&s=' + SID, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ rect: { x: Math.round(rc.x), y: Math.round(rc.y), w: Math.round(rc.w), h: Math.round(rc.h) } }),
+      }).then(function (r) { return r.json(); }).then(function (j) {
+        busy = false;
+        if (my !== gen) return;
+        if (!j || !j.ok || j.tooLarge || !j.lines || !j.lines.length) return;
+        render(j, rc);
+      }).catch(function () { busy = false; });
+    }
+
+    // 250ms 看一次状态：缩回原大小就清掉；缩放倍数变了也清掉（位置会错）
+    setInterval(function () {
+      if (state.mode !== 'h264' && state.mode !== 'raw') { clearLayer(); return; }
+      var s = view.scale;
+      if (s < 1.35) { clearLayer(); lastRect = null; lastScale = s; return; }
+      if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; }
+      if (timer) clearTimeout(timer);
+      timer = setTimeout(request, 350);
+    }, 250);
+
+    // 调试入口（只在 ?exp=ocr 时存在）：手机上放大是触摸手势，调试时没法模拟，
+    // 这里直接改 view.scale + 手动触发一次，用来验证整条链路。
+    window.__paExp.ocrDebug = {
+      setScale: function (s) {
+        view.scale = s; view.tx = 0; view.ty = 0;
+        try { applyView(); } catch (e) { }
+      },
+      rect: viewRect,
+      fire: function () { lastRect = null; lastAt = 0; request(); },
+      size: function () { return layer ? layer.children.length : 0; },
+    };
+  }
+
   // E1 光标显示方式（2026-11-07 按用户规则重写）：
   //   · 两种模式**互斥**：dot = 跟随手指的黄点（默认）、real = 电脑真实光标
   //   · 开关在「设置 → 个性化 → 光标显示」，不再放画面角落
@@ -5756,6 +5867,9 @@ bindImg(img);
     if (want.cursor) {
       try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); }
       try { expInitMode(); window.__paExp.on.mode = true; } catch (e) { console.warn('exp mode:', e); }
+    }
+    if (want.ocr) {
+      try { expOcrStart(); window.__paExp.on.ocr = true; } catch (e) { console.warn('exp ocr:', e); }
     }
   })();
 })();

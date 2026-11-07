@@ -1261,7 +1261,9 @@ async function runSunshineInit() {
 //
 // 独立通道是刻意的：不碰 /ws-h264、/rtc、/ws-audio 里任何一行，出问题只会
 // 让光标不显示，画面和输入照常。
-const EXP_TICK_MS = 33;          // 30Hz：光标本体也就 125Hz 更新，30Hz + 客户端平滑已经看不出台阶
+const EXP_TICK_MS = 33;
+          // 30Hz：光标本体也就 125Hz 更新，30Hz + 客户端平滑已经看不出台阶
+const EXP_OCR_PORT = 8777;       // 常驻 Python OCR 服务（app/exp/ocr/ocr_server.py）
 
 function expConfig() {
   try {
@@ -4702,6 +4704,40 @@ async function handler(req, res) {
     return;
   }
 
+  // ---- 实验版 E2：矢量文字层 -------------------------------------------------
+  // 把请求原样转发给常驻的 Python OCR 服务（默认 127.0.0.1:8777）。
+  // 为什么不在 Node 里做 OCR：RapidOCR 是 Python 生态，模型加载一次 ~640ms，
+  // 必须常驻；Node 这边只负责鉴权和转发，挂了也只影响文字层，不影响画面。
+  if (url.pathname === '/exp/ocr' && req.method === 'POST') {
+    const cfg = expConfig();
+    if (cfg.enabled !== true) { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"ok":false,"error":"experiments disabled"}'); return; }
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 8 * 1024) req.destroy(); });
+    req.on('end', async () => {
+      const t0 = Date.now();
+      try {
+        const r = await fetch('http://127.0.0.1:' + EXP_OCR_PORT + '/ocr', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body,
+          signal: AbortSignal.timeout(15000),
+        });
+        const txt = await r.text();
+        res.writeHead(r.status, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(txt);
+      } catch (e) {
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({
+          ok: false,
+          error: 'OCR 服务没响应，先起它：py -3.12 app/exp/ocr/ocr_server.py',
+          detail: String(e && e.message || e),
+          ms: Date.now() - t0,
+        }));
+      }
+    });
+    return;
+  }
+
   if (url.pathname === '/input' && req.method === 'POST') {
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
@@ -4736,6 +4772,94 @@ async function handler(req, res) {
     } catch (e) {
       try { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('CA 还没生成（先在电脑上开一次离线模式）'); } catch { }
     }
+    return;
+  }
+  // ---- 定时开关机（2026-11-07）：规则存 power-schedule.json，引擎是 power-apply.ps1 ----
+  // 设计要点（第一版踩过坑）：
+  //   · 查询任务状态不要跑 PowerShell（在服务进程里会卡住、接口超时）——用原生 schtasks /query /fo csv 很快；
+  //   · 应用规则才需要 PowerShell（ScheduledTasks 模块建 WakeToRun 任务），**异步执行**，立刻返回；
+  //     页面随后轮询 /power/status 看结果。
+  const sendJson = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch (e) { } };
+  if (url.pathname === '/power/status' || url.pathname === '/power/apply') {
+    const pjson = join(HERE, 'power-schedule.json');
+    const readSched = () => {
+      try { return JSON.parse(readFileSync(pjson, 'utf8').replace(/^\uFEFF/, '')); } catch { return { enabled: false, rules: [] }; }
+    };
+    const normRules = (arr) => (Array.isArray(arr) ? arr : []).slice(0, 20).map((r, i) => ({
+      id: String((r && r.id) || ('r' + (i + 1))).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || ('r' + (i + 1)),
+      mode: (r && r.mode === 'shutdown') ? 'shutdown' : 'hibernate',
+      repeat: (r && (r.repeat === 'weekdays' || r.repeat === 'once')) ? r.repeat : 'daily',
+      date: String((r && r.date) || '').replace(/[^0-9-]/g, '').slice(0, 10),
+      offTime: String((r && r.offTime) || '23:00').slice(0, 5),
+      wakeTime: String((r && r.wakeTime) || '').slice(0, 5)
+    }));
+    const listTasks = () => new Promise((resolve) => {
+      try {
+        execFile('schtasks.exe', ['/query', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
+          (err, stdout) => {
+            const out = [];
+            if (!err && stdout) {
+              for (const line of String(stdout).split(/\r?\n/)) {
+                if (!line.includes('轻屏-电源-')) continue;
+                const cols = line.split('","').map((x) => x.replace(/^"|"$/g, ''));
+                if (cols.length < 3) continue;
+                out.push({ name: cols[0], next: cols[1], state: cols[2] });
+              }
+            }
+            resolve(out);
+          });
+      } catch { resolve([]); }
+    });
+    if (url.pathname === '/power/status') {
+      const docS = readSched();
+      let finished = false;
+      const finish = (tasks) => {
+        if (finished) return;
+        finished = true;
+        try {
+          sendJson(200, { ok: true, enabled: !!docS.enabled, rules: normRules(docS.rules), tasks: tasks || [], updatedAt: docS.updatedAt || '' });
+        } catch (e) { }
+      };
+      // 3 秒兜底：schtasks 慢或拿不到任务时也必须给页面一个响应（否则页面请求会挂着）
+      const guard = setTimeout(() => finish([]), 3000);
+      guard.unref?.();
+      try {
+        const ch = spawn('cmd.exe', ['/c', 'chcp 65001 >nul && schtasks /query /fo csv /nh'], { windowsHide: true });
+        let out = '';
+        ch.stdout.on('data', (d) => { out += d; });
+        ch.on('close', () => {
+          clearTimeout(guard);
+          const tasks = [];
+          for (const line of String(out || '').split(/\r?\n/)) {
+            if (!line.includes('轻屏-电源-')) continue;
+            const cols = line.split('","').map((x) => x.replace(/^"|"$/g, ''));
+            if (cols.length < 3) continue;
+            tasks.push({ name: cols[0], next: cols[1], state: cols[2], wake: /-唤醒$/.test(cols[0]) });
+          }
+          finish(tasks);
+        });
+        ch.on('error', () => { clearTimeout(guard); finish([]); });
+      } catch (e) { clearTimeout(guard); finish([]); }
+      return;
+    }
+    readBody(req, 64 * 1024).then((b) => {
+      let m = {};
+      try { m = JSON.parse(String(b || '{}')); } catch { }
+      const doc = { enabled: m.enabled !== false, rules: normRules(m.rules), updatedAt: new Date().toISOString() };
+      try { writeFileSync(pjson, JSON.stringify(doc, null, 2), 'utf8'); } catch (e) {
+        sendJson(500, { ok: false, error: '写配置失败：' + String((e && e.message) || e) }); return;
+      }
+      // 异步跑引擎（建/删计划任务），stdio 忽略，避免任何输出把事件循环拖住
+      try {
+        const ps = join(HERE, 'power-apply.ps1');
+        const ch = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps, '-JsonPath', pjson],
+          { windowsHide: true, stdio: 'ignore', detached: true });
+        ch.unref();
+        sendJson(200, { ok: true, queued: true, enabled: doc.enabled, rules: doc.rules, note: '正在应用（约 5-15 秒），稍后刷新状态' });
+      } catch (e) {
+        sendJson(500, { ok: false, error: String((e && e.message) || e) });
+      }
+    });
     return;
   }
   if (url.pathname === '/sw.js') {

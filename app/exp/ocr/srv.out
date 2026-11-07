@@ -1,0 +1,5 @@
+ocr: loading model ...
+ocr: model ready in 640 ms
+ocr: screen 2560x1600 (physical)
+ocr: warmup done
+ocr: listening on http://127.0.0.1:8777
