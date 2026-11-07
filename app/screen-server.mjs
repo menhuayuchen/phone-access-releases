@@ -3059,7 +3059,8 @@ async function handler(req, res) {
         res.end(JSON.stringify(obj));
       } catch { }
     };
-    return freply(200, { ok: true, dir: UPLOAD_DIR, maxBytes: UPLOAD_MAX, files: listUploads() });
+    const __all = listUploads().slice().sort((x, y) => (y.at || 0) - (x.at || 0));
+     return freply(200, { ok: true, dir: UPLOAD_DIR, maxBytes: UPLOAD_MAX, files: __all.slice(0, 5), total: __all.length });
   }
   if (url.pathname === '/file' && req.method === 'POST') {
     const freply = (code, obj) => {
@@ -4398,6 +4399,12 @@ async function handler(req, res) {
     out.checks.push({ name: '证书', ok: !!out.cert.exists, text: out.cert.exists ? ('自签证书已生成（' + Math.round((out.cert.ageSec || 0) / 60) + ' 分钟前）') : '缺失（https 会退回 http）' });
     out.hint = '手机连同一个 Wi-Fi 后打开地址；第一次提示"不安全"点「高级 → 继续前往」。如果一直转圈：1) 公司/酒店 Wi-Fi 可能禁止设备互访，改用电脑热点；2) 用 USB 网络共享（最快）；3) 试试备用地址 http://' + ((out.ips[0] && out.ips[0].ip) || '电脑IP') + ':' + (port + 1) + '/?k=…';
     try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(out)); } catch { }
+    return;
+  }
+  // 2026-11-07：只重启服务、不碰任何配置（以前图省事用 /offline/on 重启，副作用是把离线模式打开了）
+  if (url.pathname === '/restart-service' && req.method === 'POST') {
+    try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end('{"ok":true,"restarting":true}'); } catch (e) { }
+    setTimeout(() => { try { process.exit(0); } catch (e) { } }, 300);
     return;
   }
   if (url.pathname === '/offline/on' || url.pathname === '/offline/off') {
