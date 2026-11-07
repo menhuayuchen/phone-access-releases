@@ -252,7 +252,7 @@ body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mou
     <pre id="cmdout"></pre>
   </div>
 </div>
-<div id="hint">点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮（光标固定） · 三指及以上捏合=缩放</div>
+<div id="hint"></div>
 <script>
 const KEY = "__KEY__";
   const SID = Math.random().toString(36).slice(2, 10);   // 本页会话 id：服务端按它统计丢帧，互不干扰
@@ -498,6 +498,22 @@ const btnSnd = document.getElementById('snd');
 const btnCtl = document.getElementById('ctl');
 const btnDesk = document.getElementById('deskBtn');
 const btnKb = document.getElementById('kbBtn');
+// 2026-11-07：电脑浏览器适配——有精确指针且没有触摸设备 = 桌面
+const IS_DESKTOP = (function () {
+  try {
+    // 主指针是精确指针（鼠标/触控板）且不是触摸主指针 = 电脑浏览器。
+    // 注意不能用 any-pointer: coarse —— 带触屏的电脑会同时命中，会被误判成手机。
+    return window.matchMedia('(pointer: fine)').matches
+      && !window.matchMedia('(pointer: coarse)').matches;
+  } catch (e) { return false; }
+})();
+function hintText() {
+  return IS_DESKTOP
+    ? '鼠标：点=左键 · 拖动=拖拽 · 双击=双击 · 右键=右键 · 滚轮=滚动 · Ctrl+滚轮=缩放'
+    : '点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮（光标固定） · 三指及以上捏合=缩放';
+}
+if (IS_DESKTOP && btnKb) btnKb.style.display = 'none';
+try { const h = document.getElementById('hint'); if (h) h.textContent = hintText(); } catch (e) { }
 const kbbar = document.getElementById('kbbar');
 const kbtext = document.getElementById('kbtext');
 const kbsend = document.getElementById('kbsend');
@@ -1805,7 +1821,7 @@ function setControl(on) {
   btnCtl.classList.toggle('on', on);
   overlay.classList.toggle('off', !on);
   hint.textContent = on
-    ? '点哪指哪：黄点跟着手指走 · 单击=左键 · 拖动=拖拽 · 双击=双击 · 长按=右键 · 双指滑=滚轮（光标固定） · 三指及以上捏合=缩放'
+    ? hintText()
     : '控制已关闭（只读）';
 }
 
@@ -2280,6 +2296,8 @@ overlay.addEventListener('pointerdown', (e) => {
     const qm0 = layoutPoint(e.clientX, e.clientY);
     const pm0 = toScreen(qm0.x, qm0.y);
     queue({ t: 'move', x: pm0.x, y: pm0.y });
+    try { if (window.__paCurLocal) window.__paCurLocal(pm0.x, pm0.y); } catch (e) { }
+    focusStage();
     const mb = (e.button === 1) ? 2 : 0;
     mouseBtnDown = mb;
     queue({ t: 'down', b: mb });
@@ -2378,13 +2396,12 @@ overlay.addEventListener('pointermove', (e) => {
   if (e.pointerType === 'mouse' && state.control) {
     if (mouseBtnDown < 0) mouseModeOn();
     const qm = layoutPoint(e.clientX, e.clientY);
-    const nowM = Date.now();
-    if (nowM - lastMoveSent > 20) {
-      lastMoveSent = nowM;
-      const pm = toScreen(qm.x, qm.y);
-      queue({ t: 'move', x: pm.x, y: pm.y });
-    }
-    showMouseCur(qm.x, qm.y);
+    const pm = toScreen(qm.x, qm.y);
+    // 不再 20ms 节流：鼠标要跟手（queue 内部已有 8ms 批量）
+    lastMoveSent = Date.now();
+    queue({ t: 'move', x: pm.x, y: pm.y });
+    try { if (window.__paCurLocal) window.__paCurLocal(pm.x, pm.y); } catch (e) { }
+showMouseCur(qm.x, qm.y);
     const dd = document.getElementById('dot');
     if (dd) dd.style.display = 'none';
     return;
@@ -2679,7 +2696,9 @@ document.addEventListener('visibilitychange', () => { if (document.hidden) relea
 let wheelAcc = 0;
 overlay.addEventListener('wheel', (e) => {
   if (!state.control) return;
-  e.preventDefault();   // 别让浏览器自己滚页面/触发下拉刷新
+  e.preventDefault();
+  // 电脑浏览器：Ctrl+滚轮 = 系统缩放（与 Windows 一致）
+  if (IS_DESKTOP && e.ctrlKey) { try { queueKey(0x11, 1); queue({ t: 'wheel', d: (e.deltaY > 0 ? -1 : 1) }); queueKey(0x11, 0); flushQueue(); } catch (err) { } return; }   // 别让浏览器自己滚页面/触发下拉刷新
   // 物理鼠标一格通常 deltaY≈100~120；触控板会碎成 1~4 的小值，累积到 100 才走一格，
   // 否则触控板上一次轻微滑动会发出几十条消息。
   wheelAcc += e.deltaY;
@@ -5970,6 +5989,12 @@ bindImg(img);
     // 每帧重新换算：窗口大小、画面缩放(view.scale)、视频首帧前后都会变。
     // 只在收到消息时算一次的话，视频还没就绪（videoSourceSize 还是 16x9 占位）
     // 或者用户缩放画面之后，光标就会错位 —— 所以这里每帧用原始屏幕坐标重算。
+    // 2026-11-07：本地预测光标（不等电脑回传，鼠标才跟手）
+    let lastLocalMouseAt = 0;
+    window.__paCurLocal = function (sx, sy) {
+      st.rx = sx; st.ry = sy; st.got = true; st.vis = true; st.snap = true; lastLocalMouseAt = Date.now();
+      if (!st.raf) frame();
+    };
     function frame() {
       st.raf = requestAnimationFrame(frame);
       if (!st.got || !st.vis) { show(false); return; }
@@ -5985,9 +6010,10 @@ bindImg(img);
       var want = baseK();
       if (Math.abs(want - st.k) > 0.004) paint(st.shape);
       if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
+      var kk = st.snap ? 1 : 0.78; st.snap = false;
       var dx = st.tx - st.x, dy = st.ty - st.y;
       if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
-      else { st.x += dx * 0.78; st.y += dy * 0.78; }   // 0.45 -> 0.62 -> 0.78：用户两次反馈不跟手，逼近直连（再大就会有台阶感）
+      else { st.x += dx * kk; st.y += dy * kk; }   // 0.45 -> 0.62 -> 0.78：用户两次反馈不跟手，逼近直连（再大就会有台阶感）
       el.style.transform = 'translate3d(' + (st.x - st.hx * st.k).toFixed(1) + 'px,'
         + (st.y - st.hy * st.k).toFixed(1) + 'px,0)';
       show(true);
@@ -6007,7 +6033,12 @@ bindImg(img);
         try { j = JSON.parse(ev.data); } catch (e) { return; }
         if (!j || j.t !== 'cur') return;
         if (typeof j.x !== 'number' || typeof j.y !== 'number') return;
-        st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
+        // 2026-11-07：鼠标刚动过的 400ms 内以本地预测为准，忽略电脑回传的旧位置（否则光标被"拽回去"）
+        if (Date.now() - lastLocalMouseAt > 400) {
+st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
+        } else {
+          st.got = true;
+        }
         st.vis = (j.v !== 0);
         var sh = j.s || 'arrow';
         if (sh !== st.shape) { st.shape = sh; paint(sh); }
