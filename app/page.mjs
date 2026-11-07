@@ -4244,6 +4244,24 @@ bindImg(img);
         + '</div>'
         + '<div style="color:#6b7079;font-size:11px;margin-top:6px">选「电脑真实光标」时，下面的形状/大小/颜色只对黄点生效</div>';
     }
+    // 实验版 E2：高清放大增强（放大停手后把该区域的原生像素贴回来）。
+    // 用户要求做成设置里的开关，而不是靠 URL 参数。
+    if (window.__paExp && window.__paExp.want && (window.__paExp.want.ocr || window.__paExp.want.hires)) {
+      const hi = (function () { try { return localStorage.getItem('pa.exp.hires') === '1'; } catch (e) { return false; } })();
+      const hb = function (on, val, t1, t2) {
+        return '<button class="expHires" data-v="' + val + '" style="flex:1;'
+          + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
+          + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 6px;'
+          + 'font-size:12.5px;cursor:pointer;line-height:1.4">'
+          + t1 + '<br><span style="font-size:11px;opacity:.72">' + t2 + '</span></button>';
+      };
+      h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">高清放大增强</div>'
+        + '<div style="display:flex;gap:8px" id="expHiresRow">'
+        + hb(!hi, '0', '关闭', '正常视频画质')
+        + hb(hi, '1', '开启', '放大后取原生像素')
+        + '</div>'
+        + '<div style="color:#6b7079;font-size:11px;margin-top:6px">开启后：画面放大到 1.25 倍以上并停手，会从电脑取这一块的原生像素贴回来（更清晰，但贴上去的是静态快照）。也可以直接点右上角那块状态牌强制取一次。</div>';
+    }
     const curC = licensed ? (P.loadCursor() || P.DOT_DEFAULT) : P.DOT_DEFAULT;
     const curSize = Math.max(6, Math.min(24, Math.round(Number(curC.size) || P.DOT_DEFAULT.size)));
     const curColor = P.isHex(curC.color) ? String(curC.color) : P.DOT_DEFAULT.color;
@@ -5869,6 +5887,7 @@ bindImg(img);
     }
 
     function request() {
+      if (!expHiresOn()) { clearLayer(); badgeSet('高清增强已关闭（设置 → 个性化）', '#8b9099'); return; }
       if (busy) return;
       var rawRc = viewRect();
       var rc = rawRc;
@@ -5889,7 +5908,7 @@ bindImg(img);
       // 节流只挡「同一区域」的重复请求（上面 lastRect 那步已经在挡了），
       // 这里从 2.5 秒降到 800ms —— 原来移动完画面要等 2.5 秒才重新识别，
       // 用户以为「一次性，移动一下就不继续了」。
-      if (Date.now() - lastAt < 800) return;
+      if (lastAt && Date.now() - lastAt < 800) return;   // lastAt=0 表示强制请求，跳过节流
       busy = true; lastRect = rc; lastViewRect = rawRc; lastAt = Date.now();
       badgeSet('取高清图…', '#ffb454');
       var my = ++gen;
@@ -5947,6 +5966,7 @@ bindImg(img);
     // 留着不如不显示 —— 滚动过程中用像素，停手后 350ms 再重新增强。
     setInterval(function () {
       if (state.mode !== 'h264' && state.mode !== 'raw') { clearLayer(); return; }
+      if (!expHiresOn()) { clearLayer(); badgeSet('高清增强已关闭（设置 → 个性化）', '#8b9099'); return; }
       var s = view.scale;
       if (s < 1.25) {
         clearLayer(); lastRect = null; lastScale = s;
@@ -5970,7 +5990,7 @@ bindImg(img);
       // request() 永远没机会执行（之前测试能过，都是靠调试钩子手动 fire 的）。
       // 现在改成记「最后一次变化时间」，停手满 350ms 才发请求，不依赖定时器链。
       var now = Date.now();
-      if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; lastChangeAt = now; }
+      if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; lastChangeAt = now; schedule(380); }
       // 用未裁剪的视口矩形判断「画面有没有动」—— 之前拿裁剪后的 lastRect 比，
       // 尺寸永远差 600+ 像素，于是每轮都判成动了：刚渲染的文字层立刻被清掉。
       if (lastViewRect) {
@@ -5980,11 +6000,46 @@ bindImg(img);
           clearLayer(); lastChangeAt = now;
         }
       }
-      if (!busy && now - lastChangeAt >= 350) {
-        lastChangeAt = now;        // 先把时间戳往前推，避免同一段静止里连续发好几次
+      // 兜底触发：轮询发现「已经安静 350ms 且没有在跑」时补一次。
+      // 正路是下面 pointerup 的 schedule()，这里只防"手势没走完/事件丢了"。
+      if (!busy && !schedTimer && now - lastChangeAt >= 350) {
+        lastChangeAt = now;
         request();
       }
     }, 250);
+
+    // ---- 事件驱动的触发（2026-11-07 重写）----------------------------------
+    // 之前全靠 setInterval 轮询判断"停手了没有"。链路里任何一个条件卡住
+    // （某次 busy 没复位、rect 比较没过）就再也不触发，而且完全静默 ——
+    // 用户实测「经常不触发、移动一下画面就没反应、好像只能触发一次」就是这么来的。
+    //
+    // 现在正路是：手指一抬起就调度一次请求（强制重置 lastRect/lastAt，
+    // 不管上次取过没有、也不受节流限制）。轮询只做待机提示、缩放清层和兜底。
+    var schedTimer = null;
+    function schedule(ms) {
+      if (schedTimer) { clearTimeout(schedTimer); schedTimer = null; }
+      schedTimer = setTimeout(function () {
+        schedTimer = null;
+        if (state.mode !== 'h264' && state.mode !== 'raw') return;
+        if (view.scale < 1.25) return;
+        lastRect = null;      // 强制重新取
+        lastAt = 0;           // 跳过 800ms 节流
+        lastChangeAt = 0;
+        request();
+      }, ms || 380);
+    }
+    try {
+      ['pointerup', 'pointercancel', 'touchend'].forEach(function (ev) {
+        overlay.addEventListener(ev, function () { schedule(420); }, true);
+      });
+    } catch (e) { console.warn('exp hidpi bind:', e); }
+
+// 设置里切「高清放大增强」后从这儿回调：开启就立刻取一次，关闭就清掉图层
+    window.__paExp.onHiresChange = function () {
+      if (!expHiresOn()) { clearLayer(); badgeSet('高清增强已关闭（设置 → 个性化）', '#8b9099'); return; }
+      lastRect = null; lastAt = 0; lastChangeAt = 0;
+      schedule(200);
+    };
 
     // 调试入口（只在 ?exp=ocr 时存在）：手机上放大是触摸手势，调试时没法模拟，
     // 这里直接改 view.scale + 手动触发一次，用来验证整条链路。
@@ -6006,6 +6061,15 @@ bindImg(img);
   //     之后尊重用户手动选择（否则他手动切回黄点会被下一帧鼠标移动再切走）
   // 真光标和黄点互斥必须用 body class + CSS !important：
   // 主线是直接改 dot.style.display 的内联样式，普通样式表规则压不住。
+  // E2 高清增强开关（设置里切换，存 localStorage）。没设置过就默认开 ——
+  // 能加载实验层本身就说明用户想用，默认关会让人以为功能坏了。
+  function expHiresOn() {
+    try {
+      var v = localStorage.getItem('pa.exp.hires');
+      return (v === null) ? true : (v === '1');
+    } catch (e) { return true; }
+  }
+
   var EXP_MODE_KEY = 'pa.exp.mode';
   function expMode() {
     try { return localStorage.getItem(EXP_MODE_KEY) === 'real' ? 'real' : 'dot'; } catch (e) { return 'dot'; }
@@ -6040,9 +6104,28 @@ bindImg(img);
     // 设置面板每次打开都重建 DOM，用事件委托绑一次就够
     document.addEventListener('click', function (ev) {
       var t = ev.target;
-      var b = (t && t.closest) ? t.closest('.expMode') : null;
-      if (!b) return;
-      expSetMode(b.getAttribute('data-m'), true);
+      if (!t || !t.closest) return;
+      var b = t.closest('.expMode');
+      if (b) { expSetMode(b.getAttribute('data-m'), true); return; }
+      // 高清增强开关：切换后刷新按钮态，并通知高清层重新评估（开→立刻取一次）
+      var h = t.closest('.expHires');
+      if (h) {
+        var on = h.getAttribute('data-v') === '1';
+        try { localStorage.setItem('pa.exp.hires', on ? '1' : '0'); } catch (e) { }
+        var row = document.getElementById('expHiresRow');
+        if (row) {
+          var bs = row.querySelectorAll('.expHires');
+          for (var i = 0; i < bs.length; i++) {
+            var isOn = bs[i].getAttribute('data-v') === (on ? '1' : '0');
+            bs[i].style.background = isOn ? 'rgba(47,111,235,.22)' : '#242730';
+            bs[i].style.color = isOn ? '#8fb6ff' : '#c9ccd1';
+            bs[i].style.borderColor = isOn ? '#3f6fd0' : '#343842';
+          }
+        }
+        if (window.__paExp && window.__paExp.onHiresChange) {
+          try { window.__paExp.onHiresChange(); } catch (e) { }
+        }
+      }
     }, true);
     var auto = false;
     function onPtr(e) {
