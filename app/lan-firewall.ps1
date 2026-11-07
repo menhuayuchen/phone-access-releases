@@ -39,9 +39,11 @@ function W([string]$m) {
 
 $r1 = 'PA-LAN-SCREEN-8662'
 $r2 = 'PA-LAN-RTC-UDP'
+$r3 = 'PA-LAN-SUNSHINE-TCP'
+$r4 = 'PA-LAN-SUNSHINE-UDP'
 
 function Remove-Both {
-  foreach ($n in @($r1, $r2)) {
+  foreach ($n in @($r1, $r2, $r3, $r4)) {
     $rs = @(Get-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue)
     foreach ($x in $rs) {
       Remove-NetFirewallRule -Name $x.Name -ErrorAction Stop
@@ -55,7 +57,7 @@ switch ($Action) {
     W ('[i] 目录：' + $Root)
     W ('[i] node.exe：' + $nodeExe + '  存在=' + (Test-Path -LiteralPath $nodeExe))
     W ('[i] rtc-h264.exe：' + $rtcExe + '  存在=' + (Test-Path -LiteralPath $rtcExe))
-    foreach ($n in @($r1, $r2)) {
+    foreach ($n in @($r1, $r2, $r3, $r4)) {
       $x = Get-NetFirewallRule -DisplayName $n -ErrorAction SilentlyContinue | Select-Object -First 1
       if (-not $x) { W ('[ ] ' + $n + ' —— 未创建（局域网直连关闭状态）'); continue }
       $pf = $x | Get-NetFirewallPortFilter
@@ -82,6 +84,25 @@ switch ($Action) {
         -Description '轻屏：局域网直连的 WebRTC 媒体，只允许私有网段' | Out-Null
       W ('[OK] 已创建 ' + $r2)
     } else { W ('[i] 已存在 ' + $r2) }
+
+    # 3) 串流游戏（Sunshine/Moonlight）：默认规则只有 tailnet + 回环，同一 Wi-Fi 连不上
+    #    （2026-11-07 实测：面板给的 10.x 地址手机报"查找不到电脑"，tailnet 地址可用）。
+    if (-not (Get-NetFirewallRule -DisplayName $r3 -ErrorAction SilentlyContinue)) {
+      foreach ($p in @(47984, 47989, 47990, 48010)) {
+        New-NetFirewallRule -DisplayName $r3 -Direction Inbound -Action Allow -Protocol TCP `
+          -LocalPort $p -RemoteAddress $lan -Profile Any `
+          -Description '轻屏：局域网直连下允许 Moonlight 串流（Sunshine TCP）' | Out-Null
+      }
+      W ('[OK] 已创建 ' + $r3)
+    } else { W ('[i] 已存在 ' + $r3) }
+    if (-not (Get-NetFirewallRule -DisplayName $r4 -ErrorAction SilentlyContinue)) {
+      foreach ($p in @(47998, 47999, 48000, 48002, 48010)) {
+        New-NetFirewallRule -DisplayName $r4 -Direction Inbound -Action Allow -Protocol UDP `
+          -LocalPort $p -RemoteAddress $lan -Profile Any `
+          -Description '轻屏：局域网直连下允许 Moonlight 串流（Sunshine UDP）' | Out-Null
+      }
+      W ('[OK] 已创建 ' + $r4)
+    } else { W ('[i] 已存在 ' + $r4) }
   }
   'off' {
     Remove-Both

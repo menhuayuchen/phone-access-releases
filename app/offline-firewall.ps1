@@ -75,12 +75,31 @@ if ($Action -eq 'on') {
             -Program $exe -RemoteAddress $lanRanges -Profile Any -ErrorAction SilentlyContinue `
             -Description '轻屏：离线模式 WebRTC H.264 媒体（UDP）'
     }
+
+    # 4) 串流游戏（Sunshine / Moonlight）：默认规则只放行 tailnet + 回环，局域网连不上。
+    #    同一 Wi-Fi 想用手游串流，就必须把 Sunshine 的端口对私有网段放行（2026-11-07 实测：
+    #    面板里写「在家里/同一 Wi-Fi」的 10.x 地址，手机一直提示"查找不到电脑"，而 tailnet 地址可用，
+    #    原因就是这条规则缺局域网段）。
+    $sunTcp = @(47984, 47989, 47990, 48010)     # Web UI / HTTPS / 控制
+    $sunUdp = @(47998, 47999, 48000, 48002, 48010)  # 视频 / 音频 / 控制
+    foreach ($proto in @('TCP', 'UDP')) {
+        $list = if ($proto -eq 'TCP') { $sunTcp } else { $sunUdp }
+        $name = $tag + ' : 离线模式允许局域网串流 ' + $proto
+        Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+        foreach ($p in $list) {
+            $null = New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow -Protocol $proto `
+                -LocalPort $p -RemoteAddress $lanRanges -Profile Any -ErrorAction SilentlyContinue `
+                -Description '轻屏：离线模式下允许同一局域网的 Moonlight 串流（Sunshine）'
+        }
+    }
 } else {
     # 关：删放行规则、恢复之前停用的拒绝规则
     foreach ($p in $ports) {
         Get-NetFirewallRule -DisplayName ($tag + ' : 离线模式允许局域网 ' + [string]$p) -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
     }
     Get-NetFirewallRule -DisplayName ($tag + ' : 离线模式允许局域网 WebRTC') -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    Get-NetFirewallRule -DisplayName ($tag + ' : 离线模式允许局域网串流 TCP') -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
+    Get-NetFirewallRule -DisplayName ($tag + ' : 离线模式允许局域网串流 UDP') -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
     if (Test-Path -LiteralPath $statePath) {
         try {
             $st = Get-Content -LiteralPath $statePath -Raw -Encoding UTF8 | ConvertFrom-Json

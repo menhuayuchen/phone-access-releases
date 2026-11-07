@@ -4083,7 +4083,7 @@ bindImg(img);
       if (lan.length) h += scene('在家里 / 连同一个 Wi-Fi（推荐，最顺）', lan[0].ip, '#8CE58C');
       if (ts) {
         h += scene('在外面 / 用手机流量', ts.ip, '#8fb6ff');
-        h += '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。<br>如果连同一个 Wi-Fi 也连不上，多半是路由器禁止设备互访——用上面「在外面」这个地址，或者用电脑开热点给手机连。</div>';
+        h += '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。<br>如果连同一个 Wi-Fi 也连不上：① 到「设置」里打开一次「离线模式」（会自动放行 Sunshine 的 47984/47989 等端口，之前这些端口只放行了 Tailscale）；② 还是不行，多半是路由器禁止设备互访——用上面「在外面」这个地址，或者用电脑开热点给手机连。</div>';
       }
       if (!lan.length && !ts) h += '<div style="margin-top:8px;color:#ffb454;font-size:12px">暂时没取到地址，先连上网络再刷新一次。</div>';
       h += '<div style="margin-top:10px;padding-top:9px;border-top:1px solid #23252c;color:#6b7078;font-size:11.5px;line-height:1.8">'
