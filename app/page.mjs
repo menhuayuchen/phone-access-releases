@@ -1180,7 +1180,19 @@ async function rtc264AudioStart() {
     const pc = new RTCPeerConnection({ iceServers: [] });
     A.audioSig = sig;
     A.audioPc = pc;
-    pc.ontrack = function (e) { rtc264AttachAudio(e.track); };
+    // 2026-11-07 19:0x：音频接收端补上和视频一样的低延迟提示。
+    // 清晰模式的音频是**另一条纯音频 PeerConnection**，视频那条设了 jitterBufferTarget=20 /
+    // playoutDelayHint=0，这条以前没设。本机回环抖动≈0 看不出差别；弱网/4G 下不设的话，
+    // 音频抖动缓冲会自动涨，表现就是"声音慢慢比画面慢半拍"。这两句只是给上限，网络好时无副作用。
+    pc.ontrack = function (e) {
+      try {
+        if (e.receiver) {
+          if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20;
+          if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+        }
+      } catch (err) { }
+      rtc264AttachAudio(e.track);
+    };
     pc.onicecandidate = function (e) { try { if (e.candidate && sig.readyState === 1) sig.send(JSON.stringify({ type: 'ice', candidate: e.candidate })); } catch (err) { } };
     pc.onconnectionstatechange = function () { if (pc.connectionState === 'failed' || pc.connectionState === 'closed') rtc264AudioStop(); };
     sig.onopen = async function () {
