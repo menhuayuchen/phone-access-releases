@@ -1616,9 +1616,13 @@ function wanted() {
   // 后果有两层：①capture.exe 以为没人看，自己停抓，侧车/管道就没帧；
   // ②监督进程的"10 秒没帧"看门狗只在 viewers>0 时才判，所以卡死永远不自愈。
   const crisp = (h264.clients ? h264.clients.size : 0) + (rtc264Status.sessions || 0);
-  if (crisp > 0) return crisp + (rtc.stats().peers || 0);
-  if (streams > 0) return streams + (rtc.stats().peers || 0);
-  if ((rtc.stats().peers || 0) > 0) return rtc.stats().peers;
+  // 2026-11-07：清晰模式的音频走"纯音频"的那条 rtc 连接，它是同一位观众的伴生通道，
+  // 不能再算一个观众（否则 /health 显示 viewers=2，排查时看着像幽灵连接）。
+  const rst = rtc.stats();
+  const rpVideo = Math.max(0, (rst.peers || 0) - (rst.audioOnly || 0));
+  if (crisp > 0) return crisp + rpVideo;
+  if (streams > 0) return streams + rpVideo;
+  if (rpVideo > 0) return rpVideo;
   if (Date.now() - lastPoll < 3000) return 1;
 
   return 0;

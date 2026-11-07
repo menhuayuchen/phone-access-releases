@@ -38,6 +38,10 @@ let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低�
   const senderPcs = new Set();
     let lastFeed = 0;
   const peers = new Set();
+// 2026-11-07：清晰模式的音频是**另开一条纯音频连接**（/rtc?audio=1）来送声音的。
+// 这条连接不传视频，如果和视频侧车一起算进 viewers，同一位观众会被统计成两个
+// （/health 里 viewers=2 看着像有幽灵连接）。这里单独记一份，供 wanted() 去重。
+let audioOnlyPeers = 0;
 
   function video(i420, w, h) {
       const now = Date.now();
@@ -108,6 +112,7 @@ let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低�
       let audioOnly = false;
       try { audioOnly = new URL(req.url, 'http://x').searchParams.get('audio') === '1'; } catch (e) { }
       log('rtc: viewer connected from ' + who + (audioOnly ? '（仅音频）' : ''));
+      if (audioOnly) audioOnlyPeers++;
       const pc = new RTCPeerConnection({ iceServers: ICE });
       peers.add(pc);
       // 每条连接都要新建 track：一个 MediaStreamTrack 只能挂在一个 RTCPeerConnection 上，
@@ -145,6 +150,7 @@ let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低�
         if (closed) return;
         closed = true;
         peers.delete(pc);
+        if (audioOnly) audioOnlyPeers = Math.max(0, audioOnlyPeers - 1);
         try { if (vTrack) vTrack.stop(); } catch {}
         try { if (aTrack) aTrack.stop(); } catch {}
         try { pc.close(); } catch {}
@@ -204,6 +210,7 @@ let qKbps = 3000, qFps = 24;   // 流畅模式优先跨网可用性：默认低�
   function stats() {
     return {
       peers: peers.size,
+      audioOnly: audioOnlyPeers,
       frames, audioChunks,
       frameAge: lastFrame ? (Date.now() - lastFrame) / 1000 : -1,
       audioAge: lastAudio ? (Date.now() - lastAudio) / 1000 : -1,
