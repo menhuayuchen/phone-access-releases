@@ -37,6 +37,10 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
               cursorPos = {
                 x: j.cx, y: j.cy,
                 s: (typeof j.cs === 'string' && j.cs) ? j.cs : 'arrow',
+      cw: (typeof j.cw === 'number' && j.cw > 0) ? j.cw : 0,
+      ch: (typeof j.ch === 'number' && j.ch > 0) ? j.ch : 0,
+      chx: (typeof j.chx === 'number') ? j.chx : 0,
+      chy: (typeof j.chy === 'number') ? j.chy : 0,
                 v: (j.vis === 0 ? 0 : 1),
               };
               cursorAt = Date.now();
@@ -83,7 +87,7 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
   }
   setInterval(pollCursor, 33).unref?.();
 
-  function cursor() { return { x: cursorPos.x, y: cursorPos.y, s: cursorPos.s, v: cursorPos.v, at: cursorAt }; }
+  function cursor() { return { x: cursorPos.x, y: cursorPos.y, s: cursorPos.s, v: cursorPos.v, cw: cursorPos.cw || 0, ch: cursorPos.ch || 0, chx: cursorPos.chx || 0, chy: cursorPos.chy || 0, at: cursorAt }; }
 
   // 注入是否被系统挡住（前台高权限窗口 UIPI）。injector 每收到 cursor 询问就顺便回一次状态。
   function status() {

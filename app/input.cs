@@ -1,4 +1,4 @@
-using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
@@ -387,6 +387,8 @@ static class Program
                 // 手机端拿它画一个真的系统光标（箭头/文本 I 形/手型/等待圈…），
                 // 因为 draw_mouse=0 把光标从视频里剥掉了，那边本来什么都看不到。
                 POINT p; GetCursorPos(out p);
+
+                int cw2 = 0, ch2 = 0, chx2 = 0, chy2 = 0;
                 if (reply != null)
                 {
                     try
@@ -399,6 +401,7 @@ static class Program
                         {
                             vis = (ci.flags & CURSOR_SHOWING) != 0 ? 1 : 0;
                             cs = CursorShapeId(ci.hCursor);
+                            try { CursorMetrics(ci.hCursor, out cw2, out ch2, out chx2, out chy2); } catch { }
                             // GetCursorInfo 给的坐标和 GetCursorPos 是同一个值，但前者随
                             // 「光标是否属于前台窗口」更准；两个都取到就用 CURSORINFO 的。
                             p.x = ci.ptScreenPos.x;
@@ -406,6 +409,7 @@ static class Program
                         }
                         reply.WriteLine("{\"cx\":" + p.x + ",\"cy\":" + p.y +
                                         ",\"cs\":\"" + cs + "\",\"vis\":" + vis +
+                                        ",\"cw\":" + cw2 + ",\"ch\":" + ch2 + ",\"chx\":" + chx2 + ",\"chy\":" + chy2 +
                                         ",\"blocked\":" + blockedCount +
                                         ",\"blkage\":" + BlockAgeMs() +
                                         ",\"fg\":\"" + Esc(ForegroundTitle()) + "\"}");
@@ -568,6 +572,45 @@ static class Program
     }
 
     [DllImport("user32.dll")] static extern bool GetCursorInfo(ref CURSORINFO pci);
+
+    // 2026-11-07：回传系统光标的真实像素尺寸和热点
+    [StructLayout(LayoutKind.Sequential)]
+    struct ICONINFO { public bool fIcon; public int xHotspot; public int yHotspot; public IntPtr hbmMask; public IntPtr hbmColor; }
+    [StructLayout(LayoutKind.Sequential)]
+    struct BITMAP { public int bmType; public int bmWidth; public int bmHeight; public int bmWidthBytes; public short bmPlanes; public short bmBitsPixel; public IntPtr bmBits; }
+    [DllImport("user32.dll")] static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
+    [DllImport("gdi32.dll")] static extern int GetObject(IntPtr h, int c, out BITMAP b);
+    [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr h);
+    static IntPtr cmCursor = IntPtr.Zero;
+    static int cmW = 0, cmH = 0, cmHx = 0, cmHy = 0;
+    static void CursorMetrics(IntPtr h, out int w, out int ht, out int hx, out int hy)
+    {
+        w = 32; ht = 32; hx = 0; hy = 0;
+        try
+        {
+            if (h != IntPtr.Zero && h != cmCursor)
+            {
+                ICONINFO ii;
+                if (GetIconInfo(h, out ii))
+                {
+                    IntPtr bmp = ii.hbmColor != IntPtr.Zero ? ii.hbmColor : ii.hbmMask;
+                    BITMAP bm;
+                    if (bmp != IntPtr.Zero && GetObject(bmp, Marshal.SizeOf(typeof(BITMAP)), out bm) != 0)
+                    {
+                        cmW = Math.Abs(bm.bmWidth);
+                        cmH = Math.Abs(bm.bmHeight) / (ii.hbmColor == IntPtr.Zero ? 2 : 1);
+                        cmHx = ii.xHotspot; cmHy = ii.yHotspot; cmCursor = h;
+                    }
+                    if (ii.hbmColor != IntPtr.Zero) DeleteObject(ii.hbmColor);
+                    if (ii.hbmMask != IntPtr.Zero) DeleteObject(ii.hbmMask);
+                }
+            }
+            if (cmW > 0) w = cmW;
+            if (cmH > 0) ht = cmH;
+            hx = cmHx; hy = cmHy;
+        }
+        catch { }
+    }
     [DllImport("user32.dll")] static extern IntPtr LoadCursor(IntPtr hInstance, IntPtr lpCursorName);
 
     // IDC_* 资源 id（winuser.h）。顺序必须和 IDC_NAMES 一一对应。

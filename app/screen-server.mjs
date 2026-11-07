@@ -1346,7 +1346,7 @@ function attachExpWs(server, key) {
     if (!c || !(c.x >= 0)) return;
     // injector 断了/没回过：别把上一个位置一直画在那里
     if (!c.at || Date.now() - c.at > 1500) return;
-    const msg = JSON.stringify({ t: 'cur', x: c.x, y: c.y, s: c.s || 'arrow', v: c.v === 0 ? 0 : 1 });
+    const msg = JSON.stringify({ t: 'cur', x: c.x, y: c.y, s: c.s || 'arrow', v: c.v === 0 ? 0 : 1, cw: c.cw || 0, ch: c.ch || 0, chx: c.chx || 0, chy: c.chy || 0 });
     if (msg === lastSent) return;                 // 屏幕没动：不占带宽
     lastSent = msg;
     for (const ws of clients) { try { if (ws.readyState === 1) ws.send(msg); } catch { } }

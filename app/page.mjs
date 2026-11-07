@@ -5956,7 +5956,7 @@ bindImg(img);
       + 'display:none;will-change:transform;background-repeat:no-repeat;';
     document.body.appendChild(el);
 
-    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
+    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false, cw: 0, ch: 0, chx: 0, chy: 0, hxr: 0, hyr: 0, pw: 0, ph: 0 };
 
     // 尺寸（2026-11-07 第三版，按用户实机反馈重定）：
     // 真实光标在 2560 宽的屏幕上占 32px（1.25%）。手机上按真实比例只剩 4~5px，根本看不见，
@@ -5966,40 +5966,70 @@ bindImg(img);
     //   完全不跟（上一版）：放大 2 倍后光标相对画面只剩一半大，用户反馈「自适应出问题」；
     //   线性跟：放大 4 倍光标变 106px，占半个屏幕，更糟。
     //   0.35 次方：scale 2→1.27 倍、4→1.62 倍、8→2.06 倍，放大看得清又不喧宾夺主。
-    function baseK() {
-      var w = 0;
-      try { w = stage.getBoundingClientRect().width; } catch (e) { w = 0; }
-      var px = w > 0 ? Math.min(22, Math.max(11, w * 0.028)) : 14;
-      var zs = 1;
-      try { zs = (view && view.scale > 1) ? view.scale : 1; } catch (e) { zs = 1; }
-      if (zs > 1) px = px * Math.pow(zs, 0.35);
-      return px / 19;                      // 19 = 箭头形 viewBox 高度
+    // 2026-11-07 第四版：按**系统光标的真实像素尺寸和热点**画，位置用本地预测、直接写 transform（不等下一帧）
+    var MIN_PX = 10;      // 再真实也不能小到看不见
+    var MAX_PX = 46;      // 也不至于糊住半个屏幕
+    var BOOST = 1.5;      // 真实比例在手机上偏小，放大一点更实用
+    function cssScale() {
+      // 屏幕像素 → 页面 CSS 像素 的换算比例（含画面缩放/旋转）
+      try {
+        var a0 = toPage(0, 0), a1 = toPage(1000, 0);
+        var w = Math.abs(a1.x - a0.x) / 1000;
+        if (w > 0 && isFinite(w)) return w;
+      } catch (e) { }
+      return 0;
     }
-
+    function drawnSize() {
+      // 有真实尺寸就按真实比例算；没有就退回旧的启发式（保证任何情况下都能显示）
+      if (st.cw > 0 && st.ch > 0) {
+        var sc = cssScale() || 1;
+        var w = st.cw * sc * BOOST;
+        w = Math.max(MIN_PX, Math.min(MAX_PX, w));
+        return { w: w, h: w * (st.ch / st.cw) };
+      }
+      var ww = 0;
+      try { ww = stage.getBoundingClientRect().width; } catch (e) { ww = 0; }
+      var px = ww > 0 ? Math.min(22, Math.max(11, ww * 0.028)) : 14;
+      return { w: px, h: px };
+    }
     function paint(s) {
       var d = expShape(s);
-      var z = baseK();
-      st.hx = d.hx; st.hy = d.hy; st.k = z;
-      var w = Math.round(d.w * z * 10) / 10;
-      var h = Math.round(d.h * z * 10) / 10;
-      el.style.width = w + 'px';
-      el.style.height = h + 'px';
-      el.style.backgroundSize = w + 'px ' + h + 'px';
+      var sz = drawnSize();
+      // 真实热点（像素）归一化；没有真实数据就用形状自带的
+      var hxr = (st.cw > 0 && st.cw > 0) ? (st.chx / st.cw) : (d.hx / d.w);
+      var hyr = (st.ch > 0) ? (st.chy / st.ch) : (d.hy / d.h);
+      st.hxr = Math.max(0, Math.min(1, hxr));
+      st.hyr = Math.max(0, Math.min(1, hyr));
+      st.pw = sz.w; st.ph = sz.h; st.k = sz.w;
+      el.style.width = Math.round(sz.w) + 'px';
+      el.style.height = Math.round(sz.h) + 'px';
+      el.style.backgroundSize = Math.round(sz.w) + 'px ' + Math.round(sz.h) + 'px';
       var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + d.w + '" height="' + d.h + '" viewBox="0 0 ' + d.w + ' ' + d.h + '">' + d.s + '</svg>';
-      el.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + '")';
+      el.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + ')';
     }
     function show(on) {
       if (st.shown === on) return;
       st.shown = on;
       el.style.display = on ? 'block' : 'none';
     }
-    // 每帧重新换算：窗口大小、画面缩放(view.scale)、视频首帧前后都会变。
-    // 只在收到消息时算一次的话，视频还没就绪（videoSourceSize 还是 16x9 占位）
-    // 或者用户缩放画面之后，光标就会错位 —— 所以这里每帧用原始屏幕坐标重算。
-    // 2026-11-07：本地预测光标（不等电脑回传，鼠标才跟手）
-    let lastLocalMouseAt = 0;
+    // 同步落位：鼠标/外接鼠标移动时立刻写 transform，不等 rAF（这是"拖泥带水"的直接来源）
+    function placeNow(px, py) {
+      st.x = px; st.y = py;
+      el.style.transform = 'translate3d(' + (px - st.hxr * st.pw).toFixed(1) + 'px,'
+        + (py - st.hyr * st.ph).toFixed(1) + 'px,0)';
+    }
+    var lastLocalMouseAt = 0;
     window.__paCurLocal = function (sx, sy) {
-      st.rx = sx; st.ry = sy; st.got = true; st.vis = true; st.snap = true; lastLocalMouseAt = Date.now();
+      st.rx = sx; st.ry = sy; st.got = true; st.vis = true; st.snap = true;
+      lastLocalMouseAt = Date.now();
+      try {
+        var p0 = toPage(sx, sy);
+        if (p0 && isFinite(p0.x) && isFinite(p0.y)) {
+          if (!st.pw) paint(st.shape || 'arrow');
+          placeNow(p0.x, p0.y);
+          if (st.vis) show(true);
+        }
+      } catch (e) { }
       if (!st.raf) frame();
     };
     function frame() {
@@ -6012,17 +6042,16 @@ bindImg(img);
       var p;
       try { p = toPage(st.rx, st.ry); } catch (e) { return; }
       if (!p || !isFinite(p.x) || !isFinite(p.y)) { show(false); return; }
-      st.tx = p.x; st.ty = p.y;
-      // 尺寸自适应：只在需要的值时变（窗口/旋转/缩放档）才重画，不每帧改样式
-      var want = baseK();
-      if (Math.abs(want - st.k) > 0.004) paint(st.shape);
-      if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
+      // 尺寸随窗口/缩放变化时才重画（每帧比对一次，代价很小）
+      var want = drawnSize();
+      if (!st.pw || Math.abs(want.w - st.pw) > 0.5) paint(st.shape || 'arrow');
+      if (!st.shown) { st.x = p.x; st.y = p.y; }
       var kk = st.snap ? 1 : 0.78; st.snap = false;
-      var dx = st.tx - st.x, dy = st.ty - st.y;
-      if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
-      else { st.x += dx * kk; st.y += dy * kk; }   // 0.45 -> 0.62 -> 0.78：用户两次反馈不跟手，逼近直连（再大就会有台阶感）
-      el.style.transform = 'translate3d(' + (st.x - st.hx * st.k).toFixed(1) + 'px,'
-        + (st.y - st.hy * st.k).toFixed(1) + 'px,0)';
+      var dx = p.x - st.x, dy = p.y - st.y;
+      if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = p.x; st.y = p.y; }
+      else { st.x += dx * kk; st.y += dy * kk; }
+      el.style.transform = 'translate3d(' + (st.x - st.hxr * st.pw).toFixed(1) + 'px,'
+        + (st.y - st.hyr * st.ph).toFixed(1) + 'px,0)';
       show(true);
     }
     function stop() {
@@ -6041,12 +6070,20 @@ bindImg(img);
         if (!j || j.t !== 'cur') return;
         if (typeof j.x !== 'number' || typeof j.y !== 'number') return;
         // 2026-11-07：鼠标刚动过的 400ms 内以本地预测为准，忽略电脑回传的旧位置（否则光标被"拽回去"）
-        if (Date.now() - lastLocalMouseAt > 400) {
+        if (Date.now() - lastLocalMouseAt > 3000) {
 st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
         } else {
           st.got = true;
         }
         st.vis = (j.v !== 0);
+
+        // 2026-11-07：注入器回传的系统光标真实像素尺寸与热点（用于按真实大小/热点绘制）
+        var sizeChanged = false;
+        if (typeof j.cw === 'number' && j.cw > 0 && j.cw !== st.cw) { st.cw = j.cw; sizeChanged = true; }
+        if (typeof j.ch === 'number' && j.ch > 0 && j.ch !== st.ch) { st.ch = j.ch; sizeChanged = true; }
+        if (typeof j.chx === 'number') { st.chx = j.chx; }
+        if (typeof j.chy === 'number') { st.chy = j.chy; }
+        if (sizeChanged) paint(st.shape || 'arrow');
         var sh = j.s || 'arrow';
         if (sh !== st.shape) { st.shape = sh; paint(sh); }
         if (!st.raf) frame();
