@@ -2290,7 +2290,9 @@ function hideMouseCur() {
 }
 overlay.addEventListener('pointermove', (e) => {
   if (activePtr.has(e.pointerId)) activePtr.set(e.pointerId, { x: e.clientX, y: e.clientY });
-  if (activePtr.size >= 2) {
+  // 2026-11-07 修：原来 >=2 把三指也算成双指滚动，于是滚轮和缩放同时触发（手势打架）。
+  // 现在只认「正好两根」，三指及以上统一交给缩放手势。
+  if (activePtr.size === 2) {
     let sy = 0, n = 0;
     activePtr.forEach(function (v) { sy += v.y; n++; });
     const avgY = sy / n;
@@ -3845,6 +3847,7 @@ bindImg(img);
     let lastStatus = null;
     // 2026-11-07：配对地址（局域网最快 / tailnet 远程）+ 使用说明
     // 2026-11-07：配对地址（给普通用户看的说法：家里 / 在外面，两步操作）
+    // 2026-11-07：配对地址分两种用法——Moonlight 只填 IP；浏览器才填 https://IP:端口
     const renderAddr = (j) => {
       const box = document.getElementById('ssAddr');
       if (!box) return;
@@ -3852,30 +3855,31 @@ bindImg(img);
       const port = (j && j.webPort) || 47990;
       const lan = list.filter((x) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(String(x.ip || '')));
       const ts = list.filter((x) => /^100\./.test(String(x.ip || '')))[0];
-      const chip = (ip, color) => {
-        const addr = escHtml(ip) + ':' + port;
+      const chip = (text, color) => {
+        const t = escHtml(text);
         return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px">'
           + '<code style="font:14px/1.4 ui-monospace,Consolas,monospace;color:' + color + ';background:#14151a;'
-          + 'border:1px solid #24262e;border-radius:8px;padding:6px 9px;user-select:all">' + addr + '</code>'
-          + '<button type="button" data-copy="' + addr + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;'
+          + 'border:1px solid #24262e;border-radius:8px;padding:6px 9px;user-select:all">' + t + '</code>'
+          + '<button type="button" data-copy="' + t + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;'
           + 'border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer">复制</button></div>';
       };
-      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">怎么连（两步）</div>'
-        + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.9;margin-top:5px">'
-        + '① 手机装 <b style="color:#c9ccd1">Moonlight</b>，点「Add Host / 添加主机」→ 填下面的地址<br>'
-        + '② 手机会显示 <b style="color:#c9ccd1">4 位数字</b> → 用手机浏览器打开同一个地址 → 输入这 4 位数字 → 配对完成'
-        + '</div>';
-      if (lan.length) {
-        h += '<div style="margin-top:10px;color:#8CE58C;font-size:12.5px;font-weight:600">在家里 / 连同一个 Wi-Fi（推荐，最顺）</div>' + chip(lan[0].ip, '#8CE58C');
-      }
+      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">怎么连（两步）</div>';
+      const scene = (title, ip, color) => {
+        return '<div style="margin-top:10px;color:' + color + ';font-size:12.5px;font-weight:600">' + title + '</div>'
+          + '<div style="color:#aeb3bb;font-size:12px;margin-top:4px">① 在 Moonlight 的「Add Host / 添加电脑」里填这个（<b style="color:#c9ccd1">只填 IP，不要加 https:// 和端口</b>）</div>'
+          + chip(ip, color)
+          + '<div style="color:#aeb3bb;font-size:12px;margin-top:6px">② 手机会显示 4 位数字，用它旁边的按钮「用浏览器打开」或手动打开下面这个地址，输入 4 位数字完成配对</div>'
+          + chip('https://' + ip + ':' + port, '#e8eaee');
+      };
+      if (lan.length) h += scene('在家里 / 连同一个 Wi-Fi（推荐，最顺）', lan[0].ip, '#8CE58C');
       if (ts) {
-        h += '<div style="margin-top:9px;color:#8fb6ff;font-size:12.5px;font-weight:600">在外面 / 用手机流量</div>' + chip(ts.ip, '#8fb6ff')
-          + '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。</div>';
+        h += scene('在外面 / 用手机流量', ts.ip, '#8fb6ff');
+        h += '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。</div>';
       }
       if (!lan.length && !ts) h += '<div style="margin-top:8px;color:#ffb454;font-size:12px">暂时没取到地址，先连上网络再刷新一次。</div>';
       h += '<div style="margin-top:10px;padding-top:9px;border-top:1px solid #23252c;color:#6b7078;font-size:11.5px;line-height:1.8">'
-        + '· 第一次配对时浏览器会提示「不安全 / 证书问题」——点「高级 → 继续前往」即可（这是我们自己签的证书）<br>'
-        + '· 觉得画面有点卡：在 Moonlight 里把「分辨率」选 <b style="color:#c9ccd1">1080p</b>、「帧率」选 <b style="color:#c9ccd1">60</b>，会更跟手'
+        + '· 第一次用浏览器打开会提示「不安全 / 证书问题」——点「高级 → 继续前往」即可<br>'
+        + '· 觉得画面有点卡：在 Moonlight 里把「分辨率」选 <b style="color:#c9ccd1">1080p</b>、「帧率」选 <b style="color:#c9ccd1">60</b>'
         + '</div>';
       box.innerHTML = h;
       box.querySelectorAll('[data-copy]').forEach((btn) => btn.addEventListener('click', () => {
