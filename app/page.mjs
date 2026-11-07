@@ -5719,6 +5719,20 @@ bindImg(img);
     var lastRect = null, lastAt = 0;
     var busy = false, gen = 0, lastScale = 1, timer = null;
 
+    // 状态牌：让用户一眼看到 OCR 到底有没有在工作（不然"没感觉"完全无法判断）。
+    // 只有 ?exp=ocr 才存在，不污染主线。
+    var badge = document.createElement('div');
+    badge.id = 'expOcrBadge';
+    badge.style.cssText = 'position:fixed;right:8px;top:64px;z-index:9999;padding:4px 9px;border-radius:8px;'
+      + 'background:rgba(16,18,22,.82);color:#8fb6ff;font-size:11px;line-height:1.5;'
+      + 'font-family:system-ui,sans-serif;pointer-events:none;display:none;';
+    document.body.appendChild(badge);
+    function badgeSet(t, color) {
+      badge.textContent = t || '';
+      badge.style.color = color || '#8fb6ff';
+      badge.style.display = t ? 'block' : 'none';
+    }
+
     function ensureLayer() {
       if (layer) return layer;
       layer = document.createElement('div');
@@ -5765,6 +5779,7 @@ bindImg(img);
           + 'text-align:left;">' + escHtml(L.text) + '</div>';
       }
       el.innerHTML = html;
+      badgeSet('OCR 已增强 ' + el.children.length + ' 行 · ' + Math.round(j.ms || 0) + 'ms', '#8CE68C');
     }
 
     function request() {
@@ -5776,6 +5791,7 @@ bindImg(img);
         && Math.abs(lastRect.w - rc.w) < 40 && Math.abs(lastRect.h - rc.h) < 40) return;
       if (Date.now() - lastAt < 1200) return;
       busy = true; lastRect = rc; lastAt = Date.now();
+      badgeSet('OCR 识别中…', '#ffb454');
       var my = ++gen;
       fetch('/exp/ocr?k=' + encodeURIComponent(KEY) + '&s=' + SID, {
         method: 'POST',
@@ -5784,7 +5800,9 @@ bindImg(img);
       }).then(function (r) { return r.json(); }).then(function (j) {
         busy = false;
         if (my !== gen) return;
-        if (!j || !j.ok || j.tooLarge || !j.lines || !j.lines.length) return;
+        if (!j || !j.ok) { badgeSet('OCR 失败' + (j && j.error ? '：' + j.error : ''), '#ff6b6b'); return; }
+        if (j.tooLarge) { badgeSet('OCR 跳过：区域太大（没怎么放大）', '#8b9099'); return; }
+        if (!j.lines || !j.lines.length) { badgeSet('OCR 没认到文字', '#8b9099'); return; }
         render(j, rc);
       }).catch(function () { busy = false; });
     }
@@ -5796,7 +5814,14 @@ bindImg(img);
     setInterval(function () {
       if (state.mode !== 'h264' && state.mode !== 'raw') { clearLayer(); return; }
       var s = view.scale;
-      if (s < 1.35) { clearLayer(); lastRect = null; lastScale = s; return; }
+      if (s < 1.25) {
+        clearLayer(); lastRect = null; lastScale = s;
+        // 关键提示：很多人没意识到「画面缩放」和「系统缩放」是两个模式，
+        // 系统缩放下 view.scale 永远是 1 —— 这里直接把当前倍数打在屏幕上。
+        badgeSet('OCR 待机 · 当前 ' + s.toFixed(2) + 'x（放大到 1.25x 触发）'
+          + (s <= 1.001 ? ' · 三指捏合选「画面缩放」' : ''), '#8b9099');
+        return;
+      }
       if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; }
       if (lastRect) {
         var rc = viewRect();
