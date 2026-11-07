@@ -141,6 +141,9 @@ function Get-ProductConfig {
       maxCaptureWidth = [int](Get-ConfigValue $raw @('screen', 'maxCaptureWidth') 2560)
       # 离线模式（无互联网/无 Tailscale）：允许只绑局域网/热点（2026-11-05）
       offline         = [bool](Get-ConfigValue $raw @('screen', 'offline') $false)
+      # 局域网直连（2026-11-07）：只多开 8662 的 HTTPS，8660 仍只给回环+Tailscale。
+      # 白名单构造，缺了这一行 start-screen.ps1 就永远读不到 $cfg.screen.lan（踩过）。
+      lan             = [bool](Get-ConfigValue $raw @('screen', 'lan') $false)
     }
   }
   $cfg.Warnings = $warnings.ToArray()
