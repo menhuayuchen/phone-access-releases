@@ -361,6 +361,8 @@ function updateZoomCtl() {
   }
   el.style.display = (zoomMode === 'view') ? 'flex' : 'none';
 }
+// 2026-11-07：电脑浏览器没有"双指放大手机画面"的场景，只保留系统缩放
+if (IS_DESKTOP) { try { zoomMode = 'system'; localStorage.setItem(ZOOM_MODE_KEY, 'system'); } catch (e) { } }
 function setZoomMode(m) {
   zoomMode = (m === 'view') ? 'view' : 'system';
   try { localStorage.setItem(ZOOM_MODE_KEY, zoomMode); } catch (e) {}
@@ -376,6 +378,7 @@ const zoomPop = document.getElementById('zoomPop');
 const headerEl = document.querySelector('header');
 function paintZoomPop() {
   if (!zoomPop) return;
+  try { const vb = zoomPop.querySelector('.zpOpt[data-m="view"]'); if (vb && IS_DESKTOP) vb.style.display = 'none'; } catch (e) { }
   [...zoomPop.querySelectorAll('.zpOpt')].forEach((b) => {
     b.classList.toggle('on', b.dataset.m === zoomMode);
   });
@@ -2290,13 +2293,13 @@ function mouseModeOn() {
 overlay.addEventListener('pointerdown', (e) => {
   // 外接鼠标：立即在鼠标位置按下（右键交给 contextmenu，避免触发两次）
   if (e.pointerType === 'mouse') {
-    mouseModeOn();
+    // 2026-11-07 按用户要求：外接鼠标直接控制电脑鼠标，不再自动切"电脑真实光标"
     if (!state.control) return;
     if (e.button === 2) return;
     const qm0 = layoutPoint(e.clientX, e.clientY);
     const pm0 = toScreen(qm0.x, qm0.y);
     queue({ t: 'move', x: pm0.x, y: pm0.y });
-    try { if (window.__paCurLocal) window.__paCurLocal(pm0.x, pm0.y); } catch (e) { }
+    try { if (window.__paExp && window.__paExp.real && window.__paCurLocal) window.__paCurLocal(pm0.x, pm0.y); } catch (e) { }
     focusStage();
     const mb = (e.button === 1) ? 2 : 0;
     mouseBtnDown = mb;
@@ -2393,15 +2396,18 @@ overlay.addEventListener('pointermove', (e) => {
     return;
   }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
-  if (e.pointerType === 'mouse' && state.control) {
-    if (mouseBtnDown < 0) mouseModeOn();
+  if (e.pointerType === 'mouse' && state.control) {   // 外接鼠标：直接控制电脑鼠标，不自动切真光标
     const qm = layoutPoint(e.clientX, e.clientY);
     const pm = toScreen(qm.x, qm.y);
     // 不再 20ms 节流：鼠标要跟手（queue 内部已有 8ms 批量）
     lastMoveSent = Date.now();
     queue({ t: 'move', x: pm.x, y: pm.y });
-    try { if (window.__paCurLocal) window.__paCurLocal(pm.x, pm.y); } catch (e) { }
-showMouseCur(qm.x, qm.y);
+    // 真光标模式：本地预测自己画；否则用系统/手机自己的光标，不再叠一个
+    if (window.__paExp && window.__paExp.real) {
+      try { if (window.__paCurLocal) window.__paCurLocal(pm.x, pm.y); } catch (e) { }
+    } else {
+      try { hideMouseCur(); } catch (e) { }
+    }
     const dd = document.getElementById('dot');
     if (dd) dd.style.display = 'none';
     return;
