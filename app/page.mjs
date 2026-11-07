@@ -2293,6 +2293,16 @@ document.addEventListener('click', function (e) {
   box.style.background = now ? 'rgba(140,229,140,.14)' : 'transparent';
   try { setNote(now ? '已开启：接鼠标自动切到电脑真实光标' : '已关闭：接鼠标不再自动切换', 2500); } catch (err) { }
 }, true);
+// 2026-11-07：有些设备的外接鼠标事件 pointerType 不是 'mouse'（空串或 'pen'），
+// 只要不是 touch 且带 buttons 就按鼠标处理，避免退回触屏语义。
+function isMousePtr(e) {
+  if (!e) return false;
+  try { window.__paLastPtr = e.pointerType || '(empty)'; } catch (err) { }
+  const t = e.pointerType;
+  if (t === 'mouse' || t === 'pen') return true;
+  if (!t && typeof e.buttons === 'number') return true;
+  return false;
+}
 function mouseAutoOn() {
   try { return localStorage.getItem('pa.exp.mouseAuto') !== '0'; } catch (e) { return true; }
 }
@@ -2313,7 +2323,7 @@ function mouseModeOn() {
 }
 overlay.addEventListener('pointerdown', (e) => {
   // 外接鼠标：立即在鼠标位置按下（右键交给 contextmenu，避免触发两次）
-  if (e.pointerType === 'mouse') {
+  if (isMousePtr(e)) {
     // 2026-11-07：检测到外接鼠标 → 自动切「电脑真实光标」（可在设置里关掉）
     mouseModeOn();
     if (!state.control) return;
@@ -2321,7 +2331,13 @@ overlay.addEventListener('pointerdown', (e) => {
     const qm0 = layoutPoint(e.clientX, e.clientY);
     const pm0 = toScreen(qm0.x, qm0.y);
     queue({ t: 'move', x: pm0.x, y: pm0.y });
-    try { if (window.__paExp && window.__paExp.real && window.__paCurLocal) window.__paCurLocal(pm0.x, pm0.y); } catch (e) { }
+    if (window.__paExp && window.__paExp.real) {
+      try { document.body.classList.add('ext-mouse'); } catch (e) { }
+      try { if (window.__paCurLocal) window.__paCurLocal(pm0.x, pm0.y); } catch (e) { }
+    } else {
+      try { document.body.classList.remove('ext-mouse', 'mouse-real'); } catch (e) { }
+    }
+    try { hideMouseCur(); } catch (e) { }
     focusStage();
     const mb = (e.button === 1) ? 2 : 0;
     mouseBtnDown = mb;
@@ -2418,19 +2434,22 @@ overlay.addEventListener('pointermove', (e) => {
     return;
   }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
-  if (e.pointerType === 'mouse' && state.control) {   // 外接鼠标：直接控制电脑鼠标，并按开关自动切真光标
+  if (isMousePtr(e) && state.control) {   // 外接鼠标：直接控制电脑鼠标，并按开关自动切真光标
     mouseModeOn();
     const qm = layoutPoint(e.clientX, e.clientY);
     const pm = toScreen(qm.x, qm.y);
     // 不再 20ms 节流：鼠标要跟手（queue 内部已有 8ms 批量）
     lastMoveSent = Date.now();
     queue({ t: 'move', x: pm.x, y: pm.y });
-    // 2026-11-07 按用户要求：外接鼠标时隐藏系统光标，只留一个（真光标模式画电脑光标，否则画箭头）
-    try { document.body.classList.add('mouse-real'); } catch (e) { }
+    // 2026-11-07：光标显示互斥——真光标模式只画系统位图（并隐藏系统光标+旧自绘），
+    // 否则只留系统光标（不画任何自绘箭头/黄点），避免出现两个光标。
     if (window.__paExp && window.__paExp.real) {
+      try { document.body.classList.add('ext-mouse'); } catch (e) { }
+      try { hideMouseCur(); } catch (e) { }
       try { if (window.__paCurLocal) window.__paCurLocal(pm.x, pm.y); } catch (e) { }
     } else {
-      showMouseCur(qm.x, qm.y);
+      try { document.body.classList.remove('ext-mouse', 'mouse-real'); } catch (e) { }
+      try { hideMouseCur(); } catch (e) { }
     }
     const dd = document.getElementById('dot');
     if (dd) dd.style.display = 'none';
@@ -2455,7 +2474,7 @@ overlay.addEventListener('pointermove', (e) => {
 });
 
 overlay.addEventListener('pointerup', (e) => {
-  if (e.pointerType === 'mouse') {
+  if (isMousePtr(e)) {
     if (mouseBtnDown >= 0) { const mb = mouseBtnDown; mouseBtnDown = -1; queue({ t: 'up', b: mb }); }
     return;
   }
@@ -6466,6 +6485,8 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
   function expInitMode() {
     var css = document.createElement('style');
     css.textContent = 'body.expNoDot #dot, body.expNoDot #mcur { display:none !important; }'
+      + ' body.ext-mouse #overlay, body.ext-mouse #stage, body.ext-mouse #vid, body.ext-mouse canvas { cursor: none !important; }'
+      + ' body.ext-mouse #mcur, body.ext-mouse #dot { display:none !important; }'
       // real 模式下黄点的形状/大小/颜色没意义：置灰并禁点（CSS 跟着 body class 自动生效，不用重开面板）
       + ' body.expNoDot #p13nShapes, body.expNoDot #p13nImgRow, body.expNoDot #p13nSize, body.expNoDot #p13nColors { opacity:.3; pointer-events:none; }';
     document.head.appendChild(css);
