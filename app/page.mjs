@@ -2362,6 +2362,15 @@ overlay.addEventListener('pointerup', (e) => {
     if (multiGesture || activePtr.size > 0) return;
     if (!vp.moved) {
       const qi = layoutPoint(vp.x, vp.y);   // 2026-11-06：放大状态的点按也用「按下点」（原来用抬手点，手指一抖就偏）
+      // 2026-11-07 修 bug：放大态下长按（右键）抬手时，这里原来无条件下发左键 click
+      // —— 用户看到的是「右键菜单弹出又被左键点掉」。长按已经把 b=1 按下去了，
+      // 这里必须补的是右键抬起，不能再补一次左键。
+      if (dragBtn === 1) {
+        queue({ t: 'up', b: 1 });
+        ripple(qi.x, qi.y);
+        dragBtn = -1;
+        return;
+      }
       const pi = toScreen(qi.x, qi.y);
       const nowI = Date.now();
       const dblI = nowI - lastTapAt < 320;
@@ -3848,6 +3857,7 @@ bindImg(img);
     // 2026-11-07：配对地址（局域网最快 / tailnet 远程）+ 使用说明
     // 2026-11-07：配对地址（给普通用户看的说法：家里 / 在外面，两步操作）
     // 2026-11-07：配对地址分两种用法——Moonlight 只填 IP；浏览器才填 https://IP:端口
+    // 2026-11-07：配对说明改成与产品界面一致——PIN 就在本页下面输，不需要开浏览器后台
     const renderAddr = (j) => {
       const box = document.getElementById('ssAddr');
       if (!box) return;
@@ -3863,14 +3873,13 @@ bindImg(img);
           + '<button type="button" data-copy="' + t + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;'
           + 'border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer">复制</button></div>';
       };
-      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">怎么连（两步）</div>';
       const scene = (title, ip, color) => {
         return '<div style="margin-top:10px;color:' + color + ';font-size:12.5px;font-weight:600">' + title + '</div>'
-          + '<div style="color:#aeb3bb;font-size:12px;margin-top:4px">① 在 Moonlight 的「Add Host / 添加电脑」里填这个（<b style="color:#c9ccd1">只填 IP，不要加 https:// 和端口</b>）</div>'
+          + '<div style="color:#aeb3bb;font-size:12px;margin-top:4px">① 手机装 Moonlight → 点「Add Host / 添加电脑」→ 填这个（<b style="color:#c9ccd1">只填 IP，不要加 https:// 和端口</b>）</div>'
           + chip(ip, color)
-          + '<div style="color:#aeb3bb;font-size:12px;margin-top:6px">② 手机会显示 4 位数字，用它旁边的按钮「用浏览器打开」或手动打开下面这个地址，输入 4 位数字完成配对</div>'
-          + chip('https://' + ip + ':' + port, '#e8eaee');
+          + '<div style="color:#aeb3bb;font-size:12px;margin-top:6px">② 在 Moonlight 里点这台电脑 → 它会显示 4 位数字 → <b style="color:#c9ccd1">回到本页下面，在「4 位 PIN」里输入 → 点「完成配对」</b></div>';
       };
+      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">怎么连（两步，PIN 就在本页填）</div>';
       if (lan.length) h += scene('在家里 / 连同一个 Wi-Fi（推荐，最顺）', lan[0].ip, '#8CE58C');
       if (ts) {
         h += scene('在外面 / 用手机流量', ts.ip, '#8fb6ff');
@@ -3878,8 +3887,8 @@ bindImg(img);
       }
       if (!lan.length && !ts) h += '<div style="margin-top:8px;color:#ffb454;font-size:12px">暂时没取到地址，先连上网络再刷新一次。</div>';
       h += '<div style="margin-top:10px;padding-top:9px;border-top:1px solid #23252c;color:#6b7078;font-size:11.5px;line-height:1.8">'
-        + '· 第一次用浏览器打开会提示「不安全 / 证书问题」——点「高级 → 继续前往」即可<br>'
-        + '· 觉得画面有点卡：在 Moonlight 里把「分辨率」选 <b style="color:#c9ccd1">1080p</b>、「帧率」选 <b style="color:#c9ccd1">60</b>'
+        + '· 觉得画面有点卡：在 Moonlight 里把「分辨率」选 <b style="color:#c9ccd1">1080p</b>、「帧率」选 <b style="color:#c9ccd1">60</b><br>'
+        + '· 实在配不上的备用办法：用手机浏览器打开 <code style="color:#aeb3bb">https://' + escHtml(lan.length ? lan[0].ip : (ts ? ts.ip : '')) + ':' + port + '</code>，在后台里配对（一般不走到这一步）'
         + '</div>';
       box.innerHTML = h;
       box.querySelectorAll('[data-copy]').forEach((btn) => btn.addEventListener('click', () => {
@@ -5720,7 +5729,7 @@ bindImg(img);
       if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
       var dx = st.tx - st.x, dy = st.ty - st.y;
       if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
-      else { st.x += dx * 0.45; st.y += dy * 0.45; }
+      else { st.x += dx * 0.62; st.y += dy * 0.62; }   // 0.45 -> 0.62：用户反馈「同步但不跟手」，平滑给太多会有拖泥带水的追赶感
       el.style.transform = 'translate3d(' + (st.x - st.hx * st.k).toFixed(1) + 'px,'
         + (st.y - st.hy * st.k).toFixed(1) + 'px,0)';
       show(true);
@@ -5837,7 +5846,15 @@ bindImg(img);
       if (busy) return;
       var rc = viewRect();
       if (rc.w < 180 || rc.h < 110) return;
-      if (rc.w * rc.h > 1200 * 900) return;            // 服务端也会拒，别浪费往返
+      // 2026-11-07 修：原来区域超过 1200x900 就直接 return（静默放弃）——
+      // 用户放大 1.38 倍时整屏对应 1852x1024，点了 + 也永远没反应，还看不到任何提示。
+      // 现在改成只取视线中心的一块去增强，其余保持像素；中心才是用户真正在看的。
+      var MAXW = 1160, MAXH = 860;
+      if (rc.w * rc.h > MAXW * MAXH) {
+        var kc = Math.sqrt((MAXW * MAXH) / (rc.w * rc.h));
+        var nw = rc.w * kc, nh = rc.h * kc;
+        rc = { x: rc.x + (rc.w - nw) / 2, y: rc.y + (rc.h - nh) / 2, w: nw, h: nh };
+      }
       if (lastRect && Math.abs(lastRect.x - rc.x) < 24 && Math.abs(lastRect.y - rc.y) < 24
         && Math.abs(lastRect.w - rc.w) < 40 && Math.abs(lastRect.h - rc.h) < 40) return;
       if (Date.now() - lastAt < 1200) return;

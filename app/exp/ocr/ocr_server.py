@@ -246,6 +246,12 @@ def do_ocr(rect):
 
 
 class Handler(BaseHTTPRequestHandler):
+    # Node 那边用 fetch（undici，默认 keep-alive），而 BaseHTTPRequestHandler 默认是
+    # HTTP/1.0 —— 响应完就关连接。第二次请求会复用已经断开的连接，报「接收时发生错误」。
+    # 所以这里明说 HTTP/1.1，同时在响应头里 Connection: close，让客户端每次都新建连接
+    # （本服务是单线程、请求本来就是串行的，不需要复用连接）。
+    protocol_version = 'HTTP/1.1'
+
     def log_message(self, fmt, *args):
         pass
 
@@ -254,6 +260,7 @@ class Handler(BaseHTTPRequestHandler):
         self.send_response(code)
         self.send_header('Content-Type', 'application/json; charset=utf-8')
         self.send_header('Content-Length', str(len(body)))
+        self.send_header('Connection', 'close')
         self.end_headers()
         try:
             self.wfile.write(body)
