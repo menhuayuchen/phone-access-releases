@@ -57,13 +57,17 @@ if ($Action -eq 'on') {
         try { [System.IO.File]::WriteAllText($statePath, (ConvertTo-Json @{ disabled = $disabledNames } -Compress), (New-Object System.Text.UTF8Encoding($false))) } catch { }
     }
 
-    # 2) 放行产品端口（TCP）来自私有网段
+    # 2) 放行产品端口（TCP）来自私有网段。2026-11-07 安全加固：**限定程序**为产品自带的
+    # node.exe——否则任何程序只要监听 8660/8661，局域网就能直接连进来。
+    $nodeExe = Join-Path $here 'runtime\node.exe'
     foreach ($p in $ports) {
         $allowLanName = $tag + ' : 离线模式允许局域网 ' + [string]$p
         Get-NetFirewallRule -DisplayName $allowLanName -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-        $null = New-NetFirewallRule -DisplayName $allowLanName -Direction Inbound -Action Allow -Protocol TCP `
-            -LocalPort $p -RemoteAddress $lanRanges -Profile Any -ErrorAction SilentlyContinue `
-            -Description '轻屏：离线模式放行局域网/热点/USB 直连'
+        if (Test-Path -LiteralPath $nodeExe) {
+            $null = New-NetFirewallRule -DisplayName $allowLanName -Direction Inbound -Action Allow -Protocol TCP `
+                -LocalPort $p -RemoteAddress $lanRanges -Program $nodeExe -Profile Any -ErrorAction SilentlyContinue `
+                -Description '轻屏：离线模式放行局域网/热点/USB 直连（仅产品 node.exe）'
+        }
     }
 
     # 3) WebRTC 媒体（UDP 动态端口）按程序放行
@@ -80,17 +84,33 @@ if ($Action -eq 'on') {
     #    同一 Wi-Fi 想用手游串流，就必须把 Sunshine 的端口对私有网段放行（2026-11-07 实测：
     #    面板里写「在家里/同一 Wi-Fi」的 10.x 地址，手机一直提示"查找不到电脑"，而 tailnet 地址可用，
     #    原因就是这条规则缺局域网段）。
-    $sunTcp = @(47984, 47989, 47990, 48010)     # Web UI / HTTPS / 控制
+    # 2026-11-07 安全加固：
+    #   · **不放 47990**（Sunshine 的 Web 管理界面，Moonlight 用不到；放开等于把管理后台暴露给同网段）；
+    #   · 能认出 Sunshine 的 exe 时把规则**限定到该程序**，避免"端口放开但被别的程序占用"。
+    $sunTcp = @(47984, 47989, 48010)                # HTTPS 配对 / HTTP 配对 / RTSP
     $sunUdp = @(47998, 47999, 48000, 48002, 48010)  # 视频 / 音频 / 控制
+    # 注意：服务登记的 PathName 是 tools\sunshinesvc.exe（外壳），真正监听 47984/47989 的是
+    # sunshine.exe。按服务路径限定程序会把规则绑到错误的 exe 上，局域网照样连不上。
+    $sunExe = ''
+    try { $pr = Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pr -and $pr.Path) { $sunExe = $pr.Path } } catch { }
+    if (-not $sunExe) { foreach ($c in @((Join-Path $env:ProgramFiles 'Sunshine\sunshine.exe'), (Join-Path ${env:ProgramFiles(x86)} 'Sunshine\sunshine.exe'))) { if ($c -and (Test-Path -LiteralPath $c)) { $sunExe = $c; break } } }
+    if ($sunExe -and -not (Test-Path -LiteralPath $sunExe)) { $sunExe = '' }
     foreach ($proto in @('TCP', 'UDP')) {
         $list = if ($proto -eq 'TCP') { $sunTcp } else { $sunUdp }
         $name = $tag + ' : 离线模式允许局域网串流 ' + $proto
         Get-NetFirewallRule -DisplayName $name -ErrorAction SilentlyContinue | Remove-NetFirewallRule -ErrorAction SilentlyContinue
-        foreach ($p in $list) {
-            $null = New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow -Protocol $proto `
-                -LocalPort $p -RemoteAddress $lanRanges -Profile Any -ErrorAction SilentlyContinue `
-                -Description '轻屏：离线模式下允许同一局域网的 Moonlight 串流（Sunshine）'
+        if ($sunExe) {
+            foreach ($p in $list) {
+                $null = New-NetFirewallRule -DisplayName $name -Direction Inbound -Action Allow -Protocol $proto `
+                    -LocalPort $p -RemoteAddress $lanRanges -Program $sunExe -Profile Any -ErrorAction SilentlyContinue `
+                    -Description '轻屏：离线模式下允许局域网 Moonlight 串流（仅 Sunshine 程序）'
+            }
         }
+    }
+    # 顺带清掉历史版本留下的 47990（当时放得太宽）
+    foreach ($old in @(Get-NetFirewallRule -DisplayName ($tag + ' : 离线模式允许局域网串流 TCP') -ErrorAction SilentlyContinue)) {
+        $pf = $old | Get-NetFirewallPortFilter
+        if (@($pf.LocalPort) -contains '47990') { Remove-NetFirewallRule -Name $old.Name -ErrorAction SilentlyContinue }
     }
 } else {
     # 关：删放行规则、恢复之前停用的拒绝规则

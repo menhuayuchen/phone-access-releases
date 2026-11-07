@@ -87,19 +87,30 @@ switch ($Action) {
 
     # 3) 串流游戏（Sunshine/Moonlight）：默认规则只有 tailnet + 回环，同一 Wi-Fi 连不上
     #    （2026-11-07 实测：面板给的 10.x 地址手机报"查找不到电脑"，tailnet 地址可用）。
+    # 安全：不放 47990（Sunshine Web 管理界面，Moonlight 用不到）；
+    # 能认出 Sunshine exe 时把规则限定到该程序。
+    # 真正监听的是 sunshine.exe（服务登记的 sunshinesvc.exe 只是外壳）
+    $sunExe = ''
+    try { $pr = Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue | Select-Object -First 1; if ($pr -and $pr.Path) { $sunExe = $pr.Path } } catch { }
+    if (-not $sunExe) { foreach ($c in @((Join-Path $env:ProgramFiles 'Sunshine\sunshine.exe'), (Join-Path ${env:ProgramFiles(x86)} 'Sunshine\sunshine.exe'))) { if ($c -and (Test-Path -LiteralPath $c)) { $sunExe = $c; break } } }
+    if ($sunExe -and -not (Test-Path -LiteralPath $sunExe)) { $sunExe = '' }
     if (-not (Get-NetFirewallRule -DisplayName $r3 -ErrorAction SilentlyContinue)) {
-      foreach ($p in @(47984, 47989, 47990, 48010)) {
-        New-NetFirewallRule -DisplayName $r3 -Direction Inbound -Action Allow -Protocol TCP `
-          -LocalPort $p -RemoteAddress $lan -Profile Any `
-          -Description '轻屏：局域网直连下允许 Moonlight 串流（Sunshine TCP）' | Out-Null
+      foreach ($p in @(47984, 47989, 48010)) {
+        if ($sunExe) {
+          New-NetFirewallRule -DisplayName $r3 -Direction Inbound -Action Allow -Protocol TCP `
+            -LocalPort $p -RemoteAddress $lan -Program $sunExe -Profile Any `
+            -Description '轻屏：局域网直连下允许 Moonlight 串流（仅 Sunshine TCP）' | Out-Null
+        }
       }
       W ('[OK] 已创建 ' + $r3)
     } else { W ('[i] 已存在 ' + $r3) }
     if (-not (Get-NetFirewallRule -DisplayName $r4 -ErrorAction SilentlyContinue)) {
       foreach ($p in @(47998, 47999, 48000, 48002, 48010)) {
-        New-NetFirewallRule -DisplayName $r4 -Direction Inbound -Action Allow -Protocol UDP `
-          -LocalPort $p -RemoteAddress $lan -Profile Any `
-          -Description '轻屏：局域网直连下允许 Moonlight 串流（Sunshine UDP）' | Out-Null
+        if ($sunExe) {
+          New-NetFirewallRule -DisplayName $r4 -Direction Inbound -Action Allow -Protocol UDP `
+            -LocalPort $p -RemoteAddress $lan -Program $sunExe -Profile Any `
+            -Description '轻屏：局域网直连下允许 Moonlight 串流（仅 Sunshine UDP）' | Out-Null
+        }
       }
       W ('[OK] 已创建 ' + $r4)
     } else { W ('[i] 已存在 ' + $r4) }
