@@ -5202,6 +5202,7 @@ bindImg(img);
       + '<div id="fileProg" style="color:#868c96;margin-top:6px;font-size:11.5px"></div></div>'
       + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">电脑上的文件（点「下载」存到手机）</div>'
       + '<div id="pcList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:6px">列表只显示最近 5 个；全部文件在电脑的「下载\\PhoneAccess」文件夹里。</div>'
       + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">手机传到电脑的文件（存在「下载\\PhoneAccess」）</div>'
       + '<div id="fileList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>');
 
@@ -5845,7 +5846,7 @@ bindImg(img);
       document.body.appendChild(layer);
       return layer;
     }
-    function clearLayer() { gen++; if (layer) layer.innerHTML = ''; }
+    function clearLayer() { gen++; hdImg = null; hdRc = null; if (layer) layer.innerHTML = ''; }
 
     // 视口四角反算回"原始画面像素"矩形（复用主线的 toScreen，不另写一套）
     function viewRect() {
@@ -5940,17 +5941,32 @@ bindImg(img);
       });
     }
 
+    // 高清图必须**跟着画面走**：平移/缩放时按 toPage 每帧重算位置。
+    // 之前是固定坐标贴上去，用户移动画面后它就留在原地 —— 看起来是残影。
+    var hdImg = null, hdRc = null;
+    function repositionHd() {
+      if (!hdImg || !hdRc) return;
+      var p1, p2;
+      try {
+        p1 = toPage(hdRc.x, hdRc.y);
+        p2 = toPage(hdRc.x + hdRc.w, hdRc.y + hdRc.h);
+      } catch (e) { return; }
+      var w = p2.x - p1.x, h = p2.y - p1.y;
+      if (!(w > 1) || !(h > 1)) { hdImg.style.display = 'none'; return; }
+      hdImg.style.display = 'block';
+      hdImg.style.left = p1.x.toFixed(1) + 'px';
+      hdImg.style.top = p1.y.toFixed(1) + 'px';
+      hdImg.style.width = w.toFixed(1) + 'px';
+      hdImg.style.height = h.toFixed(1) + 'px';
+    }
+
     // 把高清图贴到 rc 对应的页面位置上，盖住视频层那一块
     function showHiRes(rc, url) {
       var el = ensureLayer();
-      var p1 = toPage(rc.x, rc.y);
-      var p2 = toPage(rc.x + rc.w, rc.y + rc.h);
-      var w = p2.x - p1.x, h = p2.y - p1.y;
-      if (w < 1 || h < 1) return;
-      el.innerHTML = '<img alt="" src="' + url + '" style="position:absolute;'
-        + 'left:' + p1.x.toFixed(1) + 'px;top:' + p1.y.toFixed(1) + 'px;'
-        + 'width:' + w.toFixed(1) + 'px;height:' + h.toFixed(1) + 'px;'
-        + 'display:block;">';
+      hdRc = rc;
+      el.innerHTML = '<img alt="" src="' + url + '" style="position:absolute;display:block;left:0;top:0;width:1px;height:1px;">';
+      hdImg = el.querySelector('img');
+      repositionHd();
     }
 
 // 点状态牌 = 强制对当前视口取一次高清图。绕过缩放倍数检查、去抖和节流 ——
@@ -5998,11 +6014,12 @@ bindImg(img);
         var vr = viewRect();
         if (Math.abs(vr.x - lastViewRect.x) > 30 || Math.abs(vr.y - lastViewRect.y) > 30
           || Math.abs(vr.w - lastViewRect.w) > 60 || Math.abs(vr.h - lastViewRect.h) > 60) {
-          clearLayer(); lastChangeAt = now;
+          repositionHd(); lastChangeAt = now;   // 跟着走，不要清掉（清了就会闪回模糊视频）
         }
       }
       // 兜底触发：轮询发现「已经安静 350ms 且没有在跑」时补一次。
       // 正路是下面 pointerup 的 schedule()，这里只防"手势没走完/事件丢了"。
+      repositionHd();
       if (!busy && !schedTimer && now - lastChangeAt >= 350) {
         lastChangeAt = now;
         request();
