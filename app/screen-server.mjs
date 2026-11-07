@@ -1610,6 +1610,13 @@ function wanted() {
     // （没人看超过 60 秒会自动把 rtcMode 关掉，见下面的 idle 定时器，避免一直烧 CPU。）
     return Math.max(1, rp);
   }
+  // 2026-11-07 修（用户报"一直转圈"）：清晰模式的两种观众以前**没算进 viewers**——
+  //   · MSE/H.264 流（/h264-stream → h264.clients）
+  //   · Pion 侧车的会话（RTC264 → rtc264Status.sessions）
+  // 后果有两层：①capture.exe 以为没人看，自己停抓，侧车/管道就没帧；
+  // ②监督进程的"10 秒没帧"看门狗只在 viewers>0 时才判，所以卡死永远不自愈。
+  const crisp = (h264.clients ? h264.clients.size : 0) + (rtc264Status.sessions || 0);
+  if (crisp > 0) return crisp + (rtc.stats().peers || 0);
   if (streams > 0) return streams + (rtc.stats().peers || 0);
   if ((rtc.stats().peers || 0) > 0) return rtc.stats().peers;
   if (Date.now() - lastPoll < 3000) return 1;
