@@ -5740,19 +5740,28 @@ bindImg(img);
     function render(j, rc) {
       var el = ensureLayer();
       var box = contentBox();
-      var k = (box.width * view.scale) / rc.w;        // 原始像素 -> 页面像素
+      // 关键：k 必须是「屏幕物理像素 -> 页面像素」。
+      // 分母用**采集区域的物理宽度**（state.rect.w，全屏时就是 2560），
+      // 不是 rc.w（那只是这次请求的矩形宽），也不是视频宽（那是缩放后的 1920）。
+      // 踩过的坑：一开始用 rc.w 做分母，字号被放大约 3 倍，文字比底图大一圈。
+      var sw = (state.rect && state.rect.w) ? state.rect.w : 2560;
+      var k = (box.width * view.scale) / sw;
       var html = '';
       for (var i = 0; i < j.lines.length; i++) {
         var L = j.lines[i];
         if (!L || L.score < 0.55) continue;            // 认不准的不画，宁可留像素
         var p = toPage(rc.x + L.x, rc.y + L.y);
-        var fs = L.h * k * 0.8;                        // bbox 高度比字号大约 25%
-        if (fs < 7 || fs > 160) continue;
-        html += '<div style="position:absolute;left:' + p.x.toFixed(1) + 'px;top:' + (p.y - L.h * k * 0.1).toFixed(1) + 'px;'
-          + 'font-size:' + fs.toFixed(1) + 'px;line-height:1;white-space:pre;'
-          + 'font-family:\'Microsoft YaHei\',\'PingFang SC\',system-ui,sans-serif;color:#fff;'
-          + 'text-shadow:0 0 2px #000,0 0 2px #000,0 0 3px #000;">'
-          + escHtml(L.text) + '</div>';
+        var W = L.w * k, H = L.h * k;
+        var fs = H * 0.8;                              // bbox 高度 ≈ 字号 × 1.25
+        if (fs < 7 || fs > 200) continue;
+        // 必须先铺背景色把原来的模糊像素字盖掉，否则清晰字和糊字叠成双影。
+        // 宽度给到 1.25 倍：字体和原来不完全一样，宽一点不至于把字截掉。
+        html += '<div style="position:absolute;left:' + p.x.toFixed(1) + 'px;top:' + p.y.toFixed(1) + 'px;'
+          + 'width:' + (W * 1.25).toFixed(1) + 'px;height:' + H.toFixed(1) + 'px;overflow:hidden;'
+          + 'background:' + (L.bg || 'transparent') + ';color:' + (L.fg || '#fff') + ';'
+          + 'font-size:' + fs.toFixed(1) + 'px;line-height:' + H.toFixed(1) + 'px;'
+          + 'white-space:nowrap;font-family:\'Microsoft YaHei\',\'PingFang SC\',system-ui,sans-serif;'
+          + 'text-align:left;">' + escHtml(L.text) + '</div>';
       }
       el.innerHTML = html;
     }

@@ -138,6 +138,33 @@ CACHE_MS = 1500
 MAX_AREA = 1200 * 900
 
 
+def sample_colors(img, x, y, w, h):
+    """给一行文字采样背景色和前景色（BGR -> #rrggbb）。
+
+    为什么要采样：客户端要把这一行的背景盖住再画矢量字，否则原像素里的
+    模糊字和清晰字叠在一起，看起来是双影。背景色用中位数（文字只占少数像素，
+    中位数不会被文字颜色带跑偏）；前景色用「离背景最远的那个极端色」近似。
+    """
+    try:
+        H, W = img.shape[:2]
+        x0 = max(0, min(x, W - 1)); y0 = max(0, min(y, H - 1))
+        x1 = max(x0 + 1, min(x + w, W)); y1 = max(y0 + 1, min(y + h, H))
+        patch = img[y0:y1, x0:x1]
+        if patch.size == 0:
+            return None, None
+        flat = patch.reshape(-1, 3)
+        if flat.shape[0] > 40000:          # 大区域抽样，别为了一行字跑满
+            step = max(1, flat.shape[0] // 40000)
+            flat = flat[::step]
+        bg = np.median(flat, axis=0)
+        lum = float(bg[0]) * 0.114 + float(bg[1]) * 0.587 + float(bg[2]) * 0.299
+        fg = (24, 24, 24) if lum > 110 else (245, 245, 245)
+        to_hex = lambda c: '#%02x%02x%02x' % (int(c[2]), int(c[1]), int(c[0]))  # BGR -> RGB hex
+        return to_hex(bg), to_hex(fg)
+    except Exception:
+        return None, None
+
+
 def normalise_rect(rect):
     rx = int(rect.get('x', 0))
     ry = int(rect.get('y', 0))
@@ -191,13 +218,18 @@ def do_ocr(rect):
             continue
         xs = [p[0] for p in box]
         ys = [p[1] for p in box]
+        x0 = int(round(min(xs))); y0 = int(round(min(ys)))
+        w0 = int(round(max(xs) - min(xs))); h0 = int(round(max(ys) - min(ys)))
+        bg, fg = sample_colors(img, x0, y0, w0, h0)
         lines.append({
             'text': str(text),
-            'x': int(round(min(xs))),
-            'y': int(round(min(ys))),
-            'w': int(round(max(xs) - min(xs))),
-            'h': int(round(max(ys) - min(ys))),
+            'x': x0,
+            'y': y0,
+            'w': w0,
+            'h': h0,
             'score': round(float(score), 3),
+            'bg': bg,
+            'fg': fg,
         })
     out = {
         'ok': True,
