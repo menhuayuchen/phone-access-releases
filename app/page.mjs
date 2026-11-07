@@ -5068,118 +5068,216 @@ bindImg(img);
   // 能定时"休眠 + 唤醒"（= 可定时开机）；完全关机（S5）之后软件叫不醒，只能 BIOS RTC / WOL。
   let pwCache = { rules: [], enabled: false };
   function powerInner() {
-    return '<div id="pwWrap"><div style="color:#868c96;font-size:12.5px">读取中…</div></div>';
+    return '<div id="pwWrap"><div style="color:#868c96;font-size:12.5px">正在读取…</div></div>';
+  }
+  function esc2(x) { return String(x == null ? '' : x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function pwRepeatText(r) {
+    if (r.repeat === 'weekdays') return '工作日';
+    if (r.repeat === 'once') return '仅一次' + (r.date ? '（' + r.date + '）' : '');
+    return '每天';
+  }
+  function pwRuleText(r) {
+    const mode = r.mode === 'shutdown' ? '关机' : '休眠';
+    let t = pwRepeatText(r) + ' ' + esc2(r.offTime) + ' ' + mode;
+    if (r.wakeTime) t += ' → 唤醒 ' + esc2(r.wakeTime);
+    return t;
   }
   function powerRowsHtml(st) {
     const rules = (st && Array.isArray(st.rules)) ? st.rules : [];
     const tasks = (st && Array.isArray(st.tasks)) ? st.tasks : [];
+    const last = (st && st.last) || null;
     const on = !!(st && st.enabled);
-    let h = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
-      + '<button id="pwToggle" style="background:' + (on ? '#7a2f2f' : '#2a2d36') + ';color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:7px 13px;font-size:13px;cursor:pointer">' + (on ? '停用全部' : '启用（按下面规则）') + '</button>'
-      + '<span style="color:' + (on ? '#8CE58C' : '#868c96') + ';font-size:12.5px;flex:1;min-width:160px">'
-      + (on ? '已启用 · ' + rules.length + ' 条规则' : '当前未启用') + '</span></div>';
-    if (!rules.length) h += '<div style="color:#6b7078;font-size:12.5px;margin-bottom:10px">还没有规则，先在下面加一条。</div>';
-    rules.forEach((r, i) => {
-      const rep = r.repeat === 'weekdays' ? '工作日' : (r.repeat === 'once' ? ('一次 ' + (r.date || '下一次')) : '每天');
-      const mode = r.mode === 'shutdown' ? '关机' : '休眠';
-      h += '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #202228;font-size:13px">'
-        + '<span style="flex:1;min-width:0;color:#c9ccd1">' + esc2(mode) + ' ' + esc2(r.offTime)
-        + (r.wakeTime ? ((r.mode === 'shutdown') ? (' <span style="color:#ff6b6b;font-weight:700">→ 唤醒 ' + esc2(r.wakeTime) + '（关机后无效）</span>') : (' → 唤醒 ' + esc2(r.wakeTime))) : '') + ' <span style="color:#6b7078">· ' + esc2(rep) + '</span></span>'
-        + '<button data-pwdel="' + i + '" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">删</button></div>';
-    });
+    const busy = !!(st && st.busy);
+    const taskOf = (id) => {
+      const off = tasks.filter((t) => t.name === '轻屏-电源-' + id)[0];
+      const wk = tasks.filter((t) => t.name === '轻屏-电源-' + id + '-唤醒')[0];
+      return { off: off, wake: wk };
+    };
+    let h = '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+      + '<button id="pwToggle" style="background:' + (on ? '#7a2f2f' : '#2a6b3a') + ';color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:8px 14px;font-size:13px;cursor:pointer">' + (on ? '暂停所有定时' : '启用定时开关机') + '</button>'
+      + '<span style="font-size:12.5px;color:' + (on ? '#8CE58C' : '#868c96') + '">' + (on ? '已启用 · ' + rules.length + ' 条规则' : '当前未启用') + '</span>'
+      + '<span style="flex:1"></span>'
+      + '<button id="pwClear" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">全部清除</button>'
+      + '</div>';
+
+    // 快捷预设
+    h += '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em;margin-bottom:6px">快速添加</div>'
+      + '<div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:12px">'
+      + '<button class="pwPre" data-pre="work" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">工作日 23:30 睡 · 07:00 醒</button>'
+      + '<button class="pwPre" data-pre="every" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">每天 23:00 睡 · 07:30 醒</button>'
+      + '<button class="pwPre" data-pre="sleep1h" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">一小时后休眠</button>'
+      + '<button class="pwPre" data-pre="off1h" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">一小时后关机</button>'
+      + '</div>';
+
+    if (!rules.length) {
+      h += '<div style="color:#6b7078;font-size:12.5px;margin-bottom:10px">还没有规则。点上面的快捷按钮，或自己在下面加一条。</div>';
+    } else {
+      rules.forEach((r, i) => {
+        const tk = taskOf(r.id);
+        const nextTxt = tk.off && tk.off.next ? (' · 下次 ' + esc2(tk.off.next)) : '';
+        h += '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #202228;font-size:13px">'
+          + '<span style="flex:1;min-width:0;color:#c9ccd1">' + pwRuleText(r)
+          + (r.mode === 'shutdown' && r.wakeTime ? ' <span style="color:#ff6b6b;font-weight:700">（关机后叫不醒）</span>' : '')
+          + '<span style="color:#6b7078;font-size:11.5px">' + nextTxt + '</span></span>'
+          + '<button data-pwdel="' + i + '" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">删除</button></div>';
+      });
+    }
+
     if (tasks.length) {
-      h += '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">系统任务：'
-        + tasks.map((t) => esc2(t.name) + '（' + esc2(t.state) + (t.next ? ' · 下次 ' + esc2(t.next) : '') + (t.wake ? ' · 可唤醒' : '') + '）').join('<br>')
+      h += '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">系统里的计划任务：'
+        + tasks.map((t) => esc2(t.name.replace('轻屏-电源-', '')) + '（' + esc2(t.state) + (t.next ? ' · 下次 ' + esc2(t.next) : '') + (t.wake ? ' · 可唤醒' : '') + '）').join('，')
         + '</div>';
     }
+
+    // 状态：休眠支持 / 唤醒定时器 / 上次应用结果
+    const lt = (last && last.wakeTimer) || {};
+    const hi = last ? (last.hibernate ? '支持' : '不支持') : '未检测';
+    const acTxt = lt.ac === 'on' ? '已开' : (lt.ac === 'off' ? '未开' : '未知');
+    const dcTxt = lt.dc === 'on' ? '已开' : (lt.dc === 'off' ? '未开' : '未知');
+    h += '<div style="margin-top:12px;padding:9px 10px;background:#181a20;border:1px solid #23252c;border-radius:9px;font-size:11.5px;color:#aeb3bb;line-height:1.85">'
+      + '休眠：<b style="color:' + (hi === '支持' ? '#8CE58C' : (hi === '不支持' ? '#ff6b6b' : '#c9ccd1')) + '">' + hi + '</b>'
+      + ' · 唤醒定时器（交流/电池）：<b style="color:' + (acTxt === '已开' ? '#8CE58C' : '#ffb454') + '">' + acTxt + '</b> / <b style="color:' + (dcTxt === '已开' ? '#8CE58C' : '#ffb454') + '">' + dcTxt + '</b>'
+      + (last && last.at ? '<br>上次应用：' + esc2(last.at) + (last.ok ? ' · 成功' : ' · 有错误') : '')
+      + '</div>';
+    if (last && Array.isArray(last.errors) && last.errors.length) {
+      h += '<div style="margin-top:8px;color:#ff6b6b;font-size:12px;line-height:1.8">' + last.errors.map((x) => '· ' + esc2(x)).join('<br>') + '</div>';
+    }
+    if (last && Array.isArray(last.warnings) && last.warnings.length) {
+      h += '<div style="margin-top:8px;color:#ffb454;font-size:12px;line-height:1.8">' + last.warnings.map((x) => '· ' + esc2(x)).join('<br>') + '</div>';
+    }
+
+    // 编辑器
     h += '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #23252c">'
       + '<div style="color:#aeb3bb;font-size:12.5px;margin-bottom:8px">加一条规则</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px">'
-      + '<label style="color:#868c96">关机/休眠 <input id="pwOff" value="23:00" size="5" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
-      + '<label style="color:#868c96">唤醒 <input id="pwWake" value="07:30" size="5" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
-      + '<select id="pwRepeat" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="daily">每天</option><option value="weekdays">工作日</option><option value="once">一次</option></select>'
+      + '<label style="color:#868c96">休眠/关机 <input id="pwOff" type="time" value="23:00" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<label style="color:#868c96">唤醒 <input id="pwWake" type="time" value="07:30" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<select id="pwRepeat" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="daily">每天</option><option value="weekdays">工作日</option><option value="once">仅一次</option></select>'
       + '<input id="pwDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px">'
-      + '<select id="pwMode" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="hibernate">休眠（可定时开）</option><option value="shutdown">关机</option></select>'
+      + '<select id="pwMode" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="hibernate">休眠（可定时开机）</option><option value="shutdown">关机</option></select>'
       + '<button id="pwAdd" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">加入</button>'
       + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
       + '</div>'
-      + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机（S5）之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把「方式」改成「休眠」。</div>'
-      + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7"></div>'
-      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原桌面）；完全关机后叫不醒，只能靠 BIOS 定时开机或 Wake-on-LAN。</div>'
+      + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把方式改成「休眠」。</div>'
+      + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7">' + (busy ? '<span style="color:#ffb454">正在应用，请稍候…</span>' : '') + '</div>'
+      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原界面）；完全关机后叫不醒，只能靠主板 BIOS 定时开机或网络唤醒。</div>'
       + '</div>';
     return h;
   }
-  function esc2(x) { return String(x == null ? '' : x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function powerBind(box) {
     const wrap = box.querySelector('#pwWrap');
     if (!wrap) return;
-    const msg = (t, c) => { const m = box.querySelector('#pwMsg'); if (m) { m.textContent = t; m.style.color = c || '#868c96'; } };
+    let pwCache = { enabled: false, rules: [] };
+    let pollTimer = 0;
+    const msg = (t, c) => { const m = box.querySelector('#pwMsg'); if (m) { m.innerHTML = esc2(t); m.style.color = c || '#868c96'; } };
+    const stopPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = 0; } };
     const paint = (st) => {
       pwCache = { enabled: !!(st && st.enabled), rules: (st && Array.isArray(st.rules)) ? st.rules : [] };
       wrap.innerHTML = powerRowsHtml(st);
-      // 红色警示：选「关机」又填了唤醒时间 → 立刻提示这次唤醒不会生效
-      (function wireWarn() {
+      const wireWarn = () => {
         const m = wrap.querySelector('#pwMode');
         const t = wrap.querySelector('#pwWake');
         const w = wrap.querySelector('#pwWarn');
         const sync = function () {
           if (!w) return;
-          const okTime = t && /^[0-2]?\d:[0-5]\d$/.test(String(t.value || '').trim());
+          const okTime = t && /^([01]?d|2[0-3]):[0-5]d$/.test(String(t.value || '').trim());
           w.style.display = (m && m.value === 'shutdown' && okTime) ? 'block' : 'none';
         };
         if (m) m.addEventListener('change', sync);
         if (t) t.addEventListener('input', sync);
         sync();
-      })();
+      };
+      wireWarn();
+
       const tg = wrap.querySelector('#pwToggle');
-      if (tg) tg.addEventListener('click', async () => {
-        const doc = { enabled: !pwCache.enabled, rules: pwCache.rules };
-        await post(doc);
+      if (tg) tg.addEventListener('click', () => post({ enabled: !pwCache.enabled, rules: pwCache.rules }));
+      const cl = wrap.querySelector('#pwClear');
+      if (cl) cl.addEventListener('click', () => {
+        if (!confirm('清除所有定时规则（会删掉系统里的计划任务）？')) return;
+        post({ enabled: false, rules: [] });
       });
-      wrap.querySelectorAll('[data-pwdel]').forEach((b) => b.addEventListener('click', async () => {
-        const i = Number(b.getAttribute('data-pwdel'));
+      wrap.querySelectorAll('[data-pwdel]').forEach((btn) => btn.addEventListener('click', () => {
+        const i = Number(btn.getAttribute('data-pwdel'));
         const rules = pwCache.rules.slice();
         rules.splice(i, 1);
-        await post({ enabled: pwCache.enabled, rules });
+        post({ enabled: pwCache.enabled, rules: rules });
+      }));
+      wrap.querySelectorAll('.pwPre').forEach((btn) => btn.addEventListener('click', () => {
+        const kind = btn.getAttribute('data-pre');
+        const now = new Date();
+        const hh = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
+        let rules = pwCache.rules.slice();
+        if (kind === 'work') rules.push({ id: 'p' + Date.now().toString(36), mode: 'hibernate', repeat: 'weekdays', offTime: '23:30', wakeTime: '07:00', date: '' });
+        if (kind === 'every') rules.push({ id: 'p' + Date.now().toString(36), mode: 'hibernate', repeat: 'daily', offTime: '23:00', wakeTime: '07:30', date: '' });
+        if (kind === 'sleep1h' || kind === 'off1h') {
+          const t = new Date(now.getTime() + 60 * 60 * 1000);
+          rules.push({ id: 'p' + Date.now().toString(36), mode: kind === 'off1h' ? 'shutdown' : 'hibernate', repeat: 'once', date: t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'), offTime: hh(t), wakeTime: '' });
+        }
+        post({ enabled: true, rules: rules });
       }));
       const add = wrap.querySelector('#pwAdd');
-      if (add) add.addEventListener('click', async () => {
-        const off = (wrap.querySelector('#pwOff').value || '').trim();
-        const wake = (wrap.querySelector('#pwWake').value || '').trim();
-        const repeat = wrap.querySelector('#pwRepeat').value;
-        const date = (wrap.querySelector('#pwDate').value || '').trim();
-        const mode = wrap.querySelector('#pwMode').value;
-        if (!/^[0-2]?\d:[0-5]\d$/.test(off)) { msg('关机时间要写成 HH:mm', '#ffb454'); return; }
-        if (wake && !/^[0-2]?\d:[0-5]\d$/.test(wake)) { msg('唤醒时间要写成 HH:mm', '#ffb454'); return; }
-        if (repeat === 'once' && !date) { msg('选「一次」时要选日期', '#ffb454'); return; }
-        const rules = pwCache.rules.concat([{
-          id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat,
-          date: repeat === 'once' ? date : '', mode: mode
-        }]);
-        if (mode === 'shutdown' && wake) { msg('注意：这条是「关机」+ 唤醒时间，唤醒不会生效（见上方红字）', '#ff6b6b'); }
-        await post({ enabled: true, rules });
+      if (add) add.addEventListener('click', () => {
+        const off = String((wrap.querySelector('#pwOff') || {}).value || '').trim();
+        const wake = String((wrap.querySelector('#pwWake') || {}).value || '').trim();
+        const repeat = (wrap.querySelector('#pwRepeat') || {}).value || 'daily';
+        const date = String((wrap.querySelector('#pwDate') || {}).value || '').trim();
+        const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
+        const okT = (t) => /^([01]?d|2[0-3]):[0-5]d$/.test(t);
+        if (!okT(off)) { msg('休眠/关机时间要写成 HH:mm，例如 23:00', '#ffb454'); return; }
+        if (wake && !okT(wake)) { msg('唤醒时间要写成 HH:mm，例如 07:00', '#ffb454'); return; }
+        if (wake && wake === off) { msg('唤醒时间和关机时间不能一样', '#ffb454'); return; }
+        if (repeat === 'once') {
+          if (!date) { msg('选「仅一次」时要选日期', '#ffb454'); return; }
+          const when = new Date(date + 'T' + (off.length === 4 ? '0' + off : off) + ':00');
+          if (isNaN(when.getTime()) || when.getTime() <= Date.now()) { msg('这个日期时间已经过去了，换一个', '#ffb454'); return; }
+        }
+        const rules = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode }]);
+        post({ enabled: true, rules: rules });
       });
       const ap = wrap.querySelector('#pwApply');
-      if (ap) ap.addEventListener('click', async () => { await post({ enabled: pwCache.enabled, rules: pwCache.rules }); });
+      if (ap) ap.addEventListener('click', () => post({ enabled: pwCache.enabled, rules: pwCache.rules }));
     };
     const post = async (doc) => {
-      msg('正在应用（会创建/更新系统计划任务）…');
+      msg('正在应用到系统（会创建/更新计划任务，约 5-15 秒）…');
+      stopPoll();
       try {
         const r = await fetch('/power/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }).then((x) => x.json());
         if (r && r.ok) {
-          const names = (r.applied || []).length;
-          msg('已应用' + (names ? ('，' + names + ' 个任务') : '') + ((r.removed || []).length ? ('，清理 ' + r.removed.length + ' 个') : ''), '#8CE58C');
+          msg((r.note || '已提交') + (r.busy ? ' · 正在应用' : ''));
+          let n = 0;
+          pollTimer = setInterval(async () => {
+            n++;
+            const st = await fetch('/power/status?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
+            if (st) paint(st);
+            if (!st || !st.busy || n > 12) {
+              stopPoll();
+              if (st && st.last) {
+                const errs = (st.last.errors || []).length, warns = (st.last.warnings || []).length;
+                msg('已应用' + (errs ? ('，有 ' + errs + ' 个错误') : '') + (warns ? ('，' + warns + ' 条提醒') : ''), errs ? '#ff6b6b' : (warns ? '#ffb454' : '#8CE58C'));
+              }
+            }
+          }, 2000);
         } else {
-          msg('应用失败：' + ((r && r.error) || '未知错误'), '#ffb454');
+          msg('应用失败：' + ((r && r.error) || '未知错误'), (r && r.busy) ? '#ffb454' : '#ff6b6b');
         }
-      } catch (e) { msg('请求失败：' + (e && e.message), '#ff9d9d'); }
+      } catch (e) { msg('请求失败：' + ((e && e.message) || e), '#ff9d9d'); }
       await load();
     };
     const load = async () => {
       try {
         const st = await fetch('/power/status?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
         paint(st);
-      } catch (e) { wrap.innerHTML = '<div style="color:#ffb454;font-size:12.5px">读取失败</div>'; }
+        if (st && st.busy) {
+          stopPoll();
+          let n = 0;
+          pollTimer = setInterval(async () => {
+            n++;
+            const s2 = await fetch('/power/status?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json()).catch(() => null);
+            if (s2) paint(s2);
+            if (!s2 || !s2.busy || n > 12) stopPoll();
+          }, 2000);
+        }
+      } catch (e) { wrap.innerHTML = '<div style="color:#ffb454;font-size:12.5px">读取失败（服务可能正在重启）</div>'; }
     };
     load();
   }

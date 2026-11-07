@@ -5044,45 +5044,78 @@ async function handler(req, res) {
   const sendJson = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch (e) { } };
   if (url.pathname === '/power/status' || url.pathname === '/power/apply') {
     const pjson = join(HERE, 'power-schedule.json');
-    const readSched = () => {
-      try { return JSON.parse(readFileSync(pjson, 'utf8').replace(/^\uFEFF/, '')); } catch { return { enabled: false, rules: [] }; }
+    const plast = join(HERE, 'power-last.json');
+    const toolPs = join(HERE, 'power-apply.ps1');
+    const readJson = (f, dflt) => { try { return JSON.parse(readFileSync(f, 'utf8').replace(/^\uFEFF/, '')); } catch { return dflt; } };
+    const docS = readJson(pjson, { enabled: false, rules: [] });
+    const last = readJson(plast, null);
+
+    // 规则校验（页面先校验一次，这里是最后一道，防止绕过页面直接打接口）
+    const bad = [];
+    const normRules = (arr) => {
+      const out = [];
+      const seen = {};
+      const list = Array.isArray(arr) ? arr.slice(0, 20) : [];
+      list.forEach((r, i) => {
+        const n = i + 1;
+        let id = String((r && r.id) || ('r' + n)).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || ('r' + n);
+        const mode = (r && r.mode) === 'shutdown' ? 'shutdown' : 'hibernate';
+        const repeat = (r && (r.repeat === 'weekdays' || r.repeat === 'once')) ? r.repeat : 'daily';
+        const offTime = String((r && r.offTime) || '').slice(0, 5);
+        const wakeTime = String((r && r.wakeTime) || '').slice(0, 5);
+        const date = String((r && r.date) || '').replace(/[^0-9-]/g, '').slice(0, 10);
+        const okTime = (t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
+        if (seen[id]) { bad.push('第 ' + n + ' 条：编号重复'); return; }
+        seen[id] = 1;
+        if (!okTime(offTime)) { bad.push('第 ' + n + ' 条：关机/休眠时间格式不对'); return; }
+        if (wakeTime && !okTime(wakeTime)) { bad.push('第 ' + n + ' 条：唤醒时间格式不对'); return; }
+        if (repeat === 'once') {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { bad.push('第 ' + n + ' 条：选「仅一次」要选日期'); return; }
+          const when = new Date(date + 'T' + (offTime.length === 4 ? '0' + offTime : offTime) + ':00');
+          if (isNaN(when.getTime())) { bad.push('第 ' + n + ' 条：日期不合法'); return; }
+          if (when.getTime() <= Date.now()) { bad.push('第 ' + n + ' 条：日期时间已经过去了'); return; }
+        } else if (wakeTime && wakeTime === offTime) {
+          bad.push('第 ' + n + ' 条：唤醒时间和关机时间一样');
+          return;
+        }
+        out.push({ id, mode, repeat, date: repeat === 'once' ? date : '', offTime, wakeTime });
+      });
+      return out;
     };
-    const normRules = (arr) => (Array.isArray(arr) ? arr : []).slice(0, 20).map((r, i) => ({
-      id: String((r && r.id) || ('r' + (i + 1))).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || ('r' + (i + 1)),
-      mode: (r && r.mode === 'shutdown') ? 'shutdown' : 'hibernate',
-      repeat: (r && (r.repeat === 'weekdays' || r.repeat === 'once')) ? r.repeat : 'daily',
-      date: String((r && r.date) || '').replace(/[^0-9-]/g, '').slice(0, 10),
-      offTime: String((r && r.offTime) || '23:00').slice(0, 5),
-      wakeTime: String((r && r.wakeTime) || '').slice(0, 5)
-    }));
-    const listTasks = () => new Promise((resolve) => {
-      try {
-        execFile('schtasks.exe', ['/query', '/fo', 'csv', '/nh'], { windowsHide: true, timeout: 8000, maxBuffer: 4 * 1024 * 1024 },
-          (err, stdout) => {
-            const out = [];
-            if (!err && stdout) {
-              for (const line of String(stdout).split(/\r?\n/)) {
-                if (!line.includes('轻屏-电源-')) continue;
-                const cols = line.split('","').map((x) => x.replace(/^"|"$/g, ''));
-                if (cols.length < 3) continue;
-                out.push({ name: cols[0], next: cols[1], state: cols[2] });
-              }
-            }
-            resolve(out);
-          });
-      } catch { resolve([]); }
-    });
+
     if (url.pathname === '/power/status') {
-      const docS = readSched();
-      let finished = false;
-      const finish = (tasks) => {
-        if (finished) return;
-        finished = true;
+      // 引擎写完 power-last.json（at 时间晚于提交时刻）就解除 busy，页面不用干等
+      if (globalThis.__paPowerBusy && globalThis.__paPowerAppliedAt && last && last.at) {
         try {
-          sendJson(200, { ok: true, enabled: !!docS.enabled, rules: normRules(docS.rules), tasks: tasks || [], updatedAt: docS.updatedAt || '' });
+          const lastMs = new Date(String(last.at).replace(' ', 'T')).getTime();
+          if (lastMs >= Number(globalThis.__paPowerAppliedAt) - 2000) { globalThis.__paPowerBusy = false; }
+        } catch (e) { }
+      }
+      const finish = (tasks) => {
+        try {
+          sendJson(200, {
+            ok: true,
+            enabled: !!docS.enabled,
+            rules: Array.isArray(docS.rules) ? docS.rules : [],
+            updatedAt: docS.updatedAt || '',
+            tasks: tasks || [],
+            busy: !!globalThis.__paPowerBusy,
+            last: last || null
+          });
         } catch (e) { }
       };
-      // 3 秒兜底：schtasks 慢或拿不到任务时也必须给页面一个响应（否则页面请求会挂着）
+      // 没有引擎结果（或超过 15 分钟）时，后台补一次 StatusOnly：页面就能显示"是否支持休眠/唤醒定时器状态"
+      try {
+        const stale = !last || !last.at || (Date.now() - new Date(String(last.at).replace(' ', 'T')).getTime() > 15 * 60 * 1000);
+        if (stale && !globalThis.__paPowerDiag) {
+          globalThis.__paPowerDiag = true;
+          const dd = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPs, '-JsonPath', pjson, '-StatusOnly', '-OutPath', plast], { windowsHide: true, stdio: 'ignore' });
+          dd.on('error', () => { globalThis.__paPowerDiag = false; });
+          dd.on('close', () => { globalThis.__paPowerDiag = false; });
+          const clear = setTimeout(() => { globalThis.__paPowerDiag = false; }, 20000);
+          clear.unref?.();
+        }
+      } catch (e) { }
       const guard = setTimeout(() => finish([]), 3000);
       guard.unref?.();
       try {
@@ -5093,10 +5126,11 @@ async function handler(req, res) {
           clearTimeout(guard);
           const tasks = [];
           for (const line of String(out || '').split(/\r?\n/)) {
-            if (!line.includes('轻屏-电源-')) continue;
+            if (line.indexOf('轻屏-电源-') < 0) continue;
             const cols = line.split('","').map((x) => x.replace(/^"|"$/g, ''));
             if (cols.length < 3) continue;
-            tasks.push({ name: cols[0], next: cols[1], state: cols[2], wake: /-唤醒$/.test(cols[0]) });
+            const nm = cols[0].replace(/^\\+/, '');   // schtasks 的反斜杠前缀（\轻屏-电源-…）
+            tasks.push({ name: nm, next: cols[1], state: cols[2], wake: /-唤醒$/.test(nm) });
           }
           finish(tasks);
         });
@@ -5104,21 +5138,41 @@ async function handler(req, res) {
       } catch (e) { clearTimeout(guard); finish([]); }
       return;
     }
-    readBody(req, 64 * 1024).then((b) => {
+
+    // /power/apply
+    readBody(req, 64 * 1024).then((body) => {
       let m = {};
-      try { m = JSON.parse(String(b || '{}')); } catch { }
-      const doc = { enabled: m.enabled !== false, rules: normRules(m.rules), updatedAt: new Date().toISOString() };
-      try { writeFileSync(pjson, JSON.stringify(doc, null, 2), 'utf8'); } catch (e) {
-        sendJson(500, { ok: false, error: '写配置失败：' + String((e && e.message) || e) }); return;
-      }
-      // 异步跑引擎（建/删计划任务），stdio 忽略，避免任何输出把事件循环拖住
+      try { m = JSON.parse(String(body || '{}')); } catch { sendJson(400, { ok: false, error: '请求格式不对' }); return; }
+      const rules = normRules(m.rules);
+      if (bad.length) { sendJson(400, { ok: false, error: bad[0], errors: bad }); return; }
+      if (globalThis.__paPowerBusy) { sendJson(429, { ok: false, busy: true, error: '上一次应用还没完成，请等几秒再试' }); return; }
+      const doc = { enabled: m.enabled !== false, rules, updatedAt: new Date().toISOString() };
+      try { writeFileSync(pjson, JSON.stringify(doc, null, 2), 'utf8'); }
+      catch (e) { sendJson(500, { ok: false, error: '写配置失败：' + String((e && e.message) || e) }); return; }
       try {
-        const ps = join(HERE, 'power-apply.ps1');
-        const ch = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', ps, '-JsonPath', pjson],
-          { windowsHide: true, stdio: 'ignore', detached: true });
-        ch.unref();
-        sendJson(200, { ok: true, queued: true, enabled: doc.enabled, rules: doc.rules, note: '正在应用（约 5-15 秒），稍后刷新状态' });
+        globalThis.__paPowerBusy = true;
+        globalThis.__paPowerAppliedAt = Date.now();
+        // 2026-11-07 改：不再 detached+ignore（那样失败时看不到任何线索），改成抓管道写日志，
+        // 出了问题能在 power-engine.log 里直接看到 PowerShell 的报错。
+        const logPath = join(HERE, 'power-engine.log');
+        const ch = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPs, '-JsonPath', pjson, '-OutPath', plast],
+          { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+        let o = '', e2 = '';
+        ch.stdout.on('data', (d) => { o += d; });
+        ch.stderr.on('data', (d) => { e2 += d; });
+        ch.on('error', (e3) => {
+          globalThis.__paPowerBusy = false;
+          try { appendFileSync(logPath, '[' + new Date().toISOString() + '] spawn error: ' + ((e3 && e3.message) || e3) + '\n', 'utf8'); } catch (e4) { }
+        });
+        ch.on('close', (code) => {
+          globalThis.__paPowerBusy = false;
+          try {
+            appendFileSync(logPath, '[' + new Date().toISOString() + '] exit=' + code + '\n--- stdout ---\n' + String(o).slice(-4000) + '\n--- stderr ---\n' + String(e2).slice(-4000) + '\n', 'utf8');
+          } catch (e4) { }
+        });
+        sendJson(200, { ok: true, queued: true, busy: true, enabled: doc.enabled, rules: doc.rules, note: '正在应用到系统（约 5-15 秒），稍后会自动刷新' });
       } catch (e) {
+        globalThis.__paPowerBusy = false;
         sendJson(500, { ok: false, error: String((e && e.message) || e) });
       }
     });
