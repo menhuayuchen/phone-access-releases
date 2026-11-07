@@ -2300,7 +2300,10 @@ function isMousePtr(e) {
   try { window.__paLastPtr = e.pointerType || '(empty)'; } catch (err) { }
   const t = e.pointerType;
   if (t === 'mouse' || t === 'pen') return true;
-  if (!t && typeof e.buttons === 'number') return true;
+  // 2026-11-07：原来这里还有一条「pointerType 为空且有 buttons 就当鼠标」——
+  // 某些环境 pointerType 上报为空，于是每一次触摸都被判成鼠标，触发下面的
+  // mouseModeOn() 把 pa.exp.mode 永久写成 real，用户的个性化黄点就再也看不到了。
+  // 现在宁可当触摸：现代浏览器都会给 pointerType。
   return false;
 }
 function mouseAutoOn() {
@@ -2314,12 +2317,10 @@ function mouseModeOn() {
   // 先无条件隐藏系统光标（这里失败也不能影响别的）
   try { document.body.classList.add('mouse-real'); } catch (e) { }
   if (window.__paExp) { window.__paExp.mode = 'real'; window.__paExp.real = true; }
-  try {
-    if (localStorage.getItem('pa.exp.mode') !== 'real') {
-      localStorage.setItem('pa.exp.mode', 'real');
-      if (typeof expInitMode === 'function') expInitMode();
-    }
-  } catch (e) { }
+  try { document.body.classList.add('expNoDot'); } catch (e) { }
+  // 2026-11-07：**不写 localStorage**。自动切换只在本次会话生效，
+  // 绝不覆盖用户手动选的模式 —— 之前这行把 pa.exp.mode 永久写成 real，
+  // 用户的个性化黄点（形状/大小/颜色/自定义图片）就永远看不到了，重启也不恢复。
 }
 overlay.addEventListener('pointerdown', (e) => {
   // 外接鼠标：立即在鼠标位置按下（右键交给 contextmenu，避免触发两次）
