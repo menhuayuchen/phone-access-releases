@@ -1265,6 +1265,65 @@ const EXP_TICK_MS = 33;
           // 30Hz：光标本体也就 125Hz 更新，30Hz + 客户端平滑已经看不出台阶
 const EXP_OCR_PORT = 8777;       // 常驻 Python OCR 服务（app/exp/ocr/ocr_server.py）
 
+// E2：OCR 服务按需自动拉起 —— 用户不需要手动开一个黑窗口。
+// 先探测端口；不通就 detached spawn（本进程重启也不会带走它，下次探测到已就绪直接复用）。
+let ocrProc = null;
+let ocrPending = null;
+let ocrFailedAt = 0;
+
+async function ocrPing(ms = 800) {
+  try {
+    const r = await fetch('http://127.0.0.1:' + EXP_OCR_PORT + '/health', { signal: AbortSignal.timeout(ms) });
+    return r.ok;
+  } catch { return false; }
+}
+
+function findPython() {
+  // 1) product.config.json 的 runtime.pythonPath 明确写了就用它
+  try {
+    const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
+    const p = c && c.runtime && c.runtime.pythonPath;
+    if (p && existsSync(p)) return [p];
+  } catch { }
+  // 2) 默认用 py 启动器锁 3.12 —— 3.14 的 onnxruntime wheel 支持不稳，别用
+  return ['py', '-3.12'];
+}
+
+async function ensureOcr() {
+  if (await ocrPing()) return true;
+  if (Date.now() - ocrFailedAt < 20000) return false;    // 刚失败过，别每次请求都重试
+  if (ocrPending) { try { await ocrPending; } catch { } return ocrPing(); }
+  ocrPending = (async () => {
+    const script = join(HERE, 'exp', 'ocr', 'ocr_server.py');
+    if (!existsSync(script)) throw new Error('找不到 ' + script);
+    const cmd = findPython();
+    const logPath = join(HERE, 'exp-ocr.log');
+    let fd = -1;
+    try {
+      fd = openSync(logPath, 'a');
+      ocrProc = spawn(cmd[0], cmd.slice(1).concat([script, String(EXP_OCR_PORT)]), {
+        detached: true,
+        stdio: ['ignore', fd, fd],
+        windowsHide: true,
+        cwd: HERE,
+      });
+      ocrProc.unref();
+    } catch (e) {
+      throw new Error('拉起 OCR 失败: ' + (e && e.message || e));
+    } finally {
+      if (fd >= 0) { try { closeSync(fd); } catch { } }
+    }
+    for (let i = 0; i < 40; i++) {
+      await new Promise((r) => setTimeout(r, 500));
+      if (await ocrPing()) { console.log('exp: OCR 服务已就绪'); return true; }
+    }
+    throw new Error('等了 20 秒还没就绪，看 exp-ocr.log');
+  })();
+  try { return await ocrPending; }
+  catch (e) { ocrFailedAt = Date.now(); console.log('exp: ' + (e && e.message || e)); return false; }
+  finally { ocrPending = null; }
+}
+
 function expConfig() {
   try {
     const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
@@ -4705,9 +4764,10 @@ async function handler(req, res) {
   }
 
   // ---- 实验版 E2：矢量文字层 -------------------------------------------------
-  // 把请求原样转发给常驻的 Python OCR 服务（默认 127.0.0.1:8777）。
+  // 把请求转发给常驻的 Python OCR 服务（默认 127.0.0.1:8777）。这个服务由本进程
+  // **按需自动拉起**（ensureOcr），不需要用户手动开窗口。
   // 为什么不在 Node 里做 OCR：RapidOCR 是 Python 生态，模型加载一次 ~640ms，
-  // 必须常驻；Node 这边只负责鉴权和转发，挂了也只影响文字层，不影响画面。
+  // 必须常驻；Node 这边只负责鉴权、转发和拉起，挂了也只影响文字层，不影响画面。
   if (url.pathname === '/exp/ocr' && req.method === 'POST') {
     const cfg = expConfig();
     if (cfg.enabled !== true) { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"ok":false,"error":"experiments disabled"}'); return; }
@@ -4716,6 +4776,8 @@ async function handler(req, res) {
     req.on('end', async () => {
       const t0 = Date.now();
       try {
+        const up = await ensureOcr();
+        if (!up) throw new Error('OCR 服务起不来（没找到 Python？见 ocr.log）');
         const r = await fetch('http://127.0.0.1:' + EXP_OCR_PORT + '/ocr', {
           method: 'POST',
           headers: { 'content-type': 'application/json; charset=utf-8' },
@@ -4729,7 +4791,7 @@ async function handler(req, res) {
         res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
         res.end(JSON.stringify({
           ok: false,
-          error: 'OCR 服务没响应，先起它：py -3.12 app/exp/ocr/ocr_server.py',
+          error: 'OCR 服务没响应',
           detail: String(e && e.message || e),
           ms: Date.now() - t0,
         }));

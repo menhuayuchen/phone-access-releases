@@ -5755,9 +5755,10 @@ bindImg(img);
         var fs = H * 0.8;                              // bbox 高度 ≈ 字号 × 1.25
         if (fs < 7 || fs > 200) continue;
         // 必须先铺背景色把原来的模糊像素字盖掉，否则清晰字和糊字叠成双影。
-        // 宽度给到 1.25 倍：字体和原来不完全一样，宽一点不至于把字截掉。
+        // 宽度只给 6%+2px 的余量：给多了（试过 25%）相邻两行的背景块会粘连成一片，
+        // 看起来像贴了好几块灰胶布。字体不同导致少数行尾部被截是可以接受的代价。
         html += '<div style="position:absolute;left:' + p.x.toFixed(1) + 'px;top:' + p.y.toFixed(1) + 'px;'
-          + 'width:' + (W * 1.25).toFixed(1) + 'px;height:' + H.toFixed(1) + 'px;overflow:hidden;'
+          + 'width:' + (W * 1.06 + 2).toFixed(1) + 'px;height:' + H.toFixed(1) + 'px;overflow:hidden;'
           + 'background:' + (L.bg || 'transparent') + ';color:' + (L.fg || '#fff') + ';'
           + 'font-size:' + fs.toFixed(1) + 'px;line-height:' + H.toFixed(1) + 'px;'
           + 'white-space:nowrap;font-family:\'Microsoft YaHei\',\'PingFang SC\',system-ui,sans-serif;'
@@ -5788,12 +5789,20 @@ bindImg(img);
       }).catch(function () { busy = false; });
     }
 
-    // 250ms 看一次状态：缩回原大小就清掉；缩放倍数变了也清掉（位置会错）
+    // 250ms 看一次状态。三种情况要清掉旧文字层：
+    //   ① 缩回原大小 ② 缩放倍数变了（位置会错）③ 画面内容动了（滚动/切窗口/换来源）
+    // ③ 是新加的：文字层是"某一帧的坐标快照"，画面一动它立刻就对不上，
+    // 留着不如不显示 —— 滚动过程中用像素，停手后 350ms 再重新增强。
     setInterval(function () {
       if (state.mode !== 'h264' && state.mode !== 'raw') { clearLayer(); return; }
       var s = view.scale;
       if (s < 1.35) { clearLayer(); lastRect = null; lastScale = s; return; }
       if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; }
+      if (lastRect) {
+        var rc = viewRect();
+        if (Math.abs(rc.x - lastRect.x) > 30 || Math.abs(rc.y - lastRect.y) > 30
+          || Math.abs(rc.w - lastRect.w) > 60 || Math.abs(rc.h - lastRect.h) > 60) clearLayer();
+      }
       if (timer) clearTimeout(timer);
       timer = setTimeout(request, 350);
     }, 250);
