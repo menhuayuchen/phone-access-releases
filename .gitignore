@@ -36,3 +36,5 @@ app/bin/sources.exe
 _release/
 .release/
 .release/
+app/exp/ocr/srv.out
+app/exp/ocr/srv.err
