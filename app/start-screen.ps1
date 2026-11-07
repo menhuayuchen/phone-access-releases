@@ -92,7 +92,9 @@ if (-not $tsIp) {
 # 绑 127.0.0.1 只对本机可见，不扩大暴露面（局域网和公网仍然进不来）。
 $hosts = @('127.0.0.1', $tsIp) | Where-Object { $_ } | Select-Object -Unique
 # 离线模式：把本机局域网 IPv4（Wi-Fi/以太网/电脑热点 192.168.137.x）也加进监听列表
-if ($offlineMode) {
+# 2026-11-07：screen.lan=true 时也监听局域网（不必开离线模式）
+$lanMode = $offlineMode -or [bool]($cfg.screen -and $cfg.screen.lan)
+if ($lanMode) {
   $lanIps = @()
   try {
     $lanIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |

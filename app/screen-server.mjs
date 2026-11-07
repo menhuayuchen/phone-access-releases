@@ -82,13 +82,15 @@ const PRIVATE_V4 = [
 ];
 // 离线模式（product.config.json → screen.offline）：没有互联网/Tailscale 时允许绑 RFC1918 局域网/热点地址
 const OFFLINE_MODE = !!(cfgScreen && cfgScreen.offline === true);
+// 2026-11-07：screen.lan=true 时允许直接监听局域网（不用开整个离线模式）；发布版默认 false
+const ALLOW_LAN = OFFLINE_MODE || !!(cfgScreen && cfgScreen.lan === true);
 const LAN_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/;
 const badHosts = [];
 const hosts = hostsArg.split(',').map((h) => h.trim()).filter(Boolean).filter((h) => {
   const isV4 = /^\d{1,3}(\.\d{1,3}){3}$/.test(h);
   if (!isV4) { badHosts.push(h + '(非 IPv4)'); return false; }
   if (h === '0.0.0.0') { badHosts.push(h + '(通配全部网卡)'); return false; }
-  if (!PRIVATE_V4.some((re) => re.test(h)) && !(OFFLINE_MODE && LAN_V4.test(h))) { badHosts.push(h + '(非回环/非 Tailscale/离线模式未开)'); return false; }
+  if (!PRIVATE_V4.some((re) => re.test(h)) && !(ALLOW_LAN && LAN_V4.test(h))) { badHosts.push(h + '(非回环/非 Tailscale/局域网未允许)'); return false; }
   return true;
 });
 if (badHosts.length) {
@@ -1830,7 +1832,7 @@ function sourceAllowed(req) {
   const ra = String((req.socket && req.socket.remoteAddress) || ').replace(/^::ffff:/, ');
   if (ra === '127.0.0.1' || ra === '::1') return true;
   // 离线模式：允许同一局域网/电脑热点里的设备（仍需带访问密钥）
-  if (OFFLINE_MODE && LAN_V4.test(ra)) return true;
+  if (ALLOW_LAN && LAN_V4.test(ra)) return true;
   return /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ra);
 }
 
@@ -2741,7 +2743,7 @@ async function handler(req, res) {
   // 由 Tailscale 自己选直连路径，而不是绕过 Tailscale。
   const fromTailnet = /^100\.(6[4-9]|[7-9]\d|1[01]\d|12[0-7])\./.test(ra);
   // 离线模式：允许同一局域网/电脑热点里的设备（仍需带访问密钥）
-  const fromLanOffline = OFFLINE_MODE && LAN_V4.test(ra);
+  const fromLanOffline = ALLOW_LAN && LAN_V4.test(ra);
   if (ra !== '127.0.0.1' && ra !== '::1' && !fromTailnet && !fromLanOffline) {
     try {
       res.writeHead(403, { 'content-type': 'text/plain; charset=utf-8', 'cache-control': 'no-store' });
