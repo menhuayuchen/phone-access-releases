@@ -5702,7 +5702,7 @@ bindImg(img);
     function baseK() {
       var w = 0;
       try { w = stage.getBoundingClientRect().width; } catch (e) { w = 0; }
-      var px = w > 0 ? Math.min(26, Math.max(14, w * 0.034)) : 16;
+      var px = w > 0 ? Math.min(22, Math.max(11, w * 0.028)) : 14;
       var zs = 1;
       try { zs = (view && view.scale > 1) ? view.scale : 1; } catch (e) { zs = 1; }
       if (zs > 1) px = px * Math.pow(zs, 0.35);
@@ -5803,8 +5803,15 @@ bindImg(img);
     badge.style.cssText = 'position:fixed;right:8px;top:104px;z-index:9999;padding:5px 10px;border-radius:8px;'
       + 'background:rgba(16,18,22,.82);color:#8fb6ff;font-size:10.5px;line-height:1.45;'
       + 'max-width:calc(100vw - 20px);white-space:pre-line;box-sizing:border-box;'
-      + 'font-family:system-ui,sans-serif;pointer-events:none;display:none;';
+      + 'font-family:system-ui,sans-serif;display:none;cursor:pointer;'
+      + 'pointer-events:auto;user-select:none;';
     document.body.appendChild(badge);
+    // 点状态牌 = 强制增强当前这块（绕过缩放倍数/去抖/节流的所有条件）
+    badge.addEventListener('click', function (ev) {
+      ev.preventDefault(); ev.stopPropagation();
+      if (onForce) onForce();
+    });
+    var onForce = null;
     function badgeSet(t, color) {
       badge.textContent = t || '';
       badge.style.color = color || '#8fb6ff';
@@ -5925,6 +5932,14 @@ bindImg(img);
         + 'width:' + w.toFixed(1) + 'px;height:' + h.toFixed(1) + 'px;'
         + 'display:block;">';
     }
+
+// 点状态牌 = 强制对当前视口取一次高清图。绕过缩放倍数检查、去抖和节流 ——
+    // 用户反馈「经常不触发」，这是最可靠的兜底入口。
+    onForce = function () {
+      lastRect = null; lastAt = 0; lastChangeAt = 0;
+      badgeSet('强制取高清图…', '#ffb454');
+      request();
+    };
 
     // 250ms 看一次状态。三种情况要清掉旧文字层：
     //   ① 缩回原大小 ② 缩放倍数变了（位置会错）③ 画面内容动了（滚动/切窗口/换来源）
