@@ -5443,21 +5443,23 @@ bindImg(img);
   // 最坏情况是实验功能不出现，绝不影响画面、输入、音频。
   // 注意：整页是 String.raw 模板，所以这段代码里不能出现反引号和美元花括号。
   // 每个形状自带 viewBox 尺寸 w/h，热点 hx/hy 用的是**viewBox 内坐标**。
-  // 2026-11-07 修正：原来所有形状共用 16x16，而箭头路径画到 y=19.6 —— 底部被裁掉，
-  // 手机上看到的是一个缺了尾巴的怪箭头（用户第一反馈就是这个）。现在各自用自己的尺寸。
+  // 2026-11-07 两次修正：
+  //   ① 原来所有形状共用 16x16，而箭头路径画到 y=19.6 —— 底部被裁掉，看到的是个缺了尾巴的怪箭头；
+  //   ② 用户实拍了自己电脑上的真实光标发过来对比：真实 Windows 光标是 32px 位图上的**瘦长**箭头
+  //      （宽高比约 0.6），黑边只有 1px。上一版 0.73 宽 + 描边 1.1，看着又胖又假，所以按照片重画。
   var EXP_SHAPES = {
-    arrow:    { w: 16, h: 22, hx: 1, hy: 1, s: '<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' },
-    ibeam:    { w: 12, h: 18, hx: 6, hy: 9, s: '<path d="M1.5 1.5 H10.5 M6 1.5 V16.5 M1.5 16.5 H10.5" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M1.5 1.5 H10.5 M6 1.5 V16.5 M1.5 16.5 H10.5" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>' },
-    hand:     { w: 16, h: 20, hx: 4, hy: 1.5, s: '<path d="M3.6 9.5 V3.4 M7.6 9.5 V2.4 M11.6 9.5 V4.2" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M3.6 9.5 V14 C3.6 17.2 5.9 19 8.4 19 C10.9 19 13.2 17.2 13.2 14 V9.5" fill="none" stroke="#000" stroke-width="2.9" stroke-linecap="round"/><path d="M3.6 9.5 V3.4 M7.6 9.5 V2.4 M11.6 9.5 V4.2" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/><path d="M3.6 9.5 V14 C3.6 17.2 5.9 19 8.4 19 C10.9 19 13.2 17.2 13.2 14 V9.5" fill="none" stroke="#fff" stroke-width="1.1" stroke-linecap="round"/>' },
-    wait:     { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.4" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M8 4.2 V8 L11 9.8" fill="none" stroke="#000" stroke-width="1.5" stroke-linecap="round"/>' },
-    progress: { w: 18, h: 23, hx: 1, hy: 1, s: '<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/><circle cx="15" cy="5" r="3.4" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M15 3 V5 L16.4 5.9" fill="none" stroke="#000" stroke-width="1.2"/>' },
-    cross:    { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M1 8 H15" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1 V15 M1 8 H15" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
-    sizeall:  { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/><path d="M8 0.6 L10.4 3.6 H5.6 Z M8 15.4 L10.4 12.4 H5.6 Z M0.6 8 L3.6 5.6 V10.4 Z M15.4 8 L12.4 5.6 V10.4 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' },
-    sizewe:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"/><path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#fff" stroke-width="1.05" stroke-linecap="round"/>' },
-    sizens:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#000" stroke-width="2.4" stroke-linecap="round"/><path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#fff" stroke-width="1.05" stroke-linecap="round"/>' },
-    no:       { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.3" fill="#fff" stroke="#000" stroke-width="1.2"/><path d="M4 4 L12 12" stroke="#d00" stroke-width="2.2" stroke-linecap="round"/>' },
-    help:     { w: 18, h: 23, hx: 1, hy: 1, s: '<path d="M1 1 L1 17 L5.2 13 L8.2 21 L11 19.8 L8 12 L14 12 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/><text x="12.2" y="7.4" font-size="8" font-weight="700" font-family="sans-serif" fill="#1546d8">?</text>' },
-    uparrow:  { w: 14, h: 18, hx: 7, hy: 1, s: '<path d="M7 1 L12.6 7.4 H9.4 V16 H4.6 V7.4 H1.4 Z" fill="#fff" stroke="#000" stroke-width="1.1" stroke-linejoin="round"/>' }
+    arrow:    { w: 15, h: 23, hx: 1, hy: 1, s: '<path d="M1 1 L1 18.6 L5.3 14.2 L8.5 22 L11.2 20.9 L8 13.2 L13.6 13.2 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' },
+    ibeam:    { w: 10, h: 18, hx: 5, hy: 9, s: '<path d="M1.2 1.4 H8.8 M5 1.4 V16.6 M1.2 16.6 H8.8" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M1.2 1.4 H8.8 M5 1.4 V16.6 M1.2 16.6 H8.8" fill="none" stroke="#fff" stroke-width="0.95" stroke-linecap="round"/>' },
+    hand:     { w: 15, h: 20, hx: 3.4, hy: 1.5, s: '<path d="M3.4 9.6 V3.6 M7.2 9.6 V2.6 M11 9.6 V4.4" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M3.4 9.6 V14 C3.4 17.1 5.7 19 8 19 C10.4 19 12.7 17.1 12.7 14 V9.6" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M3.4 9.6 V3.6 M7.2 9.6 V2.6 M11 9.6 V4.4" fill="none" stroke="#fff" stroke-width="0.95" stroke-linecap="round"/><path d="M3.4 9.6 V14 C3.4 17.1 5.7 19 8 19 C10.4 19 12.7 17.1 12.7 14 V9.6" fill="none" stroke="#fff" stroke-width="0.95" stroke-linecap="round"/>' },
+    wait:     { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.4" fill="#fff" stroke="#000" stroke-width="1"/><path d="M8 4.2 V8 L11 9.8" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>' },
+    progress: { w: 17, h: 24, hx: 1, hy: 1, s: '<path d="M1 1 L1 18.6 L5.3 14.2 L8.5 22 L11.2 20.9 L8 13.2 L13.6 13.2 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/><circle cx="14" cy="5" r="3.3" fill="#fff" stroke="#000" stroke-width="1"/><path d="M14 3 V5 L15.3 5.9" fill="none" stroke="#000" stroke-width="1.1"/>' },
+    cross:    { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M1 8 H15" stroke="#000" stroke-width="2" stroke-linecap="round"/><path d="M8 1 V15 M1 8 H15" stroke="#fff" stroke-width="0.85" stroke-linecap="round"/>' },
+    sizeall:  { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#000" stroke-width="2" stroke-linecap="round"/><path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#fff" stroke-width="0.85" stroke-linecap="round"/><path d="M8 0.6 L10.4 3.6 H5.6 Z M8 15.4 L10.4 12.4 H5.6 Z M0.6 8 L3.6 5.6 V10.4 Z M15.4 8 L12.4 5.6 V10.4 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' },
+    sizewe:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
+    sizens:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
+    no:       { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.3" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M4.1 4.1 L11.9 11.9" stroke="#d00" stroke-width="2" stroke-linecap="round"/>' },
+    help:     { w: 17, h: 24, hx: 1, hy: 1, s: '<path d="M1 1 L1 18.6 L5.3 14.2 L8.5 22 L11.2 20.9 L8 13.2 L13.6 13.2 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/><text x="11.6" y="7.6" font-size="8" font-weight="700" font-family="sans-serif" fill="#1546d8">?</text>' },
+    uparrow:  { w: 13, h: 18, hx: 6.5, hy: 1, s: '<path d="M6.5 1 L12 7.4 H9 V16 H4 V7.4 H1 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' }
   };
   function expShape(s) {
     if (EXP_SHAPES[s]) return EXP_SHAPES[s];
@@ -5469,35 +5471,29 @@ bindImg(img);
   // 拿 {x,y,s,v}（屏幕物理像素），用 toPage() 换算成页面坐标后本地画一个。
   // 坐标换算必须复用 toPage —— 另写一套就会重演 2026-11-06 的触屏偏移事故。
   function expCursorStart() {
-    var K = 1.1;                        // 每 viewBox 单位 → 屏幕像素（再乘当前画面缩放）
     var el = document.createElement('div');
     el.id = 'expCursor';
     el.style.cssText = 'position:fixed;left:0;top:0;pointer-events:none;z-index:9998;'
       + 'display:none;will-change:transform;background-repeat:no-repeat;';
     document.body.appendChild(el);
 
-    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: K, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
+    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
 
-    // 尺寸自适应（2026-11-07 用户实机反馈后重做）：
-    //   ① 基准跟**画面显示宽度**走（约 3.5%，夹在 22~34 CSS px）——屏幕旋转、窗口变化自动跟着变；
-    //   ② 三指放大画面时只跟到 **1.35 倍封顶**。原来直接乘 view.scale，用户放大 4 倍后
-    //      光标从 24px 变成 106px，占掉半个屏幕（实机截图）。真实鼠标指针本来就不会
-    //      因为你看得近而变大，这里按同一个直觉处理。
-    function scaleFollow() {
-      var zs = 1;
-      try { zs = (view && view.scale) ? view.scale : 1; } catch (e) { zs = 1; }
-      return zs > 1.35 ? 1.35 : zs;
-    }
+    // 尺寸（2026-11-07 第三版，按用户实机反馈重定）：
+    // 真实光标在 2560 宽的屏幕上占 32px（1.25%）。手机上按真实比例只剩 4~5px，根本看不见，
+    // 所以放到约 2.7 倍：clamp(画面宽度 × 3.4%, 14, 26) CSS px。
+    // 用户要求「像电脑里真有一个鼠标，大小固定」——所以**不跟三指缩放走**，只跟画面宽度
+    // （横竖屏、窗口大小变化）自适应。上一版直接乘 view.scale，放 4 倍后光标变 106px，是错的。
     function baseK() {
       var w = 0;
       try { w = stage.getBoundingClientRect().width; } catch (e) { w = 0; }
-      var px = w > 0 ? Math.min(34, Math.max(22, w * 0.035)) : 24;
-      return px / 22;                      // 22 = 箭头形 viewBox 的高度，当作基准
+      var px = w > 0 ? Math.min(26, Math.max(14, w * 0.034)) : 16;
+      return px / 23;                      // 23 = 箭头形 viewBox 高度
     }
 
     function paint(s) {
       var d = expShape(s);
-      var z = baseK() * scaleFollow();
+      var z = baseK();
       st.hx = d.hx; st.hy = d.hy; st.k = z;
       var w = Math.round(d.w * z * 10) / 10;
       var h = Math.round(d.h * z * 10) / 10;
@@ -5526,7 +5522,7 @@ bindImg(img);
       if (!p || !isFinite(p.x) || !isFinite(p.y)) { show(false); return; }
       st.tx = p.x; st.ty = p.y;
       // 尺寸自适应：只在需要的值时变（窗口/旋转/缩放档）才重画，不每帧改样式
-      var want = baseK() * scaleFollow();
+      var want = baseK();
       if (Math.abs(want - st.k) > 0.004) paint(st.shape);
       if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
       var dx = st.tx - st.x, dy = st.ty - st.y;
