@@ -5476,13 +5476,28 @@ bindImg(img);
       + 'display:none;will-change:transform;background-repeat:no-repeat;';
     document.body.appendChild(el);
 
-    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: K, zoom: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
+    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: K, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false };
 
-    // 形状和尺寸一起画：w/h 是形状自己的 viewBox 尺寸；zoom 跟着画面缩放，
-    // 否则放大画面后光标相对画面会越来越小（用户反馈过"放大后大小不一样"）。
-    function paint(s, zoom) {
+    // 尺寸自适应（2026-11-07 用户实机反馈后重做）：
+    //   ① 基准跟**画面显示宽度**走（约 3.5%，夹在 22~34 CSS px）——屏幕旋转、窗口变化自动跟着变；
+    //   ② 三指放大画面时只跟到 **1.35 倍封顶**。原来直接乘 view.scale，用户放大 4 倍后
+    //      光标从 24px 变成 106px，占掉半个屏幕（实机截图）。真实鼠标指针本来就不会
+    //      因为你看得近而变大，这里按同一个直觉处理。
+    function scaleFollow() {
+      var zs = 1;
+      try { zs = (view && view.scale) ? view.scale : 1; } catch (e) { zs = 1; }
+      return zs > 1.35 ? 1.35 : zs;
+    }
+    function baseK() {
+      var w = 0;
+      try { w = stage.getBoundingClientRect().width; } catch (e) { w = 0; }
+      var px = w > 0 ? Math.min(34, Math.max(22, w * 0.035)) : 24;
+      return px / 22;                      // 22 = 箭头形 viewBox 的高度，当作基准
+    }
+
+    function paint(s) {
       var d = expShape(s);
-      var z = (zoom > 0 ? zoom : 1) * K;
+      var z = baseK() * scaleFollow();
       st.hx = d.hx; st.hy = d.hy; st.k = z;
       var w = Math.round(d.w * z * 10) / 10;
       var h = Math.round(d.h * z * 10) / 10;
@@ -5510,9 +5525,9 @@ bindImg(img);
       try { p = toPage(st.rx, st.ry); } catch (e) { return; }
       if (!p || !isFinite(p.x) || !isFinite(p.y)) { show(false); return; }
       st.tx = p.x; st.ty = p.y;
-      // 画面缩放（三指捏合改变的 view.scale）变了就重画一次尺寸：光标跟着画面一起放大
-      var z = (typeof view !== 'undefined' && view && view.scale) ? view.scale : 1;
-      if (Math.abs(z - st.zoom) > 0.02) { st.zoom = z; paint(st.shape, z); }
+      // 尺寸自适应：只在需要的值时变（窗口/旋转/缩放档）才重画，不每帧改样式
+      var want = baseK() * scaleFollow();
+      if (Math.abs(want - st.k) > 0.004) paint(st.shape);
       if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
       var dx = st.tx - st.x, dy = st.ty - st.y;
       if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
@@ -5539,7 +5554,7 @@ bindImg(img);
         st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
         st.vis = (j.v !== 0);
         var sh = j.s || 'arrow';
-        if (sh !== st.shape) { st.shape = sh; paint(sh, st.zoom); }
+        if (sh !== st.shape) { st.shape = sh; paint(sh); }
         if (!st.raf) frame();
       };
       w.onclose = function () {
@@ -5549,7 +5564,7 @@ bindImg(img);
       };
       w.onerror = function () { try { w.close(); } catch (e) { } };
     }
-    paint('arrow', 1);
+    paint('arrow');
     connect();
   }
 
