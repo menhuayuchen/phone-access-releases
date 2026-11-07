@@ -5869,8 +5869,17 @@ bindImg(img);
         clearLayer(); lastRect = null; lastScale = s;
         // 关键提示：很多人没意识到「画面缩放」和「系统缩放」是两个模式，
         // 系统缩放下 view.scale 永远是 1 —— 这里直接把当前倍数打在屏幕上。
-        badgeSet('OCR 待机 ' + s.toFixed(2) + 'x（需 >1.25x）'
-          + (s <= 1.001 ? '&#10;三指捏合 → 画面缩放' : ''), '#8b9099');
+        // 用真实换行（badge 是 textContent，写 &#10; 会被当成字面文本显示）。
+        // 注意：这里不能用反斜杠 n 之外的转义写法 —— 整段是 String.raw 模板，
+        // 而且不能出现反引号（会提前终止模板）。String.fromCharCode(10) 最稳。
+        var tip = '';
+        if (s <= 1.001) {
+          var NL = String.fromCharCode(10);
+          tip = (typeof zoomMode === 'string' && zoomMode === 'view')
+            ? NL + '点右侧 + 放大'
+            : NL + '先点「缩放」选「画面缩放」';
+        }
+        badgeSet('OCR 待机 ' + s.toFixed(2) + 'x（需 >1.25x）' + tip, '#8b9099');
         return;
       }
       if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; }
