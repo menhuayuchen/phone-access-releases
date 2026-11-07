@@ -88,7 +88,7 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
   }
   let wantImg = false;
 function requestCursorImage() { wantImg = true; }
-setInterval(pollCursor, 33).unref?.();
+setInterval(pollCursor, 20).unref?.();   // 2026-11-07: 33 -> 20ms（50Hz），减少光标回传延迟
 
   function cursor() { return { x: cursorPos.x, y: cursorPos.y, s: cursorPos.s, v: cursorPos.v, img: cursorPos.img || '', cw: cursorPos.cw || 0, ch: cursorPos.ch || 0, chx: cursorPos.chx || 0, chy: cursorPos.chy || 0, at: cursorAt }; }
 

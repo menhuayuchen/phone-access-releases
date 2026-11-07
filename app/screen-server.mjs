@@ -1263,7 +1263,7 @@ async function runSunshineInit() {
 //
 // 独立通道是刻意的：不碰 /ws-h264、/rtc、/ws-audio 里任何一行，出问题只会
 // 让光标不显示，画面和输入照常。
-const EXP_TICK_MS = 33;
+const EXP_TICK_MS = 20;          // 2026-11-07: 30Hz -> 50Hz，光标推送更密，跟手性更好
           // 30Hz：光标本体也就 125Hz 更新，30Hz + 客户端平滑已经看不出台阶
 const EXP_OCR_PORT = 8777;       // 常驻 Python OCR 服务（app/exp/ocr/ocr_server.py）
 

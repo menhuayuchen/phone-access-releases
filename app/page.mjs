@@ -2376,6 +2376,12 @@ overlay.addEventListener('pointerdown', (e) => {
   moved = false; dragBtn = -1;
   const p = toScreen(q.x, q.y);
   queue({ t: 'move', x: p.x, y: p.y });
+  // 2026-11-07：触屏也做本地预测 —— 触屏原来没有本地预测，光标要等电脑回传
+  // （采样 + 推送 + 网络 + 平滑 ≈ 100-250ms）才动，这就是「不跟手」的根源。
+  // move 已经发出去了，电脑光标最终会到这个点；1.5 秒后以电脑回传为准（纠偏）。
+  if (window.__paExp && window.__paExp.real) {
+    try { if (window.__paCurLocal) window.__paCurLocal(p.x, p.y); } catch (e) { }
+  }
   hideMouseCur();
   showDot(q.x, q.y);
   longTimer = setTimeout(() => {
@@ -2464,10 +2470,16 @@ overlay.addEventListener('pointermove', (e) => {
     if (dragBtn < 0) { dragBtn = 0; queue({ t: 'down', b: 0 }); }
   }
   const now = Date.now();
-  if (now - lastMoveSent > 28) {
+  // 2026-11-07：去掉 28ms 节流。queue 内部已有 8ms 批量，这里再节流一次等于
+  // 凭空多 0~28ms 延迟（外接鼠标那条早去掉了，触屏这条漏了）。
+  {
     lastMoveSent = now;
     const p = toScreen(q.x, q.y);
     queue({ t: 'move', x: p.x, y: p.y });
+    // 触屏本地预测：手指拿到哪，光标立刻跟到哪，不等电脑回传
+    if (window.__paExp && window.__paExp.real) {
+      try { if (window.__paCurLocal) window.__paCurLocal(p.x, p.y); } catch (e) { }
+    }
     hideMouseCur();
   showDot(q.x, q.y);
   }
@@ -6123,7 +6135,7 @@ bindImg(img);
         if (!j || j.t !== 'cur') return;
         if (typeof j.x !== 'number' || typeof j.y !== 'number') return;
         // 2026-11-07：鼠标刚动过的 400ms 内以本地预测为准，忽略电脑回传的旧位置（否则光标被"拽回去"）
-        if (Date.now() - lastLocalMouseAt > 3000) {
+        if (Date.now() - lastLocalMouseAt > 1500) {   // 3s -> 1.5s：预测窗口短一点，电脑拒绝注入时更快纠回真实位置
 st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算交给 frame()
         } else {
           st.got = true;
