@@ -132,15 +132,33 @@ function New-OffTrigger($rule) {
 function New-WakeTrigger($rule) {
     $w = Parse-HHmm $rule.wakeTime
     if (-not $w) { return $null }
+    # 2026-11-07 实测教训：唤醒定时器会被"意外唤醒"提前消耗掉 ——
+    #   20:05:02 休眠，20:06:04 就被网卡/键鼠叫醒（这些设备都开着"允许唤醒"），
+    #   到 20:07 真正该唤醒时反而没有定时器了，机器一直睡着，得手动按键才回来。
+    # 对策：同一个唤醒任务给 3 个触发点（目标时间、+3 分钟、+6 分钟）。
+    # 只要有一次没被兑现，睡回去之后下一个触发点会重新注册唤醒定时器，多一层兜底。
+    $offsets = @(0, 3, 6)
+    $list = @()
     if ($rule.repeat -eq 'once') {
         # 关键修复：仅一次时，唤醒必须落在规则日期上（以前忽略 date，可能排到今天）
         $d = Parse-DateStr $rule.date
-        return New-ScheduledTaskTrigger -Once -At $d.AddHours($w.Hour).AddMinutes($w.Minute)
+        $baseDt = $d.AddHours($w.Hour).AddMinutes($w.Minute)
+        foreach ($off in $offsets) {
+            $list += New-ScheduledTaskTrigger -Once -At $baseDt.AddMinutes($off)
+        }
+        return $list
     }
     $at = Get-Date -Hour $w.Hour -Minute $w.Minute -Second 0
     if ($at -le (Get-Date)) { $at = $at.AddDays(1) }
-    if ($rule.repeat -eq 'weekdays') { return New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $at }
-    return New-ScheduledTaskTrigger -Daily -At $at
+    foreach ($off in $offsets) {
+        $t = $at.AddMinutes($off)
+        if ($rule.repeat -eq 'weekdays') {
+            $list += New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $t
+        } else {
+            $list += New-ScheduledTaskTrigger -Daily -At $t
+        }
+    }
+    return $list
 }
 
 # ---------------- 主流程 ----------------
