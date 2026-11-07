@@ -5776,7 +5776,8 @@ bindImg(img);
   function expOcrStart() {
     var layer = null;
     var lastRect = null, lastAt = 0;
-    var busy = false, gen = 0, lastScale = 1, timer = null;
+    var busy = false, gen = 0, lastScale = 1, timer = null, lastChangeAt = Date.now();
+    var lastViewRect = null;   // 未裁剪的视口矩形：只用来判断「画面有没有动」，别和裁剪后的 lastRect 混用
 
     // 状态牌：让用户一眼看到 OCR 到底有没有在工作（不然"没感觉"完全无法判断）。
     // 只有 ?exp=ocr 才存在，不污染主线。
@@ -5844,7 +5845,8 @@ bindImg(img);
 
     function request() {
       if (busy) return;
-      var rc = viewRect();
+      var rawRc = viewRect();
+      var rc = rawRc;
       if (rc.w < 180 || rc.h < 110) return;
       // 2026-11-07 修：原来区域超过 1200x900 就直接 return（静默放弃）——
       // 用户放大 1.38 倍时整屏对应 1852x1024，点了 + 也永远没反应，还看不到任何提示。
@@ -5857,14 +5859,15 @@ bindImg(img);
       }
       if (lastRect && Math.abs(lastRect.x - rc.x) < 24 && Math.abs(lastRect.y - rc.y) < 24
         && Math.abs(lastRect.w - rc.w) < 40 && Math.abs(lastRect.h - rc.h) < 40) return;
-      if (Date.now() - lastAt < 1200) return;
-      busy = true; lastRect = rc; lastAt = Date.now();
+      if (Date.now() - lastAt < 2500) return;   // 同一区域别反复烧 OCR：2.5 秒内只认一次
+      busy = true; lastRect = rc; lastViewRect = rawRc; lastAt = Date.now();
       badgeSet('OCR 识别中…', '#ffb454');
       var my = ++gen;
       fetch('/exp/ocr?k=' + encodeURIComponent(KEY) + '&s=' + SID, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rect: { x: Math.round(rc.x), y: Math.round(rc.y), w: Math.round(rc.w), h: Math.round(rc.h) } }),
+        signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(20000) : undefined,
       }).then(function (r) { return r.json(); }).then(function (j) {
         busy = false;
         if (my !== gen) return;
@@ -5899,14 +5902,25 @@ bindImg(img);
         badgeSet('OCR 待机 ' + s.toFixed(2) + 'x（需 >1.25x）' + tip, '#8b9099');
         return;
       }
-      if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; }
-      if (lastRect) {
-        var rc = viewRect();
-        if (Math.abs(rc.x - lastRect.x) > 30 || Math.abs(rc.y - lastRect.y) > 30
-          || Math.abs(rc.w - lastRect.w) > 60 || Math.abs(rc.h - lastRect.h) > 60) clearLayer();
+      // 2026-11-07 修核心 bug：原来这里每次都是 clearTimeout + setTimeout(350)，
+      // 而外面 setInterval 是 250ms 一次 —— 250 < 350，定时器每轮都被重置，
+      // request() 永远没机会执行（之前测试能过，都是靠调试钩子手动 fire 的）。
+      // 现在改成记「最后一次变化时间」，停手满 350ms 才发请求，不依赖定时器链。
+      var now = Date.now();
+      if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; lastChangeAt = now; }
+      // 用未裁剪的视口矩形判断「画面有没有动」—— 之前拿裁剪后的 lastRect 比，
+      // 尺寸永远差 600+ 像素，于是每轮都判成动了：刚渲染的文字层立刻被清掉。
+      if (lastViewRect) {
+        var vr = viewRect();
+        if (Math.abs(vr.x - lastViewRect.x) > 30 || Math.abs(vr.y - lastViewRect.y) > 30
+          || Math.abs(vr.w - lastViewRect.w) > 60 || Math.abs(vr.h - lastViewRect.h) > 60) {
+          clearLayer(); lastChangeAt = now;
+        }
       }
-      if (timer) clearTimeout(timer);
-      timer = setTimeout(request, 350);
+      if (!busy && now - lastChangeAt >= 350) {
+        lastChangeAt = now;        // 先把时间戳往前推，避免同一段静止里连续发好几次
+        request();
+      }
     }, 250);
 
     // 调试入口（只在 ?exp=ocr 时存在）：手机上放大是触摸手势，调试时没法模拟，
