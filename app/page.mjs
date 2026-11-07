@@ -255,6 +255,9 @@ body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mou
 <div id="hint"></div>
 <script>
 const KEY = "__KEY__";
+  // 2026-11-07：页面版本。Service Worker 会把页面外壳缓存起来，切网/断网时会回落到缓存，
+  // 结果是"修复前的旧页面又跑起来了"。这个标记会显示在「关于」面板里，一眼就能判断是不是旧缓存。
+  const PA_PAGE_VER = '2026-11-07.3';
   const SID = Math.random().toString(36).slice(2, 10);   // 本页会话 id：服务端按它统计丢帧，互不干扰
 const stage = document.getElementById('stage');
 let img = document.getElementById('img');
@@ -5955,6 +5958,8 @@ bindImg(img);
         ? '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">这台电脑已经装好许可证（可选项）。</div>'
         : '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">许可证是可选项：不装不影响任何功能；需要时在「设置 → 许可证」里粘贴。</div>')
       + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>'
+      + '<div style="color:#4f5561;font-size:10.5px;margin-top:14px">页面版本 ' + PA_PAGE_VER
+      + '（如果你刚更新过电脑端却还看到老问题，多半是手机缓存了旧页面：下拉刷新或「清除缓存」一次）</div>'
       + shareBlockHtml(lic);
     const box = openSheet(title, body, 'spClose');
     const cp = box.querySelector('#licCopy');

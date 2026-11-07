@@ -5312,12 +5312,28 @@ async function handler(req, res) {
     // 从主屏幕打开也不会出现 Chrome 的恐龙离线页——先出缓存页面，再去连局域网。
     // 只接管页面导航（navigate），其余请求（接口/画面/文件）完全不拦。
     const sw = [
-      "const CACHE = 'pa-shell-v2';",
+      // 2026-11-07：v2 → v3。v2 从不清理旧缓存，切网/断网时 SW 回落到缓存外壳，
+      // 用户看到的就是**修复前的旧页面**（同样的 bug"又出现了"）。现在：
+      //   1) 版本号变化会让浏览器重新 install；
+      //   2) activate 时删掉所有非当前版本的 cache；
+      //   3) 页面里带了 PA_PAGE_VER，设置→关于 能一眼看出是不是旧缓存。
+      "const CACHE = 'pa-shell-v3';",
       "self.addEventListener('install', (e) => {",
       "  self.skipWaiting();",
-      "  e.waitUntil(caches.open(CACHE).then((c) => c.add(new Request('/', { cache: 'reload' }))).catch(() => {}));",
+      "  e.waitUntil((async () => {",
+      "    try {",
+      "      const c = await caches.open(CACHE);",
+      "      await c.add(new Request('/', { cache: 'reload' }));",
+      "    } catch (x) {}",
+      "    try { const ks = await caches.keys(); await Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))); } catch (x) {}",
+      "  })());",
       "});",
-      "self.addEventListener('activate', (e) => { e.waitUntil(self.clients.claim()); });",
+      "self.addEventListener('activate', (e) => {",
+      "  e.waitUntil((async () => {",
+      "    try { const ks = await caches.keys(); await Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))); } catch (x) {}",
+      "    await self.clients.claim();",
+      "  })());",
+      "});",
       "self.addEventListener('fetch', (e) => {",
       "  const req = e.request;",
       "  if (req.mode !== 'navigate') return;   // 只接管页面本身",
