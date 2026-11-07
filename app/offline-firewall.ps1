@@ -21,8 +21,12 @@ $statePath = Join-Path $here 'offline-firewall.state.json'
 function Get-ProductLanBlockRules {
     $out = @()
     try {
+        # 2026-11-07：除了按名字，再按**端口**兜底匹配。安装器/旧版本可能用不同命名，
+        # 名字没命中就会漏掉，局域网端口一直被挡（实测踩过：
+        # 「PhoneAccess 轻屏 : 拒绝局域网 8660」明明在，却没被关掉）。
+        $portPat = '(' + (($ports | ForEach-Object { [string]$_ }) -join '|') + ')'
         $rules = Get-NetFirewallRule -Direction Inbound -Action Block -ErrorAction SilentlyContinue | Where-Object {
-            $_.DisplayName -match 'phone ?access|轻屏' -and $_.DisplayName -match 'lan|局域网|block'
+            ((($_.DisplayName -match 'phone ?access|轻屏') -and ($_.DisplayName -match 'lan|局域网|block')) -or ($_.DisplayName -match $portPat))
         }
         foreach ($r in $rules) {
             $pf = Get-NetFirewallPortFilter -AssociatedNetFirewallRule $r -ErrorAction SilentlyContinue

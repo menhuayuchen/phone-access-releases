@@ -183,7 +183,12 @@ let side264 = null, conn264 = null, conn264Retry = 0;
 
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
-let H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560;   // 原生分辨率：ddagrab 直喂 NVENC（零拷贝）
+// 原生分辨率：ddagrab 直喂 NVENC（零拷贝，不经过滤器）。2026-11-07 实测踩坑：
+// 这台机器（RTX 5070 + 当前 ffmpeg）做不了 d3d11→nv12 的自动转换，零拷贝路径直接
+// `-40 Function not implemented`，ffmpeg 秒退重试，画面全黑（2560 宽时必现，1920 走过滤器所以正常）。
+// 所以这里不再按宽度猜，改成**启动时探测**：探测失败就永远走 hwdownload+scale 的过滤器路径。
+let H264_NATIVE = false;
+let H264_ZEROCOPY = false;
 // 编码器：优先 NVENC（硬编，延迟低、CPU 几乎为 0），不可用时回退 h264_mf（软编）
 // 注意（2026-11-05 修）：这里的探测帧原来用 64x64，比 NVENC 的最小尺寸还小，
 // 于是「探测永远失败」→ 所有机器都退回 h264_mf 软编（1920x1200@60 吃满 CPU，延迟也高）。
@@ -195,7 +200,17 @@ try {
     H264_ENCODER = 'nvenc';
   }
 } catch { H264_ENCODER = 'mf'; }
-console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）'));
+// 零拷贝（ddagrab d3d11 直喂 nvenc nv12）能力探测：1 帧就够，失败就禁用。
+if (H264_ENABLED && H264_ENCODER === 'nvenc') {
+  try {
+    execFileSync(FFMPEG_EXE, ['-hide_banner','-loglevel','error','-nostdin',
+      '-f','lavfi','-i','ddagrab=framerate=30:draw_mouse=0:output_idx=0',
+      '-frames:v','1','-pix_fmt','nv12','-c:v','h264_nvenc','-f','null','-'], { timeout: 10000, stdio: 'ignore' });
+    H264_ZEROCOPY = true;
+  } catch (e) { H264_ZEROCOPY = false; }
+}
+H264_NATIVE = H264_ZEROCOPY && H264_W >= CAP_W && H264_W >= 2560;
+console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）') + ' 零拷贝=' + (H264_ZEROCOPY ? '可用' : '不可用（走过滤器）'));
 
 const h264 = {
   proc: null,
@@ -552,6 +567,24 @@ function h264AttachEncoder(proc) {
     if (wasCurrent) { h264.proc = null; h264.killPending = false; }
     console.log('h264: ffmpeg exit ' + code + (wasCurrent ? '' : '（旧进程，忽略）'));
     if (!wasCurrent) return;
+    // 2026-11-07：秒退保护。零拷贝路径在个别机器上会立刻失败（-40 Function not implemented），
+    // 以前会无限重试、画面永远黑。这里连续 2 次在 2 秒内退出就判定该路径不可用，
+    // 永久退回过滤器路径再重启，保证用户至少能看到画面。
+    try {
+      const alive = Date.now() - (h264.startedAt || 0);
+      if (alive < 2000) {
+        h264.quickFails = (h264.quickFails || 0) + 1;
+        if (h264.quickFails >= 2 && H264_NATIVE) {
+          H264_ZEROCOPY = false;
+          H264_NATIVE = false;
+          h264.quickFails = 0;
+          h264.lastError = 'zero-copy 连续秒退，已回退过滤器路径';
+          console.log('h264: ' + h264.lastError);
+        }
+      } else {
+        h264.quickFails = 0;
+      }
+    } catch (e) { }
     // 单窗口模式下编码器死了，采集端也要一起收掉，否则 h264Start 会被 h264.cap 挡住
     if (h264.cap) { const c = h264.cap; h264.cap = null; try { c.kill(); } catch { } }
     if (h264.clients.size > 0 || rtc264Alive()) {

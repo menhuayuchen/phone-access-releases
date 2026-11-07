@@ -1793,6 +1793,12 @@ async function startPcmAudio() {
 
 // ---- 顶栏 ------------------------------------------------------------------
 btnCrisp.addEventListener('click', async () => {
+  // 2026-11-07 修复：这里以前**从不**更新按钮状态，只有 startH264 内部某些分支才加 .on，
+  // 所以「流畅 → 清晰」时状态已是 h264、按钮却还亮着「流畅」（用户实测）。
+  // 和 btnSmooth 一样，在入口先把模式和按钮同步掉。
+  state.mode = 'h264';
+  btnCrisp.classList.add('on');
+  btnSmooth.classList.remove('on');
   applyRect();
   stopRtc();
   try { await fetch('/rtc-off', { method: 'POST' }); } catch (e) {}
@@ -4993,7 +4999,8 @@ bindImg(img);
               let tag = '';
               if (it.usb) tag += '<span style="background:#1d3a24;color:#8CE58C;border:1px solid #2f5f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">USB 直连 · 最快</span>';
               if (p !== j.port) tag += '<span style="background:#20232b;color:#8fb6ff;border:1px solid #2a2f3a;border-radius:6px;padding:1px 6px;font-size:10.5px">备用端口 ' + p + '</span>';
-              if (isBlocked) tag += '<span style="color:#ffb454;font-size:10.5px">被旧防火墙规则挡住，需点一次管理员授权修复</span>';
+              if (isBlocked) tag += '<span style="color:#ffb454;font-size:10.5px">被旧防火墙规则挡住</span>'
+                + '<button class="lanFix" style="background:#7a2f2f;color:#ffd7d7;border:1px solid #a44;border-radius:6px;padding:2px 8px;font-size:10.5px;cursor:pointer">点这里修复（弹一次管理员授权）</button>';
               if (!it.usb && !isBlocked) tag += '<span style="color:#6b7078;font-size:11px">' + esc(it.name) + '</span>';
               h += '<div style="display:flex;gap:8px;align-items:center;margin-top:4px;flex-wrap:wrap">'
                 + '<code style="color:' + (isBlocked ? '#8a8f98' : '#8fb6ff') + ';font-size:12px">' + esc(url) + '</code>'
@@ -5091,6 +5098,15 @@ bindImg(img);
       if (qrImg) qrImg.addEventListener('error', () => { qrImg.style.display = 'none'; });
       const qrImg2 = bodyEl.querySelector('#offQr2');
       if (qrImg2) qrImg2.addEventListener('error', () => { qrImg2.style.display = 'none'; });
+      // 2026-11-07：被旧防火墙规则挡住时给一个可点的修复入口（重跑 /offline/on 会提权修规则）
+      bodyEl.querySelectorAll('.lanFix').forEach((b) => b.addEventListener('click', async () => {
+        const m = bodyEl.querySelector('#lanCheckMsg');
+        if (m) m.textContent = '正在修复：请在电脑上点「是」（管理员授权）…';
+        try {
+          await fetch('/offline/on', { method: 'POST' });
+          setTimeout(() => { try { refresh(); } catch (e) { } }, 6000);
+        } catch (e) { if (m) m.textContent = '修复请求失败：' + ((e && e.message) || e); }
+      }));
       const lcBtn = bodyEl.querySelector('#lanCheckBtn');
       if (lcBtn) lcBtn.addEventListener('click', async () => {
         const box = bodyEl.querySelector('#lanCheckMsg');
