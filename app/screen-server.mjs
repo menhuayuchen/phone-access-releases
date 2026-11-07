@@ -84,6 +84,12 @@ const PRIVATE_V4 = [
 const OFFLINE_MODE = !!(cfgScreen && cfgScreen.offline === true);
 // 2026-11-07：screen.lan=true 时允许直接监听局域网（不用开整个离线模式）；发布版默认 false
 const ALLOW_LAN = OFFLINE_MODE || !!(cfgScreen && cfgScreen.lan === true);
+// 2026-11-07 18:2x（安全收紧后的统一口径）：
+//   screen.lan=true 只额外开 **8662 的 HTTPS 监听**（局域网专用；密钥仍然必填），
+//   8660 永远只给「回环 + Tailscale」—— **不碰** 那条「拒绝局域网 8660」的防火墙规则。
+//   这样"局域网直连"不会把 tailnet 入口的姿态一起放宽。
+//   screen.offline=true 是旧路子（额外把 8660/8661/8662 绑到所有网卡、需要停用防火墙拦截），保留兼容。
+const LAN_ONLY = !OFFLINE_MODE && !!(cfgScreen && cfgScreen.lan === true);
 const LAN_V4 = /^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/;
 const badHosts = [];
 const hosts = hostsArg.split(',').map((h) => h.trim()).filter(Boolean).filter((h) => {
@@ -4389,27 +4395,28 @@ async function handler(req, res) {
   if (url.pathname === '/lan-check') {
     const cfgNow = (() => { try { return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } })();
     const port = Number(cfgNow.ports && cfgNow.ports.screen) || 8660;
-    const out = { ok: true, offline: !!(cfgNow.screen && cfgNow.screen.offline), https: LAN_HTTPS, port: port, fallbackPort: port + 1, ips: privateIps(), listening: [], firewall: {}, cert: {}, checks: [] };
+    const out = { ok: true, offline: !!(cfgNow.screen && cfgNow.screen.offline), lan: LAN_ONLY, lanHttps: !!(LAN_ONLY && LAN_HTTPS), lanPort: port + 2, https: LAN_HTTPS, port: port, fallbackPort: port + 1, ips: privateIps(), listening: [], firewall: {}, cert: {}, checks: [] };
     try {
       const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
-      const cmd = "$c=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in @(" + port + "," + (port + 1) + ") } | Select-Object -ExpandProperty LocalAddress; $c -join ','";
+      const cmd = "$c=Get-NetTCPConnection -State Listen -ErrorAction SilentlyContinue | Where-Object { $_.LocalPort -in @(" + port + "," + (port + 1) + "," + (port + 2) + ") } | Select-Object -ExpandProperty LocalAddress; $c -join ','";
       const lo = String(execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '');
       out.listening = lo.split(',').map((s) => s.trim()).filter(Boolean);
     } catch { }
     try {
       const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
       const tag = 'PhoneAccess 轻屏';
-      const cmd = "$b=Get-NetFirewallRule -DisplayName ('" + tag + " : 拒绝局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $a=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $w=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 WebRTC') -ErrorAction SilentlyContinue | Select-Object -First 1; ($(if($b){[string]$b.Enabled}else{'none'}))+','+($(if($a){[string]$a.Enabled}else{'none'}))+','+($(if($w){[string]$w.Enabled}else{'none'}))";
+      const cmd = "$b=Get-NetFirewallRule -DisplayName ('" + tag + " : 拒绝局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $a=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 " + port + "') -ErrorAction SilentlyContinue | Select-Object -First 1; $w=Get-NetFirewallRule -DisplayName ('" + tag + " : 离线模式允许局域网 WebRTC') -ErrorAction SilentlyContinue | Select-Object -First 1; $l1=Get-NetFirewallRule -DisplayName 'PA-LAN-SCREEN-8662' -ErrorAction SilentlyContinue | Select-Object -First 1; $l2=Get-NetFirewallRule -DisplayName 'PA-LAN-RTC-UDP' -ErrorAction SilentlyContinue | Select-Object -First 1; ($(if($b){[string]$b.Enabled}else{'none'}))+','+($(if($a){[string]$a.Enabled}else{'none'}))+','+($(if($w){[string]$w.Enabled}else{'none'}))+','+($(if($l1){[string]$l1.Enabled}else{'none'}))+','+($(if($l2){[string]$l2.Enabled}else{'none'}))";
       const fw = String(execFileSync(psExe, ['-NoProfile', '-Command', cmd], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '').trim();
       const parts = fw.split(',');
-      out.firewall = { blockLan: parts[0] || 'none', allowLan: parts[1] || 'none', allowWebrtc: parts[2] || 'none' };
+      out.firewall = { blockLan: parts[0] || 'none', allowLan: parts[1] || 'none', allowWebrtc: parts[2] || 'none', lanScreen: parts[3] || 'none', lanRtc: parts[4] || 'none' };
     } catch { }
     try {
       const st = statSync(join(HERE, 'lan-cert.pfx'));
       out.cert = { exists: true, size: st.size, ageSec: Math.round((Date.now() - st.mtimeMs) / 1000) };
     } catch { out.cert = { exists: false }; }
-    out.checks.push({ name: '离线模式', ok: out.offline, text: out.offline ? '已开启' : '未开启（手机连不进来）' });
-    out.checks.push({ name: '监听端口', ok: out.listening.length > 0, text: out.listening.length ? ('正在监听：' + out.listening.join('、') + '（' + port + '/' + (port + 1) + '）') : '没有任何地址在监听' });
+    out.checks.push({ name: '局域网开关', ok: !!(out.offline || out.lan), text: out.offline ? '离线模式（旧路子：绑 8660/8661/8662）' : (out.lan ? '局域网直连（只开 8662 HTTPS，8660 仍只给 Tailscale）' : '未开启（手机只能用 Tailscale 进来）') });
+    out.checks.push({ name: '局域网端口', ok: !out.lan || out.listening.some((x) => x === '0.0.0.0' || x === '::'), text: out.lan ? ((out.lanHttps ? 'https://' : 'http://') + '<电脑IP>:' + (port + 2) + '（' + (out.lanHttps ? 'https 已就绪' : '证书异常，退回了 http') + '）') : '（未开启，不适用）' });
+    out.checks.push({ name: '监听端口', ok: out.listening.length > 0, text: out.listening.length ? ('正在监听：' + out.listening.join('、') + '（' + port + '/' + (port + 1) + '/' + (port + 2) + '）') : '没有任何地址在监听' });
     try {
       const psExe2 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
       const cmd2 = "Get-NetAdapter -ErrorAction SilentlyContinue | Where-Object { $_.Status -eq 'Up' } | Select-Object -ExpandProperty InterfaceDescription";
@@ -4421,9 +4428,13 @@ async function handler(req, res) {
     } catch (e) {
       out.checks.push({ name: 'USB 网络共享', ok: false, text: '检测失败：' + ((e && e.message) || e) });
     }
-    out.checks.push({ name: '防火墙', ok: out.firewall.allowLan === 'True', text: out.firewall.allowLan === 'True' ? '已放行局域网端口' : '未放行（手机连不上：重新开一次离线模式并点「是」）' });
+    const lanFwOk = (out.firewall.allowLan === 'True') || (out.firewall.lanScreen === 'True');
+    out.checks.push({ name: '防火墙', ok: lanFwOk, text: lanFwOk ? ('已按来源放行' + (out.firewall.lanScreen === 'True' ? '（PA-LAN-SCREEN-8662 / PA-LAN-RTC-UDP，仅私有网段）' : '（离线模式规则）')) : '未放行（手机连不上：开一次局域网，并在弹窗里点「是」）' });
     out.checks.push({ name: '证书', ok: !!out.cert.exists, text: out.cert.exists ? ('自签证书已生成（' + Math.round((out.cert.ageSec || 0) / 60) + ' 分钟前）') : '缺失（https 会退回 http）' });
-    out.hint = '手机连同一个 Wi-Fi 后打开地址；第一次提示"不安全"点「高级 → 继续前往」。如果一直转圈：1) 公司/酒店 Wi-Fi 可能禁止设备互访，改用电脑热点；2) 用 USB 网络共享（最快）；3) 试试备用地址 http://' + ((out.ips[0] && out.ips[0].ip) || '电脑IP') + ':' + (port + 1) + '/?k=…';
+    const ip0 = (out.ips[0] && out.ips[0].ip) || '电脑IP';
+    out.hint = out.lan
+      ? ('手机连同一个 Wi-Fi 后打开 https://' + ip0 + ':' + (port + 2) + '/?k=…（第一次提示"不安全"点「高级 → 继续前往」）。如果一直转圈：1) 公司/酒店 Wi-Fi 常禁止设备互访，改用电脑热点；2) 用 USB 网络共享；3) 防火墙需要 PA-LAN-SCREEN-8662 那条规则（仅私有网段放行）。')
+      : ('手机连同一个 Wi-Fi 后打开地址；第一次提示"不安全"点「高级 → 继续前往」。如果一直转圈：1) 公司/酒店 Wi-Fi 可能禁止设备互访，改用电脑热点；2) 用 USB 网络共享（最快）；3) 试试备用地址 http://' + ip0 + ':' + (port + 1) + '/?k=…');
     try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(out)); } catch { }
     return;
   }
@@ -5404,29 +5415,37 @@ for (const host of hosts) {
 // 离线模式：备用监听绑 0.0.0.0（所有网卡）——电脑换网络/开热点/USB 共享后新 IP 立刻能用，
 // 不用等守护重启。只绑 8661/8662 这种备用端口：8660 必须保持"回环+tailnet 走 http、局域网 IP 走 https"，
 // 否则 tailscale serve 和守护的 /health 会连不上（实测会把服务判死、反复重启 → 502）。
-if (OFFLINE_MODE) {
-  try {
-    const s2 = wireServer(createServer(handler));
-    s2.listen(port + 1, '0.0.0.0', () => {
-      started++;
-      console.log('screen-server: http://0.0.0.0:' + (port + 1) + '/ （备用，不加密；https 打不开时用）');
-    });
-  } catch (e) { console.log('lan http fallback 失败：' + (e && e.message)); }
+// 局域网监听（两种来路共用 8662 的 HTTPS；8660 永远不动）：
+//   OFFLINE_MODE：旧路子，额外绑 8661 明文 http（历史兼容，安全上不推荐）
+//   LAN_ONLY    ：新路子，只开 8662 https，密钥仍然必填
+if (OFFLINE_MODE || LAN_ONLY) {
+  if (OFFLINE_MODE) {
+    try {
+      const s2 = wireServer(createServer(handler));
+      s2.listen(port + 1, '0.0.0.0', () => {
+        started++;
+        console.log('screen-server: http://0.0.0.0:' + (port + 1) + '/ （备用，不加密；https 打不开时用）');
+      });
+    } catch (e) { console.log('lan http fallback 失败：' + (e && e.message)); }
+  }
   if (!lanPfxTried) { lanPfxTried = true; lanPfx = ensureLanCert(); }
   if (lanPfx) {
     try {
       const s3 = wireServer(https.createServer({ pfx: lanPfx, passphrase: LAN_PASS }, handler));
       s3.listen(port + 2, '0.0.0.0', () => {
         started++;
-        console.log('screen-server: https://0.0.0.0:' + (port + 2) + '/ （低延迟备用端口）');
+        LAN_HTTPS = true;                 // 8662 确实在用 https 跑（/lan-check 靠它判断）
+        console.log('screen-server: https://0.0.0.0:' + (port + 2) + '/ （局域网直连，仍需要访问密钥）');
       });
     } catch (e) { console.log('lan https 备用端口失败：' + (e && e.message)); }
+  } else {
+    console.log('screen-server: [w] 局域网证书不可用 → 8662 没起来，局域网直连不可用');
   }
 }
 
-// 离线模式：局域网地址变了（换网络/开热点/USB 共享）就重启一次，让守护按新地址重新绑定。
-// 用 Get-NetIPAddress + 网卡 Up 状态判断（os.networkInterfaces 会残留断开网卡的旧地址）。
-if (OFFLINE_MODE) {
+// 局域网（离线模式 或 screen.lan）：地址变了（换网络/开热点/USB 共享）就重启一次，
+// 让守护按新地址重新绑定。用 Get-NetIPAddress + 网卡 Up 状态判断（os.networkInterfaces 会残留断开网卡的旧地址）。
+if (OFFLINE_MODE || LAN_ONLY) {
   let base = lanIpsNow().join(',');
   setInterval(() => {
     try { refreshLanIps(); } catch { }

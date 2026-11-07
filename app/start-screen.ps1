@@ -91,10 +91,12 @@ if (-not $tsIp) {
 # 原来这里只绑 tailnet 地址和局域网地址，serve 转发过来会连接被拒。
 # 绑 127.0.0.1 只对本机可见，不扩大暴露面（局域网和公网仍然进不来）。
 $hosts = @('127.0.0.1', $tsIp) | Where-Object { $_ } | Select-Object -Unique
-# 离线模式：把本机局域网 IPv4（Wi-Fi/以太网/电脑热点 192.168.137.x）也加进监听列表
-# 2026-11-07：screen.lan=true 时也监听局域网（不必开离线模式）
-$lanMode = $offlineMode -or [bool]($cfg.screen -and $cfg.screen.lan)
-if ($lanMode) {
+# 离线模式：把本机局域网 IPv4（Wi-Fi/以太网/电脑热点 192.168.137.x）也加进 8660 的监听列表
+# 2026-11-07 18:2x：screen.lan 改走另一条路 —— 服务端自己开 **8662 的 HTTPS**，
+# 8660 永远只给「回环 + Tailscale」。这样开局域网不用停用「拒绝局域网 8660」的防火墙规则，
+# tailnet 入口的姿态完全不变。所以这里只给 offline 模式加 8660 的局域网地址。
+$lanOnly = (-not $offlineMode) -and [bool]($cfg.screen -and $cfg.screen.lan)
+if ($offlineMode) {
   $lanIps = @()
   try {
     $lanIps = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
@@ -105,6 +107,9 @@ if ($lanMode) {
     $hosts = @($hosts + $lanIps) | Where-Object { $_ } | Select-Object -Unique
     Write-Host ('[i] 离线模式：额外监听 ' + ($lanIps -join ', '))
   }
+}
+elseif ($lanOnly) {
+  Write-Host '[i] 局域网直连已开启：只额外监听 https://<局域网IP>:8662（8660 仍只给 Tailscale）'
 }
 $viewersFile = Join-Path $here 'viewers.count'
 
@@ -307,6 +312,31 @@ if ($tailUrl) { $qr = Write-Qr $tailUrl (Join-Path $here 'screen-url.txt') (Join
 $qrIp = $null
 if ($ipUrl) {
     $qrIp = Write-Qr $ipUrl (Join-Path $here 'screen-url-ip.txt') (Join-Path $here 'screen-qr-ip.png')
+}
+
+# 2026-11-07 18:2x：局域网直连（screen.lan）的地址落盘 + 打印。
+# 只绑 8662 的 HTTPS；8660 仍然只给回环 + Tailscale。优先用 Wi-Fi 网卡的地址（别把 VMware 虚拟网卡报给用户）。
+$lanUrl = $null
+if ($lanOnly) {
+  $lanForUrl = ''
+  try { $lanForUrl = [string](Get-LanIp) } catch { $lanForUrl = '' }
+  if (-not $lanForUrl) {
+    try {
+      $lanForUrl = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue |
+        Where-Object { $_.IPAddress -match '^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)' -and $_.IPAddress -notmatch '^100\.' -and $_.IPAddress -notmatch '^169\.254\.' } |
+        Select-Object -First 1 -ExpandProperty IPAddress)
+    } catch { }
+  }
+  if ($lanForUrl) {
+    $lanUrl = 'https://' + $lanForUrl + ':' + ($screenPort + 2) + '/?k=' + $key
+    Set-Content -LiteralPath (Join-Path $here 'screen-url-lan.txt') -Value $lanUrl -Encoding UTF8
+    Write-Host ''
+    Write-Host '局域网直连（手机连同一个 Wi-Fi 用这个；第一次提示"不安全"点「高级 → 继续前往」）:'
+    Write-Host "  $lanUrl"
+    Write-Host ('  （只有 8662 这一路是对局域网开的；8660 仍然只给 Tailscale）')
+  } else {
+    Write-Host '[!] 没检测到局域网 IP（先连上 Wi-Fi 或开热点），局域网直连这次不可用'
+  }
 }
 
 Write-Host ''
