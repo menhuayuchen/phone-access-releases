@@ -3844,6 +3844,7 @@ bindImg(img);
     let lastSig = '';
     let lastStatus = null;
     // 2026-11-07：配对地址（局域网最快 / tailnet 远程）+ 使用说明
+    // 2026-11-07：配对地址（给普通用户看的说法：家里 / 在外面，两步操作）
     const renderAddr = (j) => {
       const box = document.getElementById('ssAddr');
       if (!box) return;
@@ -3851,22 +3852,40 @@ bindImg(img);
       const port = (j && j.webPort) || 47990;
       const lan = list.filter((x) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(String(x.ip || '')));
       const ts = list.filter((x) => /^100\./.test(String(x.ip || '')))[0];
-      const mk = (ip, color) => '<a href="https://' + escHtml(ip) + ':' + port + '" target="_blank" rel="noreferrer" style="color:' + color + '">https://' + escHtml(ip) + ':' + port + '</a>';
-      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">配对地址（Moonlight 加主机 / 浏览器打开后台输 PIN）</div>';
+      const chip = (ip, color) => {
+        const addr = escHtml(ip) + ':' + port;
+        return '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:5px">'
+          + '<code style="font:14px/1.4 ui-monospace,Consolas,monospace;color:' + color + ';background:#14151a;'
+          + 'border:1px solid #24262e;border-radius:8px;padding:6px 9px;user-select:all">' + addr + '</code>'
+          + '<button type="button" data-copy="' + addr + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;'
+          + 'border-radius:7px;padding:4px 10px;font-size:12px;cursor:pointer">复制</button></div>';
+      };
+      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">怎么连（两步）</div>'
+        + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.9;margin-top:5px">'
+        + '① 手机装 <b style="color:#c9ccd1">Moonlight</b>，点「Add Host / 添加主机」→ 填下面的地址<br>'
+        + '② 手机会显示 <b style="color:#c9ccd1">4 位数字</b> → 用手机浏览器打开同一个地址 → 输入这 4 位数字 → 配对完成'
+        + '</div>';
       if (lan.length) {
-        h += '<div style="margin-top:6px;font-size:12.5px;color:#8CE58C">同一 Wi-Fi（推荐，最快）：' + lan.map((x) => mk(x.ip, '#8CE58C')).join(' · ') + '</div>';
+        h += '<div style="margin-top:10px;color:#8CE58C;font-size:12.5px;font-weight:600">在家里 / 连同一个 Wi-Fi（推荐，最顺）</div>' + chip(lan[0].ip, '#8CE58C');
       }
       if (ts) {
-        h += '<div style="margin-top:4px;font-size:12.5px;color:#8fb6ff">外网 / 异地：' + mk(ts.ip, '#8fb6ff') + '</div>';
+        h += '<div style="margin-top:9px;color:#8fb6ff;font-size:12.5px;font-weight:600">在外面 / 用手机流量</div>' + chip(ts.ip, '#8fb6ff')
+          + '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。</div>';
       }
-      if (!lan.length && !ts) h += '<div style="margin-top:6px;color:#ffb454;font-size:12px">暂时没取到地址（先连上网再刷新）</div>';
-      h += '<div style="color:#6b7078;font-size:11.5px;margin-top:8px;line-height:1.8">'
-        + '· <b style="color:#c9ccd1">Moonlight 里加主机</b>时填这个地址；等它显示 4 位 PIN 后，用上面的地址打开后台 → PIN 页输入 → 配对<br>'
-        + '· <b style="color:#c9ccd1">优先用「同一 Wi-Fi」那条</b>：不经过 Tailscale，能少 8-10ms 延迟<br>'
-        + '· Moonlight 里建议：<b style="color:#c9ccd1">分辨率 1920×1080、帧率 60、局域网码率 30-50Mbps、Frame pacing 选 Lowest latency</b>（帧率设 90/120 会因游戏锁 60 而抖动）<br>'
-        + '· 后台默认账号见「配对设置」；证书自签，浏览器提示不安全点「继续前往」'
+      if (!lan.length && !ts) h += '<div style="margin-top:8px;color:#ffb454;font-size:12px">暂时没取到地址，先连上网络再刷新一次。</div>';
+      h += '<div style="margin-top:10px;padding-top:9px;border-top:1px solid #23252c;color:#6b7078;font-size:11.5px;line-height:1.8">'
+        + '· 第一次配对时浏览器会提示「不安全 / 证书问题」——点「高级 → 继续前往」即可（这是我们自己签的证书）<br>'
+        + '· 觉得画面有点卡：在 Moonlight 里把「分辨率」选 <b style="color:#c9ccd1">1080p</b>、「帧率」选 <b style="color:#c9ccd1">60</b>，会更跟手'
         + '</div>';
       box.innerHTML = h;
+      box.querySelectorAll('[data-copy]').forEach((btn) => btn.addEventListener('click', () => {
+        const t = btn.getAttribute('data-copy') || '';
+        const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1500); };
+        try {
+          if (navigator.clipboard && navigator.clipboard.writeText) { navigator.clipboard.writeText(t).then(done).catch(done); }
+          else { const ta = document.createElement('textarea'); ta.value = t; document.body.appendChild(ta); ta.select(); try { document.execCommand('copy'); } catch (e) {} ta.remove(); done(); }
+        } catch (e) { done(); }
+      }));
     };
     try { fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(renderAddr).catch(() => { }); } catch (e) { }
     let ssCreds = null;
