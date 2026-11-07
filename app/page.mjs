@@ -4247,7 +4247,8 @@ bindImg(img);
     // 实验版 E2：高清放大增强（放大停手后把该区域的原生像素贴回来）。
     // 用户要求做成设置里的开关，而不是靠 URL 参数。
     if (window.__paExp && window.__paExp.want && (window.__paExp.want.ocr || window.__paExp.want.hires)) {
-      const hi = (function () { try { return localStorage.getItem('pa.exp.hires') === '1'; } catch (e) { return false; } })();
+      // 必须和 expHiresOn() 用同一套判断（没设置过算开），否则 UI 高亮和实际状态打架
+      const hi = (typeof expHiresOn === 'function') ? expHiresOn() : true;
       const hb = function (on, val, t1, t2) {
         return '<button class="expHires" data-v="' + val + '" style="flex:1;'
           + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
