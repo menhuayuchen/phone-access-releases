@@ -40,10 +40,23 @@ if ($hits -eq 0) {
   [System.IO.File]::WriteAllText($cfg, $text, (New-Object System.Text.UTF8Encoding($false)))
 }
 
+# 2026-11-07：发布版强制关闭「唤醒后不要求登录」（自用便利模式，安全上不该随包发布）。
+# 这一段必须在回读验证之前，验证里也会断言它是 false。
+$t2 = [System.IO.File]::ReadAllText($cfg)
+$uwPat = '"unlockOnWake"\s*:\s*true'
+if ([regex]::IsMatch($t2, $uwPat)) {
+    $t2 = [regex]::Replace($t2, $uwPat, '"unlockOnWake": false')
+    [System.IO.File]::WriteAllText($cfg, $t2, (New-Object System.Text.UTF8Encoding($false)))
+    Write-Host '  [i] security.unlockOnWake -> false（发布版强制关闭）'
+}
+
 # 回读验证
 $obj = (Get-Content -LiteralPath $cfg -Raw -Encoding UTF8) | ConvertFrom-Json
 if ($obj.profile -ne 'release') { throw ('标记失败：profile = ' + $obj.profile) }
 if (-not $obj.experiments) { Write-Host '  [w] config 里没有 experiments 块（不影响：发布版本来就不用它）' }
+if ($obj.security -and $obj.security.unlockOnWake -eq $true) {
+  throw '发布版不允许 security.unlockOnWake=true（唤醒后免登录只属于自用版），请检查 mark-release 的强制关闭逻辑'
+}
 if ($obj.features -and $obj.features.realCursor -eq $false) {
   Write-Host '  [w] features.realCursor=false：发布版的真实光标会被关掉，确认是不是有意的'
 }

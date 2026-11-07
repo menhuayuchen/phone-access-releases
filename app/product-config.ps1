@@ -145,6 +145,12 @@ function Get-ProductConfig {
       # 白名单构造，缺了这一行 start-screen.ps1 就永远读不到 $cfg.screen.lan（踩过）。
       lan             = [bool](Get-ConfigValue $raw @('screen', 'lan') $false)
     }
+    # 2026-11-07：自用版的"便利/安全"取舍。unlockOnWake=true 时关闭「唤醒时要求登录」
+    # 并去掉屏保的安全锁定（唤醒后直接回桌面，手机不用输 Windows 密码）。
+    # 发布版由 mark-release.ps1 强制改成 false；缺省也是 false（安全默认）。
+    security         = [pscustomobject]@{
+      unlockOnWake    = [bool](Get-ConfigValue $raw @('security', 'unlockOnWake') $false)
+    }
   }
   $cfg.Warnings = $warnings.ToArray()
   return $cfg

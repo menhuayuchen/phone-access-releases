@@ -5146,6 +5146,8 @@ async function handler(req, res) {
             updatedAt: docS.updatedAt || '',
             tasks: tasks || [],
             busy: !!globalThis.__paPowerBusy,
+            // 2026-11-07：自用版「唤醒后不要求登录」的开关状态（页面显示用）
+            unlockOnWake: !!(readJson(join(HERE, 'product.config.json'), {}).security || {}).unlockOnWake,
             last: last || null
           });
         } catch (e) { }
@@ -5195,6 +5197,17 @@ async function handler(req, res) {
       const doc = { enabled: m.enabled !== false, rules, updatedAt: new Date().toISOString() };
       try { writeFileSync(pjson, JSON.stringify(doc, null, 2), 'utf8'); }
       catch (e) { sendJson(500, { ok: false, error: '写配置失败：' + String((e && e.message) || e) }); return; }
+      // 2026-11-07：可选携带 unlockOnWake（自用版「唤醒后不要求登录」开关）。
+      // 写进 product.config.json，真正的落地由提权运行的 power-apply.ps1 调 unlock-on-wake.ps1 完成。
+      if (typeof m.unlockOnWake === 'boolean') {
+        try {
+          const cfgPath = join(HERE, 'product.config.json');
+          const cfg = JSON.parse(readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''));
+          cfg.security = cfg.security || {};
+          cfg.security.unlockOnWake = !!m.unlockOnWake;
+          writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
+        } catch (eCfg) { }
+      }
       try {
         globalThis.__paPowerBusy = true;
         globalThis.__paPowerAppliedAt = Date.now();
@@ -5253,7 +5266,15 @@ async function handler(req, res) {
     });
     return;
   }
-  if (url.pathname === '/sw.js') {
+  // 2026-11-07：一键锁屏（远程用完随手锁上）。LockWorkStation 不需要管理员。
+  if (url.pathname === '/lock') {
+    if (req.method !== 'POST') { sendJson(405, { ok: false, error: 'POST only' }); return; }
+    try {
+      spawn('rundll32.exe', ['user32.dll,LockWorkStation'], { windowsHide: true, stdio: 'ignore', detached: true }).unref();
+      sendJson(200, { ok: true });
+    } catch (e) { sendJson(500, { ok: false, error: String((e && e.message) || e) }); }
+    return;
+  }  if (url.pathname === '/sw.js') {
     // 缓存"页面外壳"：手机装成 App 后，即使 Android 认为当前网络没互联网（无网 Wi-Fi/热点），
     // 从主屏幕打开也不会出现 Chrome 的恐龙离线页——先出缓存页面，再去连局域网。
     // 只接管页面导航（navigate），其余请求（接口/画面/文件）完全不拦。

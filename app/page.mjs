@@ -5346,6 +5346,12 @@ bindImg(img);
       + '另外，如果这台机器的主板 BIOS 没开 RTC 唤醒，系统侧闹钟登记了也不会醒 —— 请先点上面的「自检」：'
       + '能自己回来就说明支持；回不来就要进 BIOS（开机按 F2）找 <b>Power / Automatic Power On / Wake on RTC / Wake up on Time</b> 打开它，'
       + '或者只能把「关机」时间当纯定时休眠用、手动开机。</div>'
+      + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #202228;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#c9ccd1;cursor:pointer"><input type="checkbox" id="pwUnlock"' + (st && st.unlockOnWake ? ' checked' : '') + ' style="width:15px;height:15px"> 唤醒后不要求登录（自用便利模式）</label>'
+      + '<span style="flex:1"></span>'
+      + '<button id="pwLockNow" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">立即锁屏</button>'
+      + '</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:4px;line-height:1.6">勾选后：唤醒/开机直接回桌面，手机不用输 Windows 密码（发布版强制关闭）。代价是走到电脑前的人也能直接用 —— 用完可以点「立即锁屏」。改完会弹一次管理员授权。</div>'
       + '</div>';
     return h;
   }
@@ -5426,6 +5432,15 @@ bindImg(img);
         }
         const rules = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode }]);
         post({ enabled: true, rules: rules });
+      });
+      const uw = wrap.querySelector('#pwUnlock');
+      if (uw) uw.addEventListener('change', () => {
+        post({ enabled: pwCache.enabled, rules: pwCache.rules, unlockOnWake: uw.checked });
+      });
+      const lk = wrap.querySelector('#pwLockNow');
+      if (lk) lk.addEventListener('click', async () => {
+        if (!confirm('现在锁屏？锁上以后手机端要输 Windows 密码才能解锁（除非开了上面的免登录）。')) return;
+        try { await fetch('/lock', { method: 'POST' }); msg('已锁屏', '#8CE58C'); } catch (e) { msg('锁屏请求失败：' + ((e && e.message) || e), '#ff9d9d'); }
       });
       const ap = wrap.querySelector('#pwApply');
       if (ap) ap.addEventListener('click', () => post({ enabled: pwCache.enabled, rules: pwCache.rules }));

@@ -175,6 +175,31 @@ $hibernateOk = Test-Hibernate
 $wakeState = Get-WakeTimerState
 $applied = @(); $removed = @(); $skipped = @()
 
+# 2026-11-07：自用版「唤醒后不要求登录」（A 方案）。配置读产品根目录的 product.config.json，
+# 由本脚本（提权时）调 unlock-on-wake.ps1 落地；发布版由 mark-release.ps1 把开关强制成 false。
+$unlockInfo = $null
+$cfgPath = Join-Path (Split-Path -Parent $JsonPath) 'product.config.json'
+$unlockWanted = $false
+try {
+    if (Test-Path -LiteralPath $cfgPath) {
+        $cfgRaw = Get-Content -LiteralPath $cfgPath -Raw -Encoding UTF8 | ConvertFrom-Json
+        if ($cfgRaw.security -and ($cfgRaw.security.unlockOnWake -eq $true)) { $unlockWanted = $true }
+    }
+} catch { Add-Warn ('读 product.config.json 的 security 段失败：' + $_.Exception.Message) }
+
+if (-not $StatusOnly) {
+    try {
+        $uwScript = Join-Path (Split-Path -Parent $JsonPath) 'unlock-on-wake.ps1'
+        if (Test-Path -LiteralPath $uwScript) {
+            $uwAction = if ($unlockWanted) { 'on' } else { 'off' }
+            $uwOut = (& powershell.exe -NoProfile -ExecutionPolicy Bypass -File $uwScript -Action $uwAction -Quiet 2>&1) -join "`n"
+            $lastJson = ($uwOut -split "`n" | Where-Object { $_.Trim().StartsWith('{') } | Select-Object -Last 1)
+            if ($lastJson) { $unlockInfo = ($lastJson | ConvertFrom-Json) }
+            if ($unlockWanted -and $unlockInfo -and (-not $unlockInfo.ok)) { Add-Warn '「唤醒后不要求登录」没设置成功（可能需要管理员权限，或被组策略锁定）' }
+        }
+    } catch { Add-Warn ('应用「唤醒后不要求登录」失败：' + $_.Exception.Message) }
+}
+
 if (-not $StatusOnly) {
     # 唤醒定时器：交流 + 直流都要开（以前只开交流，拔掉电源就叫不醒）
     try {
@@ -283,6 +308,7 @@ $result = [pscustomobject]@{
     errors = @($errors)
     wakeTimer = $wakeState
     hibernate = $hibernateOk
+    unlockOnWake = $unlockInfo
     tasks = $tasks
     error = if ($errors.Count -gt 0) { [string]$errors[0] } else { '' }
     at = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')

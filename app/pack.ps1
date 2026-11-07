@@ -163,7 +163,8 @@ $appFiles = @(
   'dsh-port.ps1',
   'restart.ps1',
   'restart.cmd',
-  'power-apply.ps1'
+  'power-apply.ps1',
+  'unlock-on-wake.ps1'
   # 2026-11-06 免费化：不再随包发收款码 / 联系方式（/branding/ 路由保留，卖家自己放图片即可）
 )
 if ($IncludeInternalDocs) {
