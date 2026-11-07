@@ -3403,6 +3403,7 @@ async function handler(req, res) {
           credentialsSet: creds,
           licensed: isFullFunction(),
           lanIps: privateIps(),
+          tailnetIp: (() => { try { const ifs = os.networkInterfaces(); for (const n of Object.keys(ifs)) { if (!/tailscale/i.test(n)) continue; for (const it of (ifs[n] || [])) { if (it && it.family === 'IPv4' && /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(it.address)) return it.address; } } } catch (e) { } return ''; })(),
           webPort: 47990,
           init: sunshineInitJob,
           component: {
