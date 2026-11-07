@@ -5694,12 +5694,18 @@ bindImg(img);
     // 尺寸（2026-11-07 第三版，按用户实机反馈重定）：
     // 真实光标在 2560 宽的屏幕上占 32px（1.25%）。手机上按真实比例只剩 4~5px，根本看不见，
     // 所以放到约 2.7 倍：clamp(画面宽度 × 3.4%, 14, 26) CSS px。
-    // 用户要求「像电脑里真有一个鼠标，大小固定」——所以**不跟三指缩放走**，只跟画面宽度
-    // （横竖屏、窗口大小变化）自适应。上一版直接乘 view.scale，放 4 倍后光标变 106px，是错的。
+    //
+    // 2026-11-07 第三修：画面放大时**温和跟随**（缩放倍数的 0.35 次方）。
+    //   完全不跟（上一版）：放大 2 倍后光标相对画面只剩一半大，用户反馈「自适应出问题」；
+    //   线性跟：放大 4 倍光标变 106px，占半个屏幕，更糟。
+    //   0.35 次方：scale 2→1.27 倍、4→1.62 倍、8→2.06 倍，放大看得清又不喧宾夺主。
     function baseK() {
       var w = 0;
       try { w = stage.getBoundingClientRect().width; } catch (e) { w = 0; }
       var px = w > 0 ? Math.min(26, Math.max(14, w * 0.034)) : 16;
+      var zs = 1;
+      try { zs = (view && view.scale > 1) ? view.scale : 1; } catch (e) { zs = 1; }
+      if (zs > 1) px = px * Math.pow(zs, 0.35);
       return px / 19;                      // 19 = 箭头形 viewBox 高度
     }
 
@@ -5862,7 +5868,7 @@ bindImg(img);
       // 2026-11-07 修：原来区域超过 1200x900 就直接 return（静默放弃）——
       // 用户放大 1.38 倍时整屏对应 1852x1024，点了 + 也永远没反应，还看不到任何提示。
       // 现在改成只取视线中心的一块去增强，其余保持像素；中心才是用户真正在看的。
-      var MAXW = 1160, MAXH = 860;
+      var MAXW = 880, MAXH = 620;   // 区域再缩小：面积比 1160x860 少 45%，OCR 快约 40%（用户反馈太慢）
       if (rc.w * rc.h > MAXW * MAXH) {
         var kc = Math.sqrt((MAXW * MAXH) / (rc.w * rc.h));
         var nw = rc.w * kc, nh = rc.h * kc;
@@ -5886,7 +5892,12 @@ bindImg(img);
         if (j.tooLarge) { badgeSet('OCR 跳过：区域太大（没怎么放大）', '#8b9099'); return; }
         if (!j.lines || !j.lines.length) { badgeSet('OCR 没认到文字', '#8b9099'); return; }
         render(j, rc);
-      }).catch(function () { busy = false; });
+      }).catch(function () {
+        busy = false;
+        // 失败/超时也要更新状态牌，否则它会一直停在「识别中」，
+        // 用户以为还在跑，其实早就断了（实测就是这么被误导的）。
+        badgeSet('OCR 超时或失败，稍后自动重试', '#ff6b6b');
+      });
     }
 
     // 250ms 看一次状态。三种情况要清掉旧文字层：
