@@ -3843,6 +3843,32 @@ bindImg(img);
     let selectedId = '';
     let lastSig = '';
     let lastStatus = null;
+    // 2026-11-07：配对地址（局域网最快 / tailnet 远程）+ 使用说明
+    const renderAddr = (j) => {
+      const box = document.getElementById('ssAddr');
+      if (!box) return;
+      const list = Array.isArray(j && j.lanIps) ? j.lanIps : [];
+      const port = (j && j.webPort) || 47990;
+      const lan = list.filter((x) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(String(x.ip || '')));
+      const ts = list.filter((x) => /^100\./.test(String(x.ip || '')))[0];
+      const mk = (ip, color) => '<a href="https://' + escHtml(ip) + ':' + port + '" target="_blank" rel="noreferrer" style="color:' + color + '">https://' + escHtml(ip) + ':' + port + '</a>';
+      let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">配对地址（Moonlight 加主机 / 浏览器打开后台输 PIN）</div>';
+      if (lan.length) {
+        h += '<div style="margin-top:6px;font-size:12.5px;color:#8CE58C">同一 Wi-Fi（推荐，最快）：' + lan.map((x) => mk(x.ip, '#8CE58C')).join(' · ') + '</div>';
+      }
+      if (ts) {
+        h += '<div style="margin-top:4px;font-size:12.5px;color:#8fb6ff">外网 / 异地：' + mk(ts.ip, '#8fb6ff') + '</div>';
+      }
+      if (!lan.length && !ts) h += '<div style="margin-top:6px;color:#ffb454;font-size:12px">暂时没取到地址（先连上网再刷新）</div>';
+      h += '<div style="color:#6b7078;font-size:11.5px;margin-top:8px;line-height:1.8">'
+        + '· <b style="color:#c9ccd1">Moonlight 里加主机</b>时填这个地址；等它显示 4 位 PIN 后，用上面的地址打开后台 → PIN 页输入 → 配对<br>'
+        + '· <b style="color:#c9ccd1">优先用「同一 Wi-Fi」那条</b>：不经过 Tailscale，能少 8-10ms 延迟<br>'
+        + '· Moonlight 里建议：<b style="color:#c9ccd1">分辨率 1920×1080、帧率 60、局域网码率 30-50Mbps、Frame pacing 选 Lowest latency</b>（帧率设 90/120 会因游戏锁 60 而抖动）<br>'
+        + '· 后台默认账号见「配对设置」；证书自签，浏览器提示不安全点「继续前往」'
+        + '</div>';
+      box.innerHTML = h;
+    };
+    try { fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(renderAddr).catch(() => { }); } catch (e) { }
     let ssCreds = null;
     let ssCredsTried = false;
     const loadCreds = () => {
@@ -5121,6 +5147,7 @@ bindImg(img);
     body += setSection('高性能模式（Moonlight）',
       '<div id="secSunshine"></div>'
       + '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
+      + '<div id="ssAddr" style="margin-top:10px"></div>'
       + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
       + '<button id="ssRefresh" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
       + 'padding:8px 13px;font-size:12.5px;cursor:pointer">刷新</button>'

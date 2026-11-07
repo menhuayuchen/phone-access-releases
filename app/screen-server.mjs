@@ -3402,6 +3402,8 @@ async function handler(req, res) {
           webUp: webUp,
           credentialsSet: creds,
           licensed: isFullFunction(),
+          lanIps: privateIps(),
+          webPort: 47990,
           init: sunshineInitJob,
           component: {
             configured: (Array.isArray(sunshineComp.urls) && sunshineComp.urls.length > 0 && !!sunshineComp.sha256),
