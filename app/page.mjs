@@ -4030,7 +4030,7 @@ bindImg(img);
           + '<button id="ssInit" ' + (initBusy ? 'disabled' : '') + ' style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:9px 15px;font-size:13px;cursor:pointer' + (initBusy ? ';opacity:.6' : '') + '">' + (initBusy ? '初始化中…' : '一键初始化高性能模式') + '</button>'
           + '<span id="ssInitMsg" style="font-size:12px;color:#868c96">' + escHtml(initBusy ? '等电脑上点「是」（管理员授权）…' : (jobInit.phase === 'error' ? jobInit.error : '')) + '</span>'
           + '</div>';
-      } else if (!s.licensed) {
+      } else if (false) {   // 2026-11-07：产品已全部免费，高性能模式不再需要许可证
         h = setPill(false, '', '未授权') + '<div style="margin-top:8px">高性能模式需要许可证或处于试用期内；现在可以继续用网页模式。</div>';
       } else {
         const host = location.hostname || '本机';
@@ -4043,24 +4043,27 @@ bindImg(img);
           + '<button id="ssCopyHost" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:9px 13px;font-size:12.5px;cursor:pointer">复制电脑地址</button>'
           + '<a href="https://github.com/moonlight-stream/moonlight-android/releases" target="_blank" rel="noopener noreferrer" style="color:#8fb6ff;font-size:12.5px;align-self:center">Moonlight 下载</a>'
           + '</div>'
-          + step(1, '手机装 <b>Moonlight</b>（安卓：上面的链接；iOS：App Store 搜 Moonlight）')
-          + step(2, 'Moonlight 里添加电脑：<code style="color:#8fb6ff">' + escHtml((s.sunshine && s.sunshine.name) || host) + '</code>（地址用 <code>' + escHtml(host) + '</code>）')
-          + step(3, 'Moonlight 显示 4 位 PIN → 填下面 → 点「完成配对」')
+          + step(1, '手机装 <b>Moonlight</b>（安卓点上面的「Moonlight 下载」；iPhone 在 App Store 搜 Moonlight）')
+          + step(2, '按下面「怎么连」填地址；Moonlight 点这台电脑后，它会显示 4 位数字')
+          + step(3, '把这 4 位数字填到下面的输入框，点「完成配对」')
           + '<div id="ssPairs">' + pairsHtml(pairings) + '</div>'
           + '<div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;align-items:center">'
           + '<input id="ssPin" inputmode="numeric" maxlength="4" placeholder="4 位 PIN" style="width:110px;background:#0f1014;color:#e8eaee;'
           + 'border:1px solid #262932;border-radius:9px;padding:8px 11px;font:14px ui-monospace,Consolas,monospace">'
           + '<button id="ssPair" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 15px;font-size:12.5px;cursor:pointer">完成配对</button></div>'
-          + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
-          + '<div style="color:#aeb3bb;font-size:12.5px">游戏要在这里加：<a id="ssAdmin" target="_blank" rel="noopener" style="color:#8fb6ff">打开 Sunshine 管理页</a>'
-          + '<span id="ssAdminMsg" style="font-size:11.5px;color:#6b7078;margin-left:6px"></span></div>'
-          + '<div style="margin-top:8px;color:#c9ccd1;font-size:12px;line-height:1.9">管理页登录框要填：账号 <code style="color:#8fb6ff">' + (ssCreds ? escHtml(ssCreds.username) : '读取中…') + '</code>'
+          + '<details style="margin-top:12px;padding-top:10px;border-top:1px solid #24262d">'
+          + '<summary style="cursor:pointer;color:#8fb6ff;font-size:12.5px">高级：加新游戏 / 调画质 / 管理配对</summary>'
+          + '<div style="margin-top:8px;color:#aeb3bb;font-size:12px;line-height:1.85">'
+          + '想串流别的游戏、或调画质码率，才需要打开管理页：<a id="ssAdmin" target="_blank" rel="noopener" style="color:#8fb6ff">打开管理页</a>'
+          + '<span id="ssAdminMsg" style="font-size:11.5px;color:#6b7078;margin-left:6px"></span>'
+          + '<div style="margin-top:6px;color:#c9ccd1">登录用：账号 <code style="color:#8fb6ff">' + (ssCreds ? escHtml(ssCreds.username) : '读取中…') + '</code>'
           + (ssCreds ? ' <button id="ssCopyUser" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">复制账号</button>' : '')
-          + '<br>密码 <code style="color:#8fb6ff">' + (ssCreds ? escHtml(ssCreds.password) : '读取中…') + '</code>'
-          + (ssCreds ? ' <button id="ssCopyPw" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">复制密码</button>' : '')
-          + '</div>'
-          + '<div style="color:#6b7078;font-size:11px;margin-top:4px">管理页是电脑本机的 https 页面；第一次打开浏览器会提示证书不安全，选「继续」，再填上面的账号密码（只在你自己的 tailnet 内）。</div>'
-          + '</div>'
+          + '<br>密码 <code id="ssPwText" style="color:#8fb6ff">' + (ssCreds ? '••••••••' : '读取中…') + '</code>'
+          + (ssCreds ? ' <button id="ssPwShow" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">显示</button><button id="ssCopyPw" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">复制密码</button>' : '')
+          + '<div style="color:#6b7078;font-size:11px;margin-top:5px;line-height:1.7">管理页是电脑本机的 https 页面，第一次打开浏览器会提示证书不安全——选「继续」再登录。只在你自己家里/私人网络里用，别在公共 Wi-Fi 下打开。</div>'
+          + '</div></details>'
+          + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
+          + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">配对一直不成功？清空旧配对再试</button></div>';
           + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
           + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">清空配对（连不上时用）</button></div>';
       }
@@ -4109,6 +4112,14 @@ bindImg(img);
       const copyUser = bodyEl.querySelector('#ssCopyUser');
       if (copyUser) copyUser.addEventListener('click', async () => {
         try { await navigator.clipboard.writeText(ssCreds.username); copyUser.textContent = '已复制'; } catch (e) { }
+      });
+      const pwShow = bodyEl.querySelector('#ssPwShow');
+      if (pwShow) pwShow.addEventListener('click', () => {
+        const t = bodyEl.querySelector('#ssPwText');
+        if (!t || !ssCreds) return;
+        const hidden = t.textContent.indexOf('•') >= 0;
+        t.textContent = hidden ? ssCreds.password : '••••••••';
+        pwShow.textContent = hidden ? '隐藏' : '显示';
       });
       const copyPw = bodyEl.querySelector('#ssCopyPw');
       if (copyPw) copyPw.addEventListener('click', async () => {
