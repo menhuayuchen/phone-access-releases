@@ -362,7 +362,7 @@ function updateZoomCtl() {
   el.style.display = (zoomMode === 'view') ? 'flex' : 'none';
 }
 // 2026-11-07：电脑浏览器没有"双指放大手机画面"的场景，只保留系统缩放
-if (IS_DESKTOP) { try { zoomMode = 'system'; localStorage.setItem(ZOOM_MODE_KEY, 'system'); } catch (e) { } }
+if ((function(){ try { return window.matchMedia('(pointer: fine)').matches && !window.matchMedia('(pointer: coarse)').matches; } catch(e){ return false; } })()) { try { zoomMode = 'system'; localStorage.setItem(ZOOM_MODE_KEY, 'system'); } catch (e) { } }
 function setZoomMode(m) {
   zoomMode = (m === 'view') ? 'view' : 'system';
   try { localStorage.setItem(ZOOM_MODE_KEY, zoomMode); } catch (e) {}
