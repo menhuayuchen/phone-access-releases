@@ -1015,7 +1015,12 @@ async function startRtc264() {
         img.classList.remove('show');
         vid.muted = !state.audio;
         vid.play().catch(function () { });
-        if (state.audio) { try { stopPcmAudio(); } catch (err) { } rtc264AudioStart(); }
+        if (state.audio) {
+          try { stopPcmAudio(); } catch (err) { }
+          // 2026-11-07 A/B：?audio=pcm 时清晰模式的音频改走 PCM-WS（实测比纯音频 WebRTC 少约 160ms）
+          if (rtc264AudioUsePcm()) { try { startPcmAudio(); } catch (err) { } }
+          else rtc264AudioStart();
+        }
       } catch (err) { }
     };
     pc.oniceconnectionstatechange = function () {
@@ -1169,10 +1174,19 @@ function rtc264AudioStop() {
   if (A.audioTrack && A.media) { try { A.media.removeTrack(A.audioTrack); } catch (e) { } }
   A.audioTrack = null;
 }
+// 2026-11-07：清晰模式音频 A/B 开关。
+// 默认仍走 /rtc?audio=1 的纯音频 WebRTC；带 ?audio=pcm 时改用页面已有的 PCM over WebSocket。
+// 实测（本机回环，同一声源）：PCM 路径 +75~89ms，WebRTC 纯音频连接 +242~250ms —— 相差约 160ms。
+// 所以 PCM 其实更"跟得上"画面；但 PCM 是 1.5Mbps 未压缩流，弱网要靠环形缓冲兜底，
+// 因此先做成开关，等真机弱网验证后再决定是否改默认。
+function rtc264AudioUsePcm() {
+  try { return new URLSearchParams(location.search).get('audio') === 'pcm'; } catch (e) { return false; }
+}
 // 清晰模式的音频：走 /rtc?audio=1 的纯音频 WebRTC 连接（复用 rtc.mjs 的 Opus 编码），
 // 比原来 PCM over WebSocket 少一层缓冲，音画更同步。失败就静默退回无声（视频不受影响）。
 async function rtc264AudioStart() {
   const A = RTC264;
+  if (rtc264AudioUsePcm()) return;   // A/B：强制 PCM 时不要建这条纯音频连接
   if (!A.pc || A.audioPc || !state.audio) return;
   try {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -1215,8 +1229,18 @@ async function rtc264AudioStart() {
 function applyRtc264Audio() {
   if (!RTC264.pc) return;
   vid.muted = !state.audio;
-  if (state.audio) { rtc264AudioStart(); if (typeof vid.play === 'function') vid.play().catch(function () { }); }
-  else rtc264AudioStop();
+  if (state.audio) {
+    if (rtc264AudioUsePcm()) {
+      try { rtc264AudioStop(); } catch (e) { }
+      try { startPcmAudio(); } catch (e) { }
+    } else {
+      rtc264AudioStart();
+    }
+    if (typeof vid.play === 'function') vid.play().catch(function () { });
+  } else {
+    rtc264AudioStop();
+    if (rtc264AudioUsePcm()) { try { stopPcmAudio(); } catch (e) { } }
+  }
 }
 function rtc264Retry(why) {
   const R = RTC264;
