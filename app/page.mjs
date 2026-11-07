@@ -4156,6 +4156,24 @@ bindImg(img);
         + ' style="width:44px;height:30px;border:1px solid #3a3e4a;border-radius:8px;background:#1b1d23;padding:1px"' + (licensed ? '' : ' disabled') + '></label>';
     }
     h += '</div>';
+    // 实验版 E1（2026-11-07 按用户规则）：光标显示方式**二选一，不能同时存在**。
+    // 默认是跟随手指的黄点；检测到接了鼠标会自动切到电脑真实光标（只切一次）。
+    if (window.__paExp && window.__paExp.want && window.__paExp.want.cursor) {
+      const em = (function () { try { return localStorage.getItem('pa.exp.mode') === 'real' ? 'real' : 'dot'; } catch (e) { return 'dot'; } })();
+      const mk = function (m, t1, t2) {
+        const on = (em === m);
+        return '<button class="expMode" data-m="' + m + '" style="flex:1;'
+          + 'background:' + (on ? 'rgba(47,111,235,.22)' : '#242730') + ';color:' + (on ? '#8fb6ff' : '#c9ccd1') + ';'
+          + 'border:1px solid ' + (on ? '#3f6fd0' : '#343842') + ';border-radius:9px;padding:9px 6px;'
+          + 'font-size:12.5px;cursor:pointer;line-height:1.4">'
+          + t1 + '<br><span style="font-size:11px;opacity:.72">' + t2 + '</span></button>';
+      };
+      h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标显示</div>'
+        + '<div style="display:flex;gap:8px" id="expModeRow">'
+        + mk('dot', '跟随手指', '默认 · 黄点')
+        + mk('real', '电脑真实光标', '接鼠标自动切')
+        + '</div>';
+    }
     const curC = licensed ? (P.loadCursor() || P.DOT_DEFAULT) : P.DOT_DEFAULT;
     const curSize = Math.max(6, Math.min(24, Math.round(Number(curC.size) || P.DOT_DEFAULT.size)));
     const curColor = P.isHex(curC.color) ? String(curC.color) : P.DOT_DEFAULT.color;
@@ -5448,17 +5466,17 @@ bindImg(img);
   //   ② 用户实拍了自己电脑上的真实光标发过来对比：真实 Windows 光标是 32px 位图上的**瘦长**箭头
   //      （宽高比约 0.6），黑边只有 1px。上一版 0.73 宽 + 描边 1.1，看着又胖又假，所以按照片重画。
   var EXP_SHAPES = {
-    arrow:    { w: 15, h: 23, hx: 1, hy: 1, s: '<path d="M1 1 L1 18.6 L5.3 14.2 L8.5 22 L11.2 20.9 L8 13.2 L13.6 13.2 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' },
+    arrow:    { w: 14, h: 19, hx: 1, hy: 1, s: '<path d="M1 1 L1 17.4 L5.3 13.4 L8.1 18.2 L10.5 17.3 L7.8 11.6 L13.4 11.6 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' },
     ibeam:    { w: 10, h: 18, hx: 5, hy: 9, s: '<path d="M1.2 1.4 H8.8 M5 1.4 V16.6 M1.2 16.6 H8.8" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M1.2 1.4 H8.8 M5 1.4 V16.6 M1.2 16.6 H8.8" fill="none" stroke="#fff" stroke-width="0.95" stroke-linecap="round"/>' },
     hand:     { w: 15, h: 20, hx: 3.4, hy: 1.5, s: '<path d="M3.4 9.6 V3.6 M7.2 9.6 V2.6 M11 9.6 V4.4" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M3.4 9.6 V14 C3.4 17.1 5.7 19 8 19 C10.4 19 12.7 17.1 12.7 14 V9.6" fill="none" stroke="#000" stroke-width="2.6" stroke-linecap="round"/><path d="M3.4 9.6 V3.6 M7.2 9.6 V2.6 M11 9.6 V4.4" fill="none" stroke="#fff" stroke-width="0.95" stroke-linecap="round"/><path d="M3.4 9.6 V14 C3.4 17.1 5.7 19 8 19 C10.4 19 12.7 17.1 12.7 14 V9.6" fill="none" stroke="#fff" stroke-width="0.95" stroke-linecap="round"/>' },
     wait:     { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.4" fill="#fff" stroke="#000" stroke-width="1"/><path d="M8 4.2 V8 L11 9.8" fill="none" stroke="#000" stroke-width="1.4" stroke-linecap="round"/>' },
-    progress: { w: 17, h: 24, hx: 1, hy: 1, s: '<path d="M1 1 L1 18.6 L5.3 14.2 L8.5 22 L11.2 20.9 L8 13.2 L13.6 13.2 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/><circle cx="14" cy="5" r="3.3" fill="#fff" stroke="#000" stroke-width="1"/><path d="M14 3 V5 L15.3 5.9" fill="none" stroke="#000" stroke-width="1.1"/>' },
+    progress: { w: 17, h: 24, hx: 1, hy: 1, s: '<path d="M1 1 L1 17.4 L5.3 13.4 L8.1 18.2 L10.5 17.3 L7.8 11.6 L13.4 11.6 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/><circle cx="14" cy="5" r="3.3" fill="#fff" stroke="#000" stroke-width="1"/><path d="M14 3 V5 L15.3 5.9" fill="none" stroke="#000" stroke-width="1.1"/>' },
     cross:    { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M1 8 H15" stroke="#000" stroke-width="2" stroke-linecap="round"/><path d="M8 1 V15 M1 8 H15" stroke="#fff" stroke-width="0.85" stroke-linecap="round"/>' },
     sizeall:  { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#000" stroke-width="2" stroke-linecap="round"/><path d="M8 1.2 V14.8 M1.2 8 H14.8" stroke="#fff" stroke-width="0.85" stroke-linecap="round"/><path d="M8 0.6 L10.4 3.6 H5.6 Z M8 15.4 L10.4 12.4 H5.6 Z M0.6 8 L3.6 5.6 V10.4 Z M15.4 8 L12.4 5.6 V10.4 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' },
     sizewe:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M1 8 H15 M1 8 L4.2 4.8 M1 8 L4.2 11.2 M15 8 L11.8 4.8 M15 8 L11.8 11.2" fill="none" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
     sizens:   { w: 16, h: 16, hx: 8, hy: 8, s: '<path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#000" stroke-width="2.2" stroke-linecap="round"/><path d="M8 1 V15 M8 1 L4.8 4.2 M8 1 L11.2 4.2 M8 15 L4.8 11.8 M8 15 L11.2 11.8" fill="none" stroke="#fff" stroke-width="0.9" stroke-linecap="round"/>' },
     no:       { w: 16, h: 16, hx: 8, hy: 8, s: '<circle cx="8" cy="8" r="6.3" fill="#fff" stroke="#000" stroke-width="1.1"/><path d="M4.1 4.1 L11.9 11.9" stroke="#d00" stroke-width="2" stroke-linecap="round"/>' },
-    help:     { w: 17, h: 24, hx: 1, hy: 1, s: '<path d="M1 1 L1 18.6 L5.3 14.2 L8.5 22 L11.2 20.9 L8 13.2 L13.6 13.2 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/><text x="11.6" y="7.6" font-size="8" font-weight="700" font-family="sans-serif" fill="#1546d8">?</text>' },
+    help:     { w: 17, h: 24, hx: 1, hy: 1, s: '<path d="M1 1 L1 17.4 L5.3 13.4 L8.1 18.2 L10.5 17.3 L7.8 11.6 L13.4 11.6 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/><text x="11.6" y="7.6" font-size="8" font-weight="700" font-family="sans-serif" fill="#1546d8">?</text>' },
     uparrow:  { w: 13, h: 18, hx: 6.5, hy: 1, s: '<path d="M6.5 1 L12 7.4 H9 V16 H4 V7.4 H1 Z" fill="#fff" stroke="#000" stroke-width="1" stroke-linejoin="round"/>' }
   };
   function expShape(s) {
@@ -5488,7 +5506,7 @@ bindImg(img);
       var w = 0;
       try { w = stage.getBoundingClientRect().width; } catch (e) { w = 0; }
       var px = w > 0 ? Math.min(26, Math.max(14, w * 0.034)) : 16;
-      return px / 23;                      // 23 = 箭头形 viewBox 高度
+      return px / 19;                      // 19 = 箭头形 viewBox 高度
     }
 
     function paint(s) {
@@ -5514,6 +5532,7 @@ bindImg(img);
     function frame() {
       st.raf = requestAnimationFrame(frame);
       if (!st.got || !st.vis) { show(false); return; }
+      if (!window.__paExp || !window.__paExp.real) { show(false); return; }   // 只有 real 模式才画真光标
       var vs;
       try { vs = videoSourceSize(); } catch (e) { return; }
       if (!vs || vs.w < 100 || vs.h < 100) { show(false); return; }   // 画面还没就绪
@@ -5564,43 +5583,57 @@ bindImg(img);
     connect();
   }
 
-  // E1 附加开关（2026-11-07）：只看真光标 —— 把"点哪指哪"的黄点(#dot)和外接鼠标箭头(#mcur)藏起来。
-  // 只影响显示，不影响输入：黄点只是指示器，点击照常发到电脑。
-  // 必须用 body class + CSS !important 压制：主线是直接改 dot.style.display 的，
-  // 普通样式压不住内联样式（!important 的样式表规则可以）。
-  function expDotToggle() {
-    var LS = 'pa.exp.nodot';
-    var on0 = false;
-    try { on0 = localStorage.getItem(LS) === '1'; } catch (e) { }
-
+  // E1 光标显示方式（2026-11-07 按用户规则重写）：
+  //   · 两种模式**互斥**：dot = 跟随手指的黄点（默认）、real = 电脑真实光标
+  //   · 开关在「设置 → 个性化 → 光标显示」，不再放画面角落
+  //   · 检测到接了鼠标（pointerType === 'mouse'）自动切到 real —— 只自动切一次，
+  //     之后尊重用户手动选择（否则他手动切回黄点会被下一帧鼠标移动再切走）
+  // 真光标和黄点互斥必须用 body class + CSS !important：
+  // 主线是直接改 dot.style.display 的内联样式，普通样式表规则压不住。
+  var EXP_MODE_KEY = 'pa.exp.mode';
+  function expMode() {
+    try { return localStorage.getItem(EXP_MODE_KEY) === 'real' ? 'real' : 'dot'; } catch (e) { return 'dot'; }
+  }
+  function expApplyMode(m) {
+    var real = (m === 'real');
+    if (window.__paExp) { window.__paExp.mode = m; window.__paExp.real = real; }
+    document.body.classList.toggle('expNoDot', real);
+    var row = document.getElementById('expModeRow');
+    if (row) {
+      var bs = row.querySelectorAll('.expMode');
+      for (var i = 0; i < bs.length; i++) {
+        var on = bs[i].getAttribute('data-m') === m;
+        bs[i].style.background = on ? 'rgba(47,111,235,.22)' : '#242730';
+        bs[i].style.color = on ? '#8fb6ff' : '#c9ccd1';
+        bs[i].style.borderColor = on ? '#3f6fd0' : '#343842';
+      }
+    }
+  }
+  function expSetMode(m, save) {
+    m = (m === 'real') ? 'real' : 'dot';
+    if (save) { try { localStorage.setItem(EXP_MODE_KEY, m); } catch (e) { } }
+    expApplyMode(m);
+  }
+  function expInitMode() {
     var css = document.createElement('style');
     css.textContent = 'body.expNoDot #dot, body.expNoDot #mcur { display:none !important; }';
     document.head.appendChild(css);
-
-    var btn = document.createElement('button');
-    btn.id = 'expDotBtn';
-    btn.type = 'button';
-    btn.textContent = '真光标';
-    btn.title = '切换：只显示电脑上的真实光标（隐藏跟随手指的黄点）';
-    // z-index 9999：全屏时 #stage 是 9996，比它低会被盖住
-    btn.style.cssText = 'position:fixed;left:8px;bottom:12px;z-index:9999;'
-      + 'padding:6px 10px;border-radius:14px;line-height:1;font-size:11px;font-family:inherit;'
-      + 'touch-action:manipulation;-webkit-tap-highlight-color:transparent;cursor:pointer;';
-    document.body.appendChild(btn);
-
-    function apply(on) {
-      document.body.classList.toggle('expNoDot', !!on);
-      btn.style.background = on ? '#2f6feb' : 'rgba(20,22,26,.55)';
-      btn.style.color = on ? '#fff' : '#9aa0aa';
-      btn.style.border = '1px solid ' + (on ? '#2f6feb' : 'rgba(255,255,255,.14)');
-      btn.style.opacity = on ? '1' : '.72';
-      try { localStorage.setItem(LS, on ? '1' : '0'); } catch (e) { }
+    expApplyMode(expMode());
+    // 设置面板每次打开都重建 DOM，用事件委托绑一次就够
+    document.addEventListener('click', function (ev) {
+      var t = ev.target;
+      var b = (t && t.closest) ? t.closest('.expMode') : null;
+      if (!b) return;
+      expSetMode(b.getAttribute('data-m'), true);
+    }, true);
+    var auto = false;
+    function onPtr(e) {
+      if (auto || !e || e.pointerType !== 'mouse') return;
+      auto = true;
+      if (expMode() !== 'real') expSetMode('real', true);
     }
-    btn.addEventListener('click', function (ev) {
-      ev.preventDefault(); ev.stopPropagation();
-      apply(!document.body.classList.contains('expNoDot'));
-    });
-    apply(on0);
+    window.addEventListener('pointermove', onPtr, true);
+    window.addEventListener('pointerdown', onPtr, true);
   }
 
   (function expInit() {
@@ -5612,7 +5645,7 @@ bindImg(img);
     window.__paExp = { want: want, on: {} };
     if (want.cursor) {
       try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); }
-      try { expDotToggle(); window.__paExp.on.dotToggle = true; } catch (e) { console.warn('exp dot toggle:', e); }
+      try { expInitMode(); window.__paExp.on.mode = true; } catch (e) { console.warn('exp mode:', e); }
     }
   })();
 })();
