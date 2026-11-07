@@ -4172,7 +4172,8 @@ bindImg(img);
         + '<div style="display:flex;gap:8px" id="expModeRow">'
         + mk('dot', '跟随手指', '默认 · 黄点')
         + mk('real', '电脑真实光标', '接鼠标自动切')
-        + '</div>';
+        + '</div>'
+        + '<div style="color:#6b7079;font-size:11px;margin-top:6px">选「电脑真实光标」时，下面的形状/大小/颜色只对黄点生效</div>';
     }
     const curC = licensed ? (P.loadCursor() || P.DOT_DEFAULT) : P.DOT_DEFAULT;
     const curSize = Math.max(6, Math.min(24, Math.round(Number(curC.size) || P.DOT_DEFAULT.size)));
@@ -4909,6 +4910,111 @@ bindImg(img);
     }
   }
 
+  // ---- 定时开关机（2026-11-07，内置到产品）----------------------------------
+  // 规则存服务端 power-schedule.json，真正的计划任务由 power-apply.ps1 创建。
+  // 能定时"休眠 + 唤醒"（= 可定时开机）；完全关机（S5）之后软件叫不醒，只能 BIOS RTC / WOL。
+  let pwCache = { rules: [], enabled: false };
+  function powerInner() {
+    return '<div id="pwWrap"><div style="color:#868c96;font-size:12.5px">读取中…</div></div>';
+  }
+  function powerRowsHtml(st) {
+    const rules = (st && Array.isArray(st.rules)) ? st.rules : [];
+    const tasks = (st && Array.isArray(st.tasks)) ? st.tasks : [];
+    const on = !!(st && st.enabled);
+    let h = '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:10px">'
+      + '<button id="pwToggle" style="background:' + (on ? '#7a2f2f' : '#2a2d36') + ';color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;padding:7px 13px;font-size:13px;cursor:pointer">' + (on ? '停用全部' : '启用（按下面规则）') + '</button>'
+      + '<span style="color:' + (on ? '#8CE58C' : '#868c96') + ';font-size:12.5px;flex:1;min-width:160px">'
+      + (on ? '已启用 · ' + rules.length + ' 条规则' : '当前未启用') + '</span></div>';
+    if (!rules.length) h += '<div style="color:#6b7078;font-size:12.5px;margin-bottom:10px">还没有规则，先在下面加一条。</div>';
+    rules.forEach((r, i) => {
+      const rep = r.repeat === 'weekdays' ? '工作日' : (r.repeat === 'once' ? ('一次 ' + (r.date || '下一次')) : '每天');
+      const mode = r.mode === 'shutdown' ? '关机' : '休眠';
+      h += '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #202228;font-size:13px">'
+        + '<span style="flex:1;min-width:0;color:#c9ccd1">' + esc2(mode) + ' ' + esc2(r.offTime)
+        + (r.wakeTime ? (' → 唤醒 ' + esc2(r.wakeTime)) : '') + ' <span style="color:#6b7078">· ' + esc2(rep) + '</span></span>'
+        + '<button data-pwdel="' + i + '" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">删</button></div>';
+    });
+    if (tasks.length) {
+      h += '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">系统任务：'
+        + tasks.map((t) => esc2(t.name) + '（' + esc2(t.state) + (t.next ? ' · 下次 ' + esc2(t.next) : '') + (t.wake ? ' · 可唤醒' : '') + '）').join('<br>')
+        + '</div>';
+    }
+    h += '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #23252c">'
+      + '<div style="color:#aeb3bb;font-size:12.5px;margin-bottom:8px">加一条规则</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px">'
+      + '<label style="color:#868c96">关机/休眠 <input id="pwOff" value="23:00" size="5" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<label style="color:#868c96">唤醒 <input id="pwWake" value="07:30" size="5" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<select id="pwRepeat" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="daily">每天</option><option value="weekdays">工作日</option><option value="once">一次</option></select>'
+      + '<input id="pwDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px">'
+      + '<select id="pwMode" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="hibernate">休眠（可定时开）</option><option value="shutdown">关机</option></select>'
+      + '<button id="pwAdd" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">加入</button>'
+      + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
+      + '</div>'
+      + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7"></div>'
+      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原桌面）；完全关机后叫不醒，只能靠 BIOS 定时开机或 Wake-on-LAN。</div>'
+      + '</div>';
+    return h;
+  }
+  function esc2(x) { return String(x == null ? '' : x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
+  function powerBind(box) {
+    const wrap = box.querySelector('#pwWrap');
+    if (!wrap) return;
+    const msg = (t, c) => { const m = box.querySelector('#pwMsg'); if (m) { m.textContent = t; m.style.color = c || '#868c96'; } };
+    const paint = (st) => {
+      pwCache = { enabled: !!(st && st.enabled), rules: (st && Array.isArray(st.rules)) ? st.rules : [] };
+      wrap.innerHTML = powerRowsHtml(st);
+      const tg = wrap.querySelector('#pwToggle');
+      if (tg) tg.addEventListener('click', async () => {
+        const doc = { enabled: !pwCache.enabled, rules: pwCache.rules };
+        await post(doc);
+      });
+      wrap.querySelectorAll('[data-pwdel]').forEach((b) => b.addEventListener('click', async () => {
+        const i = Number(b.getAttribute('data-pwdel'));
+        const rules = pwCache.rules.slice();
+        rules.splice(i, 1);
+        await post({ enabled: pwCache.enabled, rules });
+      }));
+      const add = wrap.querySelector('#pwAdd');
+      if (add) add.addEventListener('click', async () => {
+        const off = (wrap.querySelector('#pwOff').value || '').trim();
+        const wake = (wrap.querySelector('#pwWake').value || '').trim();
+        const repeat = wrap.querySelector('#pwRepeat').value;
+        const date = (wrap.querySelector('#pwDate').value || '').trim();
+        const mode = wrap.querySelector('#pwMode').value;
+        if (!/^[0-2]?\d:[0-5]\d$/.test(off)) { msg('关机时间要写成 HH:mm', '#ffb454'); return; }
+        if (wake && !/^[0-2]?\d:[0-5]\d$/.test(wake)) { msg('唤醒时间要写成 HH:mm', '#ffb454'); return; }
+        if (repeat === 'once' && !date) { msg('选「一次」时要选日期', '#ffb454'); return; }
+        const rules = pwCache.rules.concat([{
+          id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat,
+          date: repeat === 'once' ? date : '', mode: mode
+        }]);
+        await post({ enabled: true, rules });
+      });
+      const ap = wrap.querySelector('#pwApply');
+      if (ap) ap.addEventListener('click', async () => { await post({ enabled: pwCache.enabled, rules: pwCache.rules }); });
+    };
+    const post = async (doc) => {
+      msg('正在应用（会创建/更新系统计划任务）…');
+      try {
+        const r = await fetch('/power/apply', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(doc) }).then((x) => x.json());
+        if (r && r.ok) {
+          const names = (r.applied || []).length;
+          msg('已应用' + (names ? ('，' + names + ' 个任务') : '') + ((r.removed || []).length ? ('，清理 ' + r.removed.length + ' 个') : ''), '#8CE58C');
+        } else {
+          msg('应用失败：' + ((r && r.error) || '未知错误'), '#ffb454');
+        }
+      } catch (e) { msg('请求失败：' + (e && e.message), '#ff9d9d'); }
+      await load();
+    };
+    const load = async () => {
+      try {
+        const st = await fetch('/power/status?_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
+        paint(st);
+      } catch (e) { wrap.innerHTML = '<div style="color:#ffb454;font-size:12.5px">读取失败</div>'; }
+    };
+    load();
+  }
+
   function openSettings(lic) {
     const ver = String(lic.version || '—');
     let body = '';
@@ -5057,6 +5163,7 @@ bindImg(img);
       + '<div style="color:#6b7078;font-size:11px;margin-top:4px">关掉则只拦 Win/Alt+Tab 这类能绕过遮罩的快捷键；手机上的操作始终不受影响。</div>');
 
     // 离线模式（没有互联网 / 没有 Tailscale）：局域网访问 + 电脑热点 + USB 网络共享
+    body += setSection('定时开关机（这台电脑）', powerInner());
     body += setSection('离线模式（没有网络 / Tailscale）',
       '<div id="offBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
@@ -5104,6 +5211,7 @@ bindImg(img);
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
     privacyBind(box);
+    powerBind(box);
     offlineBind(box);
     // 状态数值开关（与 HUD 共用 localStorage 'hudvis'）
     const hudT = box.querySelector('#hudToggle');
@@ -5616,7 +5724,9 @@ bindImg(img);
   }
   function expInitMode() {
     var css = document.createElement('style');
-    css.textContent = 'body.expNoDot #dot, body.expNoDot #mcur { display:none !important; }';
+    css.textContent = 'body.expNoDot #dot, body.expNoDot #mcur { display:none !important; }'
+      // real 模式下黄点的形状/大小/颜色没意义：置灰并禁点（CSS 跟着 body class 自动生效，不用重开面板）
+      + ' body.expNoDot #p13nShapes, body.expNoDot #p13nImgRow, body.expNoDot #p13nSize, body.expNoDot #p13nColors { opacity:.3; pointer-events:none; }';
     document.head.appendChild(css);
     expApplyMode(expMode());
     // 设置面板每次打开都重建 DOM，用事件委托绑一次就够
