@@ -5769,8 +5769,9 @@ bindImg(img);
     // 只有 ?exp=ocr 才存在，不污染主线。
     var badge = document.createElement('div');
     badge.id = 'expOcrBadge';
-    badge.style.cssText = 'position:fixed;right:8px;top:64px;z-index:9999;padding:4px 9px;border-radius:8px;'
-      + 'background:rgba(16,18,22,.82);color:#8fb6ff;font-size:11px;line-height:1.5;'
+    badge.style.cssText = 'position:fixed;right:8px;top:104px;z-index:9999;padding:5px 10px;border-radius:8px;'
+      + 'background:rgba(16,18,22,.82);color:#8fb6ff;font-size:10.5px;line-height:1.45;'
+      + 'max-width:calc(100vw - 20px);white-space:pre-line;box-sizing:border-box;'
       + 'font-family:system-ui,sans-serif;pointer-events:none;display:none;';
     document.body.appendChild(badge);
     function badgeSet(t, color) {
@@ -5864,8 +5865,8 @@ bindImg(img);
         clearLayer(); lastRect = null; lastScale = s;
         // 关键提示：很多人没意识到「画面缩放」和「系统缩放」是两个模式，
         // 系统缩放下 view.scale 永远是 1 —— 这里直接把当前倍数打在屏幕上。
-        badgeSet('OCR 待机 · 当前 ' + s.toFixed(2) + 'x（放大到 1.25x 触发）'
-          + (s <= 1.001 ? ' · 三指捏合选「画面缩放」' : ''), '#8b9099');
+        badgeSet('OCR 待机 ' + s.toFixed(2) + 'x（需 >1.25x）'
+          + (s <= 1.001 ? '&#10;三指捏合 → 画面缩放' : ''), '#8b9099');
         return;
       }
       if (Math.abs(s - lastScale) > 0.02) { clearLayer(); lastScale = s; }
