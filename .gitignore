@@ -38,3 +38,5 @@ _release/
 .release/
 app/exp/ocr/srv.out
 app/exp/ocr/srv.err
+app/exp/**/__pycache__/
+app/exp/**/*.pyc

@@ -6173,15 +6173,21 @@ bindImg(img);
 
   (function expInit() {
     var raw = '';
-    try { raw = new URLSearchParams(location.search).get('exp') || ''; } catch (e) { return; }
-    if (!raw) return;                       // 不带 ?exp= ：整段实验层完全不加载
+    try { raw = new URLSearchParams(location.search).get('exp') || ''; } catch (e) { raw = ''; }
     var want = {};
     raw.split(',').forEach(function (x) { x = x.trim(); if (x) want[x] = 1; });
     window.__paExp = { want: want, on: {} };
-    if (want.cursor) {
+
+    // 2026-11-07：**真光标正式进产品**，不再要求 URL 参数。
+    // 默认就加载（用户可以在 设置 → 个性化 → 光标显示 里切真假光标，
+    // 规则：默认真光标关闭=黄点，接鼠标自动切真光标）。
+    // 需要临时关掉时用 ?exp=nocursor；服务端 experiments.enabled=false 时 /ws-exp 404，
+    // 页面这边会静默失败、不影响画面和输入。
+    if (!want.nocursor) {
       try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); }
       try { expInitMode(); window.__paExp.on.mode = true; } catch (e) { console.warn('exp mode:', e); }
     }
+    // 高清放大增强仍是实验功能：只有显式 ?exp=ocr 才加载（设置里另有开关控制启用与否）
     if (want.ocr) {
       try { expOcrStart(); window.__paExp.on.ocr = true; } catch (e) { console.warn('exp ocr:', e); }
     }
