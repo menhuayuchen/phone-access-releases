@@ -257,7 +257,7 @@ body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mou
 const KEY = "__KEY__";
   // 2026-11-07：页面版本。Service Worker 会把页面外壳缓存起来，切网/断网时会回落到缓存，
   // 结果是"修复前的旧页面又跑起来了"。这个标记会显示在「关于」面板里，一眼就能判断是不是旧缓存。
-  const PA_PAGE_VER = '2026-11-07.3';
+  const PA_PAGE_VER = '__PAGE_VER__';
   const SID = Math.random().toString(36).slice(2, 10);   // 本页会话 id：服务端按它统计丢帧，互不干扰
 const stage = document.getElementById('stage');
 let img = document.getElementById('img');
@@ -960,6 +960,7 @@ function stopRtc264() {
   if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
   const sid = R.sid;
   R.sid = ''; R.firstVideo = false; R.startedAt = 0; R.hudText = '';
+  try { clearTimeout(R.noVideoTimer); R.noVideoTimer = 0; } catch (e) { }
   R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0;
   R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0; R.playStart = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
@@ -984,8 +985,20 @@ async function startRtc264() {
   const my = rtc264Gen;
   const mode = rtc264Mode();
   R.startedAt = Date.now();
+  // 2026-11-07：黑屏兜底。个别网络/旧缓存页面下 WebRTC 可能一直出不来画面，
+  // 以前会停在「WebRTC264 连接中」黑着不动。这里 8 秒还没第一帧就自动退回低频画面，
+  // 用户至少能看到屏幕；下次切清晰模式会重新再试 WebRTC。
+  clearTimeout(R.noVideoTimer);
+  R.noVideoTimer = setTimeout(function () {
+    if (my !== rtc264Gen) return;
+    if (state.mode !== 'h264' || document.hidden) return;
+    if (R.firstVideo) return;
+    try { console.log('rtc264: 8s 无画面，退回低频画面'); } catch (e) { }
+    R.noVideoTimer = 0;
+    rtc264Fallback('no-video-8s');
+  }, 8000);
   try {
-    const resp = await fetch('/rtc264/offer', { method: 'POST', cache: 'no-store' });
+    const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER), { method: 'POST', cache: 'no-store' });
     if (!resp.ok) throw new Error('offer ' + resp.status);
     const offer = await resp.json();
     if (my !== rtc264Gen) return;
@@ -1094,6 +1107,7 @@ async function rtc264Stats() {
     const vw = vid.videoWidth || 0;
     if (vw > 0) {
       if (!R.firstVideo) R.playStart = Date.now();   // 出第一帧的时刻：头 2 秒的帧率不可信
+    if (!R.firstVideo) { clearTimeout(R.noVideoTimer); R.noVideoTimer = 0; }
       R.firstVideo = true; R.attempts = 0;
       if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
       // 首次出画面后给一次流量提醒（每台设备只提示一次）：清晰模式默认 20Mbps ≈ 8.9GB/时
@@ -5515,6 +5529,9 @@ bindImg(img);
     const uq = lic.ultraQuota || null;   // 画面质量分区也要用（超清配额提示）
     body += setSection('许可证（可选）', licenceInner(lic));
 
+    // 页面版本：放在设置最上面，一眼能看到（排查"新旧页面"问题时第一步就看它）
+    body += '<div style="color:#4f5561;font-size:10.5px;margin:-2px 0 10px">页面版本 ' + PA_PAGE_VER
+      + ' · 电脑端 ' + escHtml(lic.version || '—') + '</div>';
     // 机器码（可复制）
     body += setSection('这台电脑的机器码',
       '<div style="color:#868c96;font-size:12.5px;margin-bottom:8px">换许可证、报修时把这一串发给卖家</div>'
@@ -6701,7 +6718,11 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 </script>
 </body></html>`;
 
+// 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
+// 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
+export const PAGE_VER = '2026-11-07.3';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
+  .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
   // 用函数式替换 + 全局：href 里带 & 和 sig，避免 $ 之类被 replace 当成替换模式；
   // 用 /g 是因为注释里也可能出现同一个占位符（踩过一次：只换第一处，href 反而没换）。

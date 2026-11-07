@@ -1,4 +1,4 @@
-import { PAGE } from './page.mjs';
+import { PAGE, PAGE_VER } from './page.mjs';
 import os from 'node:os';
 // Screen viewer for the phone/tablet: serves the JPEG frames written by capture.exe as a
 // multipart MJPEG stream, bound ONLY to private interfaces (Tailscale / LAN), never 0.0.0.0.
@@ -4222,6 +4222,14 @@ async function handler(req, res) {
     if (targetPath === '/offer') {
       try { start264(); } catch { }     // 侧车没起来/挂掉时顺便拉一把
       try { h264Ensure(); } catch { }   // 页面只走 WebRTC 时也要启动编码器
+      // 2026-11-07 诊断：页面会把自身版本（PA_PAGE_VER）带上来。查到 old / 空 就说明
+      // 手机在用缓存里的旧页面——旧页面的信令/通道逻辑和新服务端不匹配，表现就是
+      // 「流畅能用、清晰黑屏」。这里落一条日志，排障时先看它。
+      try {
+        const pv = String(url.searchParams.get('pv') || '');
+        const ua = String(req.headers['user-agent'] || '').slice(0, 60);
+        if (!pv || pv !== PAGE_VER) console.log('rtc264: 页面版本=' + (pv || '(空/旧页面)') + ' ua=' + ua + (pv && pv !== PAGE_VER ? '（与本机 ' + PAGE_VER + ' 不一致）' : ''));
+      } catch { }
     }
     const chunks = [];
     let bodyLen = 0;
