@@ -19,6 +19,13 @@ $PREFIX = '轻屏-电源-'
 $errors = New-Object System.Collections.ArrayList
 $warnings = New-Object System.Collections.ArrayList
 
+# 2026-11-07：是否以管理员身份运行。唤醒任务用 SYSTEM 身份注册时才需要提权
+# （实测：普通用户身份注册的唤醒任务，固件不兑现 RTC 闹钟）。
+$script:IsElevated = $false
+try {
+    $script:IsElevated = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
+} catch { }
+
 function Add-Err([string]$m) { [void]$errors.Add($m) }
 function Add-Warn([string]$m) { [void]$warnings.Add($m) }
 
@@ -210,8 +217,24 @@ if (-not $StatusOnly) {
                     if ($trgW) {
                         $setW = New-ScheduledTaskSettingsSet -WakeToRun -AllowStartIfOnBatteries -DontStopIfGoingOnBatteries -StartWhenAvailable
                         $wakeName = $PREFIX + $r.id + '-唤醒'
-                        Register-ScheduledTask -TaskName $wakeName -Action (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit') `
-                            -Trigger $trgW -Settings $setW -Force -ErrorAction Stop | Out-Null
+                        # 2026-11-07 实测（联想 83LT，4 次失败 + 1 次成功）：唤醒任务必须以 **SYSTEM / 最高权限**
+                        # 注册，固件才会兑现 RTC 闹钟。用普通用户身份（Interactive/Limited）注册时，
+                        # powercfg /waketimers 里也能看到闹钟，但到点机器不醒 —— 换 SYSTEM 后一次就好。
+                        # 建 SYSTEM 任务需要管理员；没提权时退回当前用户，并明确给出警告。
+                        $regArgs = @{
+                            TaskName = $wakeName
+                            Action = (New-ScheduledTaskAction -Execute 'cmd.exe' -Argument '/c exit')
+                            Trigger = $trgW
+                            Settings = $setW
+                            Force = $true
+                            ErrorAction = 'Stop'
+                        }
+                        if ($script:IsElevated) {
+                            $regArgs.Principal = (New-ScheduledTaskPrincipal -UserId 'SYSTEM' -LogonType ServiceAccount -RunLevel Highest)
+                        } else {
+                            Add-Warn ('规则 ' + $r.id + '：没有管理员权限，定时唤醒只能用普通用户身份注册，这类机器上很可能到点不醒（请允许一次管理员授权后重新应用）')
+                        }
+                        Register-ScheduledTask @regArgs | Out-Null
                         $want += $wakeName; $applied += $wakeName
                     }
                 }
@@ -268,4 +291,11 @@ $out = $result | ConvertTo-Json -Depth 6 -Compress
 if ($OutPath) {
     try { [System.IO.File]::WriteAllText($OutPath, $out, (New-Object System.Text.UTF8Encoding($false))) } catch { }
 }
+# 2026-11-07：提权运行时（UAC 新进程）stdout 抓不到，这里自己补一份日志，
+# 保证 power-engine.log 里始终能看到最近一次应用的结果与警告。
+try {
+    $logPath = Join-Path (Split-Path -Parent $JsonPath) 'power-engine.log'
+    $line = '[' + (Get-Date).ToString('HH:mm:ss') + '] elevated=' + [bool]$script:IsElevated + ' ok=' + [bool]$result.ok + ' applied=' + (@($applied).Count) + ' removed=' + (@($removed).Count) + ' warnings=' + (@($warnings).Count) + ' errors=' + (@($errors).Count) + "`n  " + $out + "`n"
+    Add-Content -LiteralPath $logPath -Value $line -Encoding utf8
+} catch { }
 $out

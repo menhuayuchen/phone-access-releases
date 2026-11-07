@@ -5198,9 +5198,38 @@ async function handler(req, res) {
       try {
         globalThis.__paPowerBusy = true;
         globalThis.__paPowerAppliedAt = Date.now();
+        const logPath = join(HERE, 'power-engine.log');
+        // 兜底：UAC 被拒绝 / 引擎没跑起来时，别让 busy 永远卡住（页面会一直显示"正在应用"）
+        const busyGuard = setTimeout(() => {
+          if (globalThis.__paPowerAppliedAt === appliedAtSnapshot) globalThis.__paPowerBusy = false;
+        }, 70000);
+        busyGuard.unref?.();
+        const appliedAtSnapshot = globalThis.__paPowerAppliedAt;
+
+        const hasWake = rules.some((r) => !!r.wakeTime);
+        if (hasWake) {
+          // 2026-11-07 实测（联想 83LT）：唤醒任务必须以 **SYSTEM 身份** 注册，固件才兑现 RTC 闹钟；
+          // 用普通用户身份注册时 powercfg /waketimers 也能看到闹钟，但到点不醒。建 SYSTEM 任务要管理员，
+          // 所以这里弹一次 UAC，让提权进程跑同一个引擎脚本；引擎自己把结果写进 power-last.json 与日志。
+          const psExe = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+          const inner = "Start-Process -FilePath '" + psExe + "' -ArgumentList '" +
+            ('-NoProfile -ExecutionPolicy Bypass -File "' + toolPs + '" -JsonPath "' + pjson + '" -OutPath "' + plast + '"').replace(/'/g, "''") +
+            "' -Verb RunAs -WindowStyle Hidden";
+          const ch = spawn(psExe, ['-NoProfile', '-Command', inner], { windowsHide: true, stdio: 'ignore' });
+          ch.on('error', (e3) => {
+            globalThis.__paPowerBusy = false;
+            try { appendFileSync(logPath, '[' + new Date().toISOString() + '] elevated spawn error: ' + ((e3 && e3.message) || e3) + '\n', 'utf8'); } catch (e4) { }
+          });
+          ch.unref?.();
+          sendJson(200, {
+            ok: true, queued: true, busy: true, elevated: true, enabled: doc.enabled, rules: doc.rules,
+            note: '已请求管理员授权：请在电脑上点「是」（定时唤醒必须以系统身份注册计划任务），之后约 5-15 秒完成'
+          });
+          return;
+        }
+
         // 2026-11-07 改：不再 detached+ignore（那样失败时看不到任何线索），改成抓管道写日志，
         // 出了问题能在 power-engine.log 里直接看到 PowerShell 的报错。
-        const logPath = join(HERE, 'power-engine.log');
         const ch = spawn('powershell.exe', ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', toolPs, '-JsonPath', pjson, '-OutPath', plast],
           { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
         let o = '', e2 = '';
