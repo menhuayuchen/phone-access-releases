@@ -40,6 +40,10 @@ Head '2/8 逐条清理（scrub2）'
 Head '3/8 收尾清理（scrub3）'
 & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'scrub3.ps1') -Dst $stg | Out-Host
 
+Head '3b/8 双轨标记：改写成发布版'
+& $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $here 'mark-release.ps1') -Dst $stg | Out-Host
+if ($LASTEXITCODE -ne 0) { throw 'mark-release 失败' }
+
 Head '4/8 修 BOM + 语法检查'
 $bad = 0
 foreach ($f in Get-ChildItem -LiteralPath $stg -Filter *.ps1) {
@@ -109,6 +113,13 @@ if ($hits.Count -gt 0) {
   throw '清理不彻底，停止出包'
 }
 Write-Host '  [OK] dsh / DeepSeek / 本机信息：0 处'
+
+# 双轨断言：发布包里必须是 release 渠道，否则实验接口会被挂出去
+$pkgCfg = Join-Path $pkg 'product.config.json'
+if (-not (Test-Path -LiteralPath $pkgCfg)) { throw '发布包里没有 product.config.json' }
+$pkgTxt = Get-Content -LiteralPath $pkgCfg -Raw -Encoding UTF8
+if ($pkgTxt -notmatch '"profile"\s*:\s*"release"') { throw '发布包的 product.config.json 里 profile 不是 release，停止' }
+Write-Host '  [OK] profile=release（实验接口不会挂载）'
 
 Head '8/8 出单文件安装包'
 & $ps -NoProfile -ExecutionPolicy Bypass -File (Join-Path $root 'sfx\build-sfx.ps1') -DistRoot $dist -OutFile $OutFile | Out-Host

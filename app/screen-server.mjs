@@ -1326,11 +1326,32 @@ async function ensureOcr() {
   finally { ocrPending = null; }
 }
 
-function expConfig() {
+// ---- 产品配置 / 双轨（profile）------------------------------------------
+// 现读现用（启动时的 productConfig 是快照，改配置不会刷新）：改完下一次握手/请求就生效。
+function liveConfig() {
   try {
-    const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
-    return (c && c.experiments) || {};
+    return JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, '')) || {};
   } catch { return {}; }
+}
+
+// 双轨：selfuse = 我的自用版（可带实验/半成品）；release = 发布给客户的版本（不挂实验层）。
+// 缺省按自用处理，保证换版本、配置残缺时不崩。
+function isSelfUse() {
+  const c = liveConfig();
+  return !c.profile || c.profile === 'selfuse';
+}
+
+// 正式功能开关（features.*）。realCursor 缺省开，只有显式 false 才关。
+function featureOn(name) {
+  const f = (liveConfig().features) || {};
+  if (name === 'realCursor') return f.realCursor !== false;
+  return f[name] === true;
+}
+
+// 实验开关（experiments.*）。发布版一律当空：半成品不许跟客户。
+function expConfig() {
+  if (!isSelfUse()) return {};
+  return (liveConfig().experiments) || {};
 }
 
 function attachExpWs(server, key) {
@@ -1356,8 +1377,9 @@ function attachExpWs(server, key) {
     let url;
     try { url = new URL(req.url, 'http://x'); } catch { try { socket.destroy(); } catch { } return; }
     if (url.pathname !== '/ws-exp') return;
-    // 默认关：不打开 experiments.enabled 时这个通道根本不存在，行为和主线完全一致
-    if (expConfig().enabled !== true) {
+    // 真光标是**正式功能**（features.realCursor，默认开），不再跟 experiments 绑在一起：
+    // 发布版（profile=release）关掉实验层之后，客户的真实光标照样能用。
+    if (!featureOn('realCursor')) {
       try { socket.write('HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n'); } catch { }
       socket.destroy();
       return;
