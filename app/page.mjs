@@ -5360,7 +5360,7 @@ bindImg(img);
         const w = wrap.querySelector('#pwWarn');
         const sync = function () {
           if (!w) return;
-          const okTime = t && /^([01]?d|2[0-3]):[0-5]d$/.test(String(t.value || '').trim());
+          const okTime = t && /^([01]?\d|2[0-3]):[0-5]\d$/.test(String(t.value || '').trim());
           w.style.display = (m && m.value === 'shutdown' && okTime) ? 'block' : 'none';
         };
         if (m) m.addEventListener('change', sync);
@@ -5402,7 +5402,7 @@ bindImg(img);
         const repeat = (wrap.querySelector('#pwRepeat') || {}).value || 'daily';
         const date = String((wrap.querySelector('#pwDate') || {}).value || '').trim();
         const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
-        const okT = (t) => /^([01]?d|2[0-3]):[0-5]d$/.test(t);
+        const okT = (t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
         if (!okT(off)) { msg('休眠/关机时间要写成 HH:mm，例如 23:00', '#ffb454'); return; }
         if (wake && !okT(wake)) { msg('唤醒时间要写成 HH:mm，例如 07:00', '#ffb454'); return; }
         if (wake && wake === off) { msg('唤醒时间和关机时间不能一样', '#ffb454'); return; }
