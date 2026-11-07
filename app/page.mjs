@@ -2740,17 +2740,17 @@ async function pollStats() {
           // 这是 /health 的 HTTP 往返时间，**不是视频延迟**。流畅模式的视频走 WebRTC
           // （host 候选直连），和这条轮询链路不是同一条路，所以只标「链路」，
           // 免得用户看到三千毫秒以为画面很卡、实际却很流畅。
-          + ' · 链路 ' + rttMs + 'ms · 上限 ' + (lastQ.kbps / 1000) + 'Mbps';
+          + ' · 延迟 ' + rttMs + 'ms';
     } else if (state.mode === 'h264' && RTC264.pc) {
       // WebRTC264 通道：HUD 显示真实的 RTC 状态（直连/中继、帧数、接收缓冲），
       // 不要再显示 WebCodecs 那套（RTC 模式下 h264.dispFps 是旧的，会误导成 20fps）
       hud.textContent = RTC264.hudText || 'WebRTC264 连接中…';
     } else if (state.mode === 'h264') {
-      hud.textContent = 'H.264(WebCodecs) · ' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
+      hud.textContent = '' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
         + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'));
     } else if (state.lowBw) {
       // 兜底的低频画面：显示轮询参数，避免误读成视频帧率
-      hud.textContent = '低频画面 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
+      hud.textContent = '省流量模式 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
     } else {
       // 普通 MJPEG：out=服务端真正推给观看者的帧率，in=抓屏产出，drop10=最近 10 秒跳过的帧
       const capMs = cap ? Number(cap[1]) : 0;
@@ -4742,7 +4742,7 @@ bindImg(img);
             + '继续后 HUD 应显示「WebRTC264 直连」（才是低延迟通道）。</div>';
           if (firstIp && j.fallbackPort) {
             const fb = 'http://' + firstIp.ip + ':' + j.fallbackPort + '/?k=' + encodeURIComponent(KEY);
-            h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">https 都过不去（证书页/浏览器限制）？试明文备用（WS，延迟略高）：'
+            h += '<div style="margin-top:6px;color:#6b7078;font-size:11px;line-height:1.7">打不开时用下面的备用地址（可能稍慢一点）：'
               + '<code style="color:#8fb6ff">' + esc(fb) + '</code> '
               + '<button class="offCopy" data-url="' + esc(fb) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 8px;font-size:11px;cursor:pointer">复制</button>'
               + '<div style="display:flex;gap:10px;align-items:center;margin-top:8px">'
@@ -4751,7 +4751,7 @@ bindImg(img);
               + '</div></div>';
           }
           h += '<div style="margin-top:10px;padding:10px 11px;border:1px solid #26405a;background:#101b26;border-radius:9px">'
-            + '<div style="color:#8fb6ff;font-size:12.5px;font-weight:600">信任证书（一次性：之后不再提示、可安装成 App）</div>'
+            + '<div style="color:#8fb6ff;font-size:12.5px;font-weight:600">想让手机不再提示“不安全”（可选，设一次就好）</div>'
             + '<div style="color:#aeb3bb;font-size:11.5px;line-height:1.75;margin-top:6px">'
             + '① 手机先打开 <code style="color:#8fb6ff">http://' + esc(String(firstIp.ip)) + ':' + esc(String(j.fallbackPort)) + '/ca.crt</code> 下载证书<br>'
             + '② 设置 → 安全 → 加密与凭据 → 安装证书 → <b>CA 证书</b> → 选刚下载的文件 → 安装<br>'
@@ -5262,7 +5262,7 @@ bindImg(img);
 
     // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
     body += setSection('出问题时导出诊断',
-      '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">画面/声音/连接出问题时，导出这份报告发给卖家。里面是编码参数、链路状态和最近日志，访问密钥已打码。</div>'
+      '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">画面、声音或连接出问题时，点一下生成一份报告发给作者，就能帮你排查。报告里不会有你的密码。</div>'
       + '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">'
       + '<button id="diagBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
       + 'padding:9px 14px;font-size:13px;cursor:pointer">导出诊断报告</button>'
