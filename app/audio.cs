@@ -51,6 +51,8 @@ using System.Globalization;
 using System.IO;
 using System.IO.Pipes;
 using System.Reflection;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using System.Text;
 using System.Threading;
 using NAudio.CoreAudioApi;
@@ -673,6 +675,16 @@ internal sealed class AudioRunner
             NamedPipeServerStream pipe = null;
             try
             {
+                // 2026-11-07 修（用户反馈"手机没声音"，日志每秒 disconnected (EPERM)）：
+                // 和 input.cs 同一个坑。audio.exe 有时是以 High 完整性跑起来的
+                // （历史上从管理员控制台 / 提权安装启动过，进程一直不退出），
+                // 默认管道的 DACL 只给创建者，普通权限的 screen-server.mjs 连不上，
+                // 一连就是 EPERM，重连循环每秒刷一次，audio.log 里 chunks 永远是 0。
+                // 显式给 Everyone 完全访问：High / Medium 两种权限都能连。
+                var ps = new PipeSecurity();
+                ps.AddAccessRule(new PipeAccessRule(
+                    new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+                    PipeAccessRights.FullControl, AccessControlType.Allow));
                 pipe = new NamedPipeServerStream(
                     _pipeName,
                     PipeDirection.Out,
@@ -680,7 +692,8 @@ internal sealed class AudioRunner
                     PipeTransmissionMode.Byte,
                     PipeOptions.None,
                     65536,
-                    65536);
+                    65536,
+                    ps);
                 Logger.Write("pipe: listening name=" + _pipeName);
                 pipe.WaitForConnection();
                 Logger.Write("pipe: client connected");
