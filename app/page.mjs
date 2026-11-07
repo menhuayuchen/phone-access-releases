@@ -5746,7 +5746,7 @@ bindImg(img);
       if (!st.shown) { st.x = p.x; st.y = p.y; }      // 首次直接到位，不要从 0,0 滑过来
       var dx = st.tx - st.x, dy = st.ty - st.y;
       if (Math.abs(dx) < 0.4 && Math.abs(dy) < 0.4) { st.x = st.tx; st.y = st.ty; }
-      else { st.x += dx * 0.62; st.y += dy * 0.62; }   // 0.45 -> 0.62：用户反馈「同步但不跟手」，平滑给太多会有拖泥带水的追赶感
+      else { st.x += dx * 0.78; st.y += dy * 0.78; }   // 0.45 -> 0.62 -> 0.78：用户两次反馈不跟手，逼近直连（再大就会有台阶感）
       el.style.transform = 'translate3d(' + (st.x - st.hx * st.k).toFixed(1) + 'px,'
         + (st.y - st.hy * st.k).toFixed(1) + 'px,0)';
       show(true);
@@ -5851,6 +5851,7 @@ bindImg(img);
         // 看起来像贴了好几块灰胶布。字体不同导致少数行尾部被截是可以接受的代价。
         html += '<div style="position:absolute;left:' + p.x.toFixed(1) + 'px;top:' + p.y.toFixed(1) + 'px;'
           + 'width:' + (W * 1.06 + 2).toFixed(1) + 'px;height:' + H.toFixed(1) + 'px;overflow:hidden;'
+          + 'border-radius:3px;'
           + 'background:' + (L.bg || 'transparent') + ';color:' + (L.fg || '#fff') + ';'
           + 'font-size:' + fs.toFixed(1) + 'px;line-height:' + H.toFixed(1) + 'px;'
           + 'white-space:nowrap;font-family:\'Microsoft YaHei\',\'PingFang SC\',system-ui,sans-serif;'
@@ -5876,7 +5877,10 @@ bindImg(img);
       }
       if (lastRect && Math.abs(lastRect.x - rc.x) < 24 && Math.abs(lastRect.y - rc.y) < 24
         && Math.abs(lastRect.w - rc.w) < 40 && Math.abs(lastRect.h - rc.h) < 40) return;
-      if (Date.now() - lastAt < 2500) return;   // 同一区域别反复烧 OCR：2.5 秒内只认一次
+      // 节流只挡「同一区域」的重复请求（上面 lastRect 那步已经在挡了），
+      // 这里从 2.5 秒降到 800ms —— 原来移动完画面要等 2.5 秒才重新识别，
+      // 用户以为「一次性，移动一下就不继续了」。
+      if (Date.now() - lastAt < 800) return;
       busy = true; lastRect = rc; lastViewRect = rawRc; lastAt = Date.now();
       badgeSet('OCR 识别中…', '#ffb454');
       var my = ++gen;
