@@ -191,6 +191,11 @@ $probeFailRounds = 0
 $screenProbeFails = 0
 $maintenanceLogged = $false
 $lastBeat = Get-Date
+# 2026-11-07：tailnet 地址重新发现的限速时间戳（见循环开头那段）
+$lastTailnetRebind = $null
+# 2026-11-07：本轮探测到的 tailnet 地址（空=还没起来）
+$tailnetNow = ''
+$tailnetWaitLogged = $false
 
 while ($true) {
   try {
@@ -199,6 +204,27 @@ while ($true) {
       Move-Item $log "$log.old" -Force -ErrorAction SilentlyContinue
       Log 'supervisor log rotated'
     }
+
+    # 改动（2026-11-07）：开机自启时 Tailscale 往往还没起来（实测开机 18 秒就跑 autostart，
+    # tailnet ip 取不到 → 画面服务只绑了 127.0.0.1 → 手机连不上，用户以为"服务没自启"）。
+    # 这里在守护循环里周期性重新发现 tailnet ip：一旦出现了（或换了地址），重启一次服务，
+    # 让 screen-server / 门按新地址重新绑定。限速 3 分钟一次，避免 Tailscale 抖动时反复重启。
+    try {
+      $tsNow = Get-TailscaleInfo -TailscaleExe $tsResolved.Path
+      $ipNow = $tsNow.Ip
+      $tailnetNow = $ipNow
+      if ($ipNow -and ($ipNow -ne $screenIp)) {
+        if (-not $lastTailnetRebind -or (((Get-Date) - $lastTailnetRebind).TotalSeconds -ge 180)) {
+          Log ("tailnet ip 变化/出现: {0} -> {1}；重启服务让它重新绑定（开机自启时 Tailscale 常常还没就绪）" -f $screenIp, $ipNow)
+          $screenIp = $ipNow
+          $lastTailnetRebind = Get-Date
+          & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restart -Quiet 2>&1 |
+            Out-File -FilePath $log -Append -Encoding utf8
+          Start-Sleep -Seconds 8
+          continue
+        }
+      }
+    } catch { }
 
     # 改动（2026-11-04）：配置热重读（见文件头 Read-ConfigSnapshot）。
     # 只改 $enableDsh 这一个开关：端口不在这里换，避免把正在跑的门换成半开状态。
@@ -300,6 +326,15 @@ while ($true) {
     $notListeningRounds = 0
 
     if ($enableDsh -and (-not $proxyPid -or -not (Test-TailDoor))) {
+      # 2026-11-07：tailnet 还没起来时，tailnet-IP 那道门必然连不上，重启纯属白折腾，
+      # 还会把刚起来的画面服务连着重启好几次（实测开机那 1 分钟内连着重启 3 次）。
+      # 这种情况直接跳过，等 Tailscale 拿到地址后由循环开头的重发现逻辑重启一次。
+      if (-not $tailnetNow) {
+        if (-not $tailnetWaitLogged) { Log 'tailnet 还没就绪：暂不重启门（等 Tailscale 起来后会自动绑定一次）'; $tailnetWaitLogged = $true }
+        Start-Sleep -Seconds 8
+        continue
+      }
+      $tailnetWaitLogged = $false
       Log "a proxy door is not listening (tailnet=$([bool]$proxyPid) tailip=$([bool](Test-TailDoor))); restarting proxies"
       & powershell.exe -NoProfile -ExecutionPolicy Bypass -File $restart -Quiet 2>&1 |
         Out-File -FilePath $log -Append -Encoding utf8
