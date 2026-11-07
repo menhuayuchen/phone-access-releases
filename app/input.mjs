@@ -41,6 +41,7 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
       ch: (typeof j.ch === 'number' && j.ch > 0) ? j.ch : 0,
       chx: (typeof j.chx === 'number') ? j.chx : 0,
       chy: (typeof j.chy === 'number') ? j.chy : 0,
+      img: (typeof j.img === 'string') ? j.img : '',
                 v: (j.vis === 0 ? 0 : 1),
               };
               cursorAt = Date.now();
@@ -83,11 +84,13 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
   // 2026-11-07 实验版 E1：400ms → 33ms（30Hz）。手机端要拿它画实时光标，
   // 400ms 会让光标看起来"一格一格跳"。命名管道是本机往返，30Hz 没有压力。
   function pollCursor() {
-    if (sock) { try { sock.write(JSON.stringify({ t: 'cursor' }) + '\n'); } catch (e) {} }
+    if (sock) { try { sock.write(JSON.stringify({ t: 'cursor', want: wantImg ? 1 : 0 }) + '\n'); wantImg = false; } catch (e) {} }
   }
-  setInterval(pollCursor, 33).unref?.();
+  let wantImg = false;
+function requestCursorImage() { wantImg = true; }
+setInterval(pollCursor, 33).unref?.();
 
-  function cursor() { return { x: cursorPos.x, y: cursorPos.y, s: cursorPos.s, v: cursorPos.v, cw: cursorPos.cw || 0, ch: cursorPos.ch || 0, chx: cursorPos.chx || 0, chy: cursorPos.chy || 0, at: cursorAt }; }
+  function cursor() { return { x: cursorPos.x, y: cursorPos.y, s: cursorPos.s, v: cursorPos.v, img: cursorPos.img || '', cw: cursorPos.cw || 0, ch: cursorPos.ch || 0, chx: cursorPos.chx || 0, chy: cursorPos.chy || 0, at: cursorAt }; }
 
   // 注入是否被系统挡住（前台高权限窗口 UIPI）。injector 每收到 cursor 询问就顺便回一次状态。
   function status() {
@@ -103,5 +106,5 @@ export function createInput({ pipeName = '\\\\.\\pipe\\dsh-input', log = () => {
     return { connected: !!sock, sent, errors, lastError, queued: queue.length, blocked, foreground };
   }
 
-  return { send, stats, cursor, status, unblock };
+  return { send, stats, cursor, status, unblock, requestCursorImage };
 }

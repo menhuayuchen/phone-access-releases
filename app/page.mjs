@@ -5982,7 +5982,8 @@ bindImg(img);
       + 'display:none;will-change:transform;background-repeat:no-repeat;';
     document.body.appendChild(el);
 
-    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false, cw: 0, ch: 0, chx: 0, chy: 0, hxr: 0, hyr: 0, pw: 0, ph: 0 };
+    var st = { rx: 0, ry: 0, tx: 0, ty: 0, x: 0, y: 0, hx: 1, hy: 1, k: 1, shape: '', shown: false, raf: 0, fails: 0, vis: true, got: false, cw: 0, ch: 0, chx: 0, chy: 0, hxr: 0, hyr: 0, pw: 0, ph: 0, imgs: {} };
+    window.__paCurImgs = st.imgs;
 
     // 尺寸（2026-11-07 第三版，按用户实机反馈重定）：
     // 真实光标在 2560 宽的屏幕上占 32px（1.25%）。手机上按真实比例只剩 4~5px，根本看不见，
@@ -5995,7 +5996,7 @@ bindImg(img);
     // 2026-11-07 第四版：按**系统光标的真实像素尺寸和热点**画，位置用本地预测、直接写 transform（不等下一帧）
     var MIN_PX = 10;      // 再真实也不能小到看不见
     var MAX_PX = 46;      // 也不至于糊住半个屏幕
-    var BOOST = 1.5;      // 真实比例在手机上偏小，放大一点更实用
+    var BOOST = 1.2;      // 真实比例在手机上偏小，放大一点更实用
     function cssScale() {
       // 屏幕像素 → 页面 CSS 像素 的换算比例（含画面缩放/旋转）
       try {
@@ -6030,8 +6031,15 @@ bindImg(img);
       el.style.width = Math.round(sz.w) + 'px';
       el.style.height = Math.round(sz.h) + 'px';
       el.style.backgroundSize = Math.round(sz.w) + 'px ' + Math.round(sz.h) + 'px';
-      var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + d.w + '" height="' + d.h + '" viewBox="0 0 ' + d.w + ' ' + d.h + '">' + d.s + '</svg>';
-      el.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + ')';
+      var real = st.imgs[s] || '';
+      if (real) {
+        // 真实系统光标位图（PNG）。这是 Windows 自己的像素，外形/明暗/阴影都和电脑上一致
+        el.style.backgroundImage = 'url("data:image/png;base64,' + real + '")';
+        el.style.imageRendering = 'auto';
+      } else {
+        var svg = '<svg xmlns="http://www.w3.org/2000/svg" width="' + d.w + '" height="' + d.h + '" viewBox="0 0 ' + d.w + ' ' + d.h + '">' + d.s + '</svg>';
+        el.style.backgroundImage = 'url("data:image/svg+xml;charset=utf-8,' + encodeURIComponent(svg) + ')';
+      }
     }
     function show(on) {
       if (st.shown === on) return;
@@ -6109,6 +6117,10 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
         if (typeof j.ch === 'number' && j.ch > 0 && j.ch !== st.ch) { st.ch = j.ch; sizeChanged = true; }
         if (typeof j.chx === 'number') { st.chx = j.chx; }
         if (typeof j.chy === 'number') { st.chy = j.chy; }
+        if (typeof j.img === 'string' && j.img) {
+          st.imgs[j.s || 'arrow'] = j.img;
+          if ((j.s || 'arrow') === st.shape) paint(st.shape);
+        }
         if (sizeChanged) paint(st.shape || 'arrow');
         var sh = j.s || 'arrow';
         if (sh !== st.shape) { st.shape = sh; paint(sh); }

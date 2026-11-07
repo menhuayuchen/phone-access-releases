@@ -1,4 +1,4 @@
-﻿using System;
+﻿﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
@@ -7,6 +7,8 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Threading;
+using System.Drawing;
+using System.Drawing.Imaging;
 
 // Remote input injector.
 //   input.exe <pipeName> <logFile>
@@ -383,32 +385,39 @@ static class Program
             case "text": { string s; if (d.TryGetValue("s", out s)) Text(s); break; }
             case "cursor":
             {
-                // 2026-11-07 实验版 E1：除了坐标，再回报**光标形状 id** 和是否可见。
-                // 手机端拿它画一个真的系统光标（箭头/文本 I 形/手型/等待圈…），
-                // 因为 draw_mouse=0 把光标从视频里剥掉了，那边本来什么都看不到。
+                // 2026-11-07：回传坐标 + 形状 + 真实尺寸/热点 + 光标位图（PNG，只在形状变化/客户端要求时发）
                 POINT p; GetCursorPos(out p);
-
                 int cw2 = 0, ch2 = 0, chx2 = 0, chy2 = 0;
+                string cs = "arrow";
+                int vis = 1;
+                string img = "";
+                CURSORINFO ci = new CURSORINFO();
+                ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
+                if (GetCursorInfo(ref ci))
+                {
+                    vis = (ci.flags & CURSOR_SHOWING) != 0 ? 1 : 0;
+                    cs = CursorShapeId(ci.hCursor);
+                    p.x = ci.ptScreenPos.x;
+                    p.y = ci.ptScreenPos.y;
+                    try { CursorMetrics(ci.hCursor, out cw2, out ch2, out chx2, out chy2); } catch { }
+                    try
+                    {
+                        if (I(d, "want", 0) != 0) { pngCursor = IntPtr.Zero; pngB64 = ""; }
+                        if (ci.hCursor != pngCursor)
+                        {
+                            string got = CursorPng(ci.hCursor, cw2 > 0 ? cw2 : 32, ch2 > 0 ? ch2 : 32);
+                            if (got != "") { pngB64 = got; pngCursor = ci.hCursor; img = got; }
+                        }
+                    }
+                    catch { }
+                }
                 if (reply != null)
                 {
                     try
                     {
-                        string cs = "arrow";
-                        int vis = 1;
-                        CURSORINFO ci = new CURSORINFO();
-                        ci.cbSize = Marshal.SizeOf(typeof(CURSORINFO));
-                        if (GetCursorInfo(ref ci))
-                        {
-                            vis = (ci.flags & CURSOR_SHOWING) != 0 ? 1 : 0;
-                            cs = CursorShapeId(ci.hCursor);
-                            try { CursorMetrics(ci.hCursor, out cw2, out ch2, out chx2, out chy2); } catch { }
-                            // GetCursorInfo 给的坐标和 GetCursorPos 是同一个值，但前者随
-                            // 「光标是否属于前台窗口」更准；两个都取到就用 CURSORINFO 的。
-                            p.x = ci.ptScreenPos.x;
-                            p.y = ci.ptScreenPos.y;
-                        }
                         reply.WriteLine("{\"cx\":" + p.x + ",\"cy\":" + p.y +
                                         ",\"cs\":\"" + cs + "\",\"vis\":" + vis +
+                                        ",\"img\":\"" + img + "\"" +
                                         ",\"cw\":" + cw2 + ",\"ch\":" + ch2 + ",\"chx\":" + chx2 + ",\"chy\":" + chy2 +
                                         ",\"blocked\":" + blockedCount +
                                         ",\"blkage\":" + BlockAgeMs() +
@@ -581,6 +590,33 @@ static class Program
     [DllImport("user32.dll")] static extern bool GetIconInfo(IntPtr hIcon, out ICONINFO piconinfo);
     [DllImport("gdi32.dll")] static extern int GetObject(IntPtr h, int c, out BITMAP b);
     [DllImport("gdi32.dll")] static extern bool DeleteObject(IntPtr h);
+    // 2026-11-07：把系统光标位图抓成 PNG（只在形状变化/客户端请求时发，移动时不发，不增加延迟）
+    [DllImport("user32.dll")] static extern bool DrawIconEx(IntPtr hdc, int x, int y, IntPtr hIcon, int cx, int cy, int istep, IntPtr hbrFlickerFree, int diFlags);
+    static IntPtr pngCursor = IntPtr.Zero;
+    static string pngB64 = "";
+    static string CursorPng(IntPtr hCursor, int w, int h)
+    {
+        try
+        {
+            using (var b = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            {
+                using (var g = Graphics.FromImage(b))
+                {
+                    g.Clear(Color.Transparent);
+                    IntPtr hdc = g.GetHdc();
+                    try { DrawIconEx(hdc, 0, 0, hCursor, w, h, 0, IntPtr.Zero, 3); }
+                    finally { g.ReleaseHdc(hdc); }
+                }
+                using (var ms = new MemoryStream())
+                {
+                    b.Save(ms, ImageFormat.Png);
+                    return Convert.ToBase64String(ms.ToArray());
+                }
+            }
+        }
+        catch { return ""; }
+    }
+
     static IntPtr cmCursor = IntPtr.Zero;
     static int cmW = 0, cmH = 0, cmHx = 0, cmHy = 0;
     static void CursorMetrics(IntPtr h, out int w, out int ht, out int hx, out int hy)
