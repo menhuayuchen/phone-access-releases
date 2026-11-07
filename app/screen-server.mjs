@@ -4715,6 +4715,45 @@ async function handler(req, res) {
         return;
       }
 
+  // ---- 实验版 E2b：高清裁剪（比 OCR 重画可靠得多）---------------------------
+  // 视频是 1920x1200 有损压缩的缩略图，放大 1.7 倍就是糊的；服务端手里有
+  // 2560x1600 的原始帧。放大停手时把这块按原始像素切回来（JPEG q86），
+  // 客户端直接贴上去盖住视频层 —— 真像素，没有字体差异、没有重画错位。
+  // 实测 1000x700 区域：126KB / 106ms（OCR 重画要 1700ms）。
+  if (url.pathname === '/exp/hidpi' && req.method === 'POST') {
+    const cfg = expConfig();
+    if (cfg.enabled !== true) { res.writeHead(404, { 'content-type': 'application/json' }); res.end('{"ok":false,"error":"experiments disabled"}'); return; }
+    let body = '';
+    req.on('data', (c2) => { body += c2; if (body.length > 8 * 1024) req.destroy(); });
+    req.on('end', async () => {
+      const t0 = Date.now();
+      try {
+        const up = await ensureOcr();
+        if (!up) throw new Error('高清抓帧服务起不来');
+        const r = await fetch('http://127.0.0.1:' + EXP_OCR_PORT + '/hidpi', {
+          method: 'POST',
+          headers: { 'content-type': 'application/json; charset=utf-8' },
+          body,
+          signal: AbortSignal.timeout(15000),
+        });
+        if (!r.ok) throw new Error('hidpi ' + r.status);
+        const buf = Buffer.from(await r.arrayBuffer());
+        res.writeHead(200, {
+          'content-type': 'image/jpeg',
+          'content-length': buf.length,
+          'x-rect': r.headers.get('x-rect') || '',
+          'x-ms': String(Date.now() - t0),
+          'cache-control': 'no-store',
+        });
+        res.end(buf);
+      } catch (e) {
+        res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' });
+        res.end(JSON.stringify({ ok: false, error: String(e && e.message || e), ms: Date.now() - t0 }));
+      }
+    });
+    return;
+  }
+
   if (url.pathname === '/sources') {
     try {
       // 页面每 2 秒轮询一次，这里缓存 600ms，避免每次都真的去枚举一遍窗口

@@ -5869,7 +5869,9 @@ bindImg(img);
       // 2026-11-07 修：原来区域超过 1200x900 就直接 return（静默放弃）——
       // 用户放大 1.38 倍时整屏对应 1852x1024，点了 + 也永远没反应，还看不到任何提示。
       // 现在改成只取视线中心的一块去增强，其余保持像素；中心才是用户真正在看的。
-      var MAXW = 880, MAXH = 620;   // 区域再缩小：面积比 1160x860 少 45%，OCR 快约 40%（用户反馈太慢）
+      // 高清贴图用完整视口：JPEG 编码很快（实测 1000x700 只要 106ms），
+      // 只有真的特别大（全屏 2560x1600）才裁中心，避免一次传几百 KB。
+      var MAXW = 1400, MAXH = 1000;
       if (rc.w * rc.h > MAXW * MAXH) {
         var kc = Math.sqrt((MAXW * MAXH) / (rc.w * rc.h));
         var nw = rc.w * kc, nh = rc.h * kc;
@@ -5882,26 +5884,46 @@ bindImg(img);
       // 用户以为「一次性，移动一下就不继续了」。
       if (Date.now() - lastAt < 800) return;
       busy = true; lastRect = rc; lastViewRect = rawRc; lastAt = Date.now();
-      badgeSet('OCR 识别中…', '#ffb454');
+      badgeSet('取高清图…', '#ffb454');
       var my = ++gen;
-      fetch('/exp/ocr?k=' + encodeURIComponent(KEY) + '&s=' + SID, {
+      var tSend = Date.now();
+      // 2026-11-07 换方案：不再 OCR 重画（字体不同 + bbox 矩形 + 背景色采样误差，
+      // 在彩色气泡/密集文字上就是糊成一片、还和底图错位），改成向服务端要
+      // **这一块的原生像素 JPEG** 直接贴上去。实测 1000x700 只要 106ms / 126KB，
+      // 比 OCR 的 1700ms 快一个数量级，而且没有重画的任何副作用。
+      fetch('/exp/hidpi?k=' + encodeURIComponent(KEY) + '&s=' + SID, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ rect: { x: Math.round(rc.x), y: Math.round(rc.y), w: Math.round(rc.w), h: Math.round(rc.h) } }),
-        signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(20000) : undefined,
-      }).then(function (r) { return r.json(); }).then(function (j) {
+        signal: (typeof AbortSignal !== 'undefined' && AbortSignal.timeout) ? AbortSignal.timeout(15000) : undefined,
+      }).then(function (r) {
+        if (!r.ok) throw new Error('status ' + r.status);
+        return r.blob();
+      }).then(function (b) {
         busy = false;
         if (my !== gen) return;
-        if (!j || !j.ok) { badgeSet('OCR 失败' + (j && j.error ? '：' + j.error : ''), '#ff6b6b'); return; }
-        if (j.tooLarge) { badgeSet('OCR 跳过：区域太大（没怎么放大）', '#8b9099'); return; }
-        if (!j.lines || !j.lines.length) { badgeSet('OCR 没认到文字', '#8b9099'); return; }
-        render(j, rc);
+        var url = URL.createObjectURL(b);
+        showHiRes(rc, url);
+        badgeSet('高清图 ' + Math.round(b.size / 1024) + 'KB · ' + (Date.now() - tSend) + 'ms', '#8CE68C');
       }).catch(function () {
         busy = false;
-        // 失败/超时也要更新状态牌，否则它会一直停在「识别中」，
-        // 用户以为还在跑，其实早就断了（实测就是这么被误导的）。
-        badgeSet('OCR 超时或失败，稍后自动重试', '#ff6b6b');
+        // 失败/超时也要更新状态牌，否则它会一直停在「取高清图…」，
+        // 用户以为还在跑，其实早就断了。
+        badgeSet('高清图失败，稍后自动重试', '#ff6b6b');
       });
+    }
+
+    // 把高清图贴到 rc 对应的页面位置上，盖住视频层那一块
+    function showHiRes(rc, url) {
+      var el = ensureLayer();
+      var p1 = toPage(rc.x, rc.y);
+      var p2 = toPage(rc.x + rc.w, rc.y + rc.h);
+      var w = p2.x - p1.x, h = p2.y - p1.y;
+      if (w < 1 || h < 1) return;
+      el.innerHTML = '<img alt="" src="' + url + '" style="position:absolute;'
+        + 'left:' + p1.x.toFixed(1) + 'px;top:' + p1.y.toFixed(1) + 'px;'
+        + 'width:' + w.toFixed(1) + 'px;height:' + h.toFixed(1) + 'px;'
+        + 'display:block;">';
     }
 
     // 250ms 看一次状态。三种情况要清掉旧文字层：

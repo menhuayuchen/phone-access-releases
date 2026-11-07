@@ -19,6 +19,7 @@ ffmpeg 裁剪版没编 png/rawvideo 的 muxer。而且必须是 **DPI aware** �
     POST /shutdown
 """
 import ctypes
+import io
 import json
 import sys
 import threading
@@ -27,6 +28,7 @@ from ctypes import wintypes
 from http.server import BaseHTTPRequestHandler, HTTPServer
 
 import numpy as np
+from PIL import Image
 
 PORT = int(sys.argv[1]) if len(sys.argv) > 1 else 8777
 
@@ -165,6 +167,22 @@ def sample_colors(img, x, y, w, h):
         return None, None
 
 
+def do_hidpi(body):
+    """把原始分辨率裁剪区域编码成 JPEG 返回（不识别、不重画）。
+
+    为什么需要它：视频是 1920x1200 有损压缩的缩略图，放大 1.7 倍就是糊的；
+    而服务端手里有 2560x1600 的原始帧。放大时把这块按原始像素切回来贴上去，
+    清晰度是「真像素」，没有字体差异、没有重画错位 —— 比 OCR 重画可靠得多。
+    """
+    rx, ry, rw, rh = normalise_rect(body.get('rect') or {})
+    img = grab(rx, ry, rw, rh)                      # BGR
+    pil = Image.fromarray(img[:, :, ::-1])          # BGR -> RGB
+    buf = io.BytesIO()
+    q = int(body.get('quality') or 86)
+    pil.save(buf, 'JPEG', quality=max(40, min(95, q)), optimize=False, subsampling=0)
+    return buf.getvalue(), {'x': rx, 'y': ry, 'w': rw, 'h': rh}
+
+
 def normalise_rect(rect):
     rx = int(rect.get('x', 0))
     ry = int(rect.get('y', 0))
@@ -280,6 +298,20 @@ class Handler(BaseHTTPRequestHandler):
         if self.path.startswith('/shutdown'):
             self._send(200, {'ok': True})
             threading.Timer(0.2, lambda: sys.exit(0)).start()
+            return
+        if self.path.startswith('/hidpi'):
+            try:
+                req = json.loads(raw.decode('utf-8') or '{}')
+                blob, box = do_hidpi(req)
+                self.send_response(200)
+                self.send_header('Content-Type', 'image/jpeg')
+                self.send_header('Content-Length', str(len(blob)))
+                self.send_header('X-Rect', json.dumps(box))
+                self.send_header('Connection', 'close')
+                self.end_headers()
+                self.wfile.write(blob)
+            except Exception as e:
+                self._send(500, {'ok': False, 'error': str(e)})
             return
         if not self.path.startswith('/ocr'):
             self._send(404, {'ok': False, 'error': 'not found'})
