@@ -5287,6 +5287,7 @@ bindImg(img);
       + '<button class="pwPre" data-pre="every" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">每天 23:00 睡 · 07:30 醒</button>'
       + '<button class="pwPre" data-pre="sleep1h" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">一小时后休眠</button>'
       + '<button class="pwPre" data-pre="off1h" style="background:#242730;color:#c9ccd1;border:1px solid #343842;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">一小时后关机</button>'
+      + '<button class="pwPre" data-pre="selftest" style="background:#2a2d36;color:#8fb6ff;border:1px solid #3f6fd0;border-radius:8px;padding:6px 10px;font-size:12px;cursor:pointer">自检：2 分钟后休眠 · 4 分钟后唤醒</button>'
       + '</div>';
 
     if (!rules.length) {
@@ -5340,7 +5341,11 @@ bindImg(img);
       + '</div>'
       + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把方式改成「休眠」。</div>'
       + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7">' + (busy ? '<span style="color:#ffb454">正在应用，请稍候…</span>' : '') + '</div>'
-      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原界面）；完全关机后叫不醒，只能靠主板 BIOS 定时开机或网络唤醒。</div>'
+      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原界面）；完全关机后叫不醒。'
+      + '<b style="color:#ffb454">定时唤醒依赖主板支持</b>：有些笔记本（联想等部分机型）BIOS 里默认没开 RTC 唤醒，'
+      + '系统侧的定时器虽然注册了，到点机器也不醒。请先点上面的「自检」，2 分钟后它会自己休眠、4 分钟后尝试唤醒：'
+      + '能自己回来就说明这台机器支持；回不来就要进 BIOS（开机按 F2）找 <b>Power / Automatic Power On / Wake on RTC / Wake up on Time</b> 打开它，'
+      + '或者只能把「关机」时间当纯定时休眠用、手动开机。</div>'
       + '</div>';
     return h;
   }
@@ -5392,6 +5397,14 @@ bindImg(img);
         if (kind === 'sleep1h' || kind === 'off1h') {
           const t = new Date(now.getTime() + 60 * 60 * 1000);
           rules.push({ id: 'p' + Date.now().toString(36), mode: kind === 'off1h' ? 'shutdown' : 'hibernate', repeat: 'once', date: t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'), offTime: hh(t), wakeTime: '' });
+        }
+        // 2026-11-07：唤醒自检。有些笔记本主板默认没开 RTC 唤醒，软件侧定时器注册了也不醒。
+        // 这条规则 2 分钟后休眠、4 分钟后唤醒，一次就能验出这台机器到底能不能定时开机。
+        if (kind === 'selftest') {
+          const off = new Date(now.getTime() + 2 * 60 * 1000);
+          const wake = new Date(now.getTime() + 4 * 60 * 1000);
+          const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+          rules.push({ id: 'selftest', mode: 'hibernate', repeat: 'once', date: ymd(off), offTime: hh(off), wakeTime: hh(wake) });
         }
         post({ enabled: true, rules: rules });
       }));
