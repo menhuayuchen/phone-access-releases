@@ -6046,6 +6046,22 @@ bindImg(img);
         request();
       }, ms || 380);
     }
+// 拖动画面时先把高清图藏起来 —— 它是快照，手指比重新取图快得多，
+    // 拖着走只会看到一张滞后的图"粘"在画面上。松手后 schedule() 会重新取。
+    try {
+      var dragFrom = null;
+      overlay.addEventListener('pointerdown', function (e) {
+        dragFrom = (e.pointerType === 'mouse') ? null : { x: e.clientX, y: e.clientY };
+      }, true);
+      overlay.addEventListener('pointermove', function (e) {
+        if (!dragFrom) return;
+        if (Math.abs(e.clientX - dragFrom.x) > 6 || Math.abs(e.clientY - dragFrom.y) > 6) {
+          dragFrom = null;
+          if (hdImg) hdImg.style.display = 'none';
+        }
+      }, true);
+    } catch (e) { }
+
     try {
       ['pointerup', 'pointercancel', 'touchend'].forEach(function (ev) {
         overlay.addEventListener(ev, function () { schedule(420); }, true);
