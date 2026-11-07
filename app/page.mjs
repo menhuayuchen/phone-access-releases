@@ -1194,6 +1194,9 @@ async function rtc264AudioStart() {
     const pc = new RTCPeerConnection({ iceServers: [] });
     A.audioSig = sig;
     A.audioPc = pc;
+    // 2026-11-07 诊断用：把音频连接挂到 window 上，便于在控制台/自动化里读 getStats
+    // （只读句柄，不改变任何行为；排查完可以留着，对性能无影响）。
+    try { window.__audioPc = pc; } catch (e) { }
     // 2026-11-07 19:0x：音频接收端补上和视频一样的低延迟提示。
     // 清晰模式的音频是**另一条纯音频 PeerConnection**，视频那条设了 jitterBufferTarget=20 /
     // playoutDelayHint=0，这条以前没设。本机回环抖动≈0 看不出差别；弱网/4G 下不设的话，
