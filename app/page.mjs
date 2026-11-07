@@ -2279,7 +2279,28 @@ let multiGesture = false;
 
 // 2026-11-07：外接鼠标走"电脑鼠标逻辑"。触屏那套（点哪移哪+点击、长按右键、拖动阈值）不参与。
 let mouseBtnDown = -1;
+// 2026-11-07：设置里的"接鼠标自动切换"开关（事件委托，面板重建也不丢）
+document.addEventListener('click', function (e) {
+  var t = e.target;
+  var box = (t && t.closest) ? t.closest('#expAutoBox') : null;
+  if (!box) return;
+  var on = true;
+  try { on = localStorage.getItem('pa.exp.mouseAuto') !== '0'; } catch (err) { }
+  try { localStorage.setItem('pa.exp.mouseAuto', on ? '0' : '1'); } catch (err) { }
+  window.__paMouseSwitchedOnce = false;
+  var now = !on;
+  box.textContent = now ? '✓' : '';
+  box.style.background = now ? 'rgba(140,229,140,.14)' : 'transparent';
+  try { setNote(now ? '已开启：接鼠标自动切到电脑真实光标' : '已关闭：接鼠标不再自动切换', 2500); } catch (err) { }
+}, true);
+function mouseAutoOn() {
+  try { return localStorage.getItem('pa.exp.mouseAuto') !== '0'; } catch (e) { return true; }
+}
 function mouseModeOn() {
+  if (!mouseAutoOn()) return;
+  if (window.__paMouseSwitchedOnce) return;
+  window.__paMouseSwitchedOnce = true;
+  try { setNote('检测到鼠标：已切换到电脑真实光标（可在 设置 → 外观 → 光标显示 里关掉自动切换）', 3500); } catch (e) { }
   // 先无条件隐藏系统光标（这里失败也不能影响别的）
   try { document.body.classList.add('mouse-real'); } catch (e) { }
   if (window.__paExp) { window.__paExp.mode = 'real'; window.__paExp.real = true; }
@@ -2293,7 +2314,8 @@ function mouseModeOn() {
 overlay.addEventListener('pointerdown', (e) => {
   // 外接鼠标：立即在鼠标位置按下（右键交给 contextmenu，避免触发两次）
   if (e.pointerType === 'mouse') {
-    // 2026-11-07 按用户要求：外接鼠标直接控制电脑鼠标，不再自动切"电脑真实光标"
+    // 2026-11-07：检测到外接鼠标 → 自动切「电脑真实光标」（可在设置里关掉）
+    mouseModeOn();
     if (!state.control) return;
     if (e.button === 2) return;
     const qm0 = layoutPoint(e.clientX, e.clientY);
@@ -2396,7 +2418,8 @@ overlay.addEventListener('pointermove', (e) => {
     return;
   }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
-  if (e.pointerType === 'mouse' && state.control) {   // 外接鼠标：直接控制电脑鼠标，不自动切真光标
+  if (e.pointerType === 'mouse' && state.control) {   // 外接鼠标：直接控制电脑鼠标，并按开关自动切真光标
+    mouseModeOn();
     const qm = layoutPoint(e.clientX, e.clientY);
     const pm = toScreen(qm.x, qm.y);
     // 不再 20ms 节流：鼠标要跟手（queue 内部已有 8ms 批量）
@@ -4390,7 +4413,10 @@ bindImg(img);
         + mk('dot', '跟随手指', '默认 · 黄点')
         + mk('real', '电脑真实光标', '显示电脑上的光标')
         + '</div>'
-        + '<div style="color:#6b7079;font-size:11px;margin-top:6px">选「电脑真实光标」时，下面的形状/大小/颜色只对黄点生效</div>';
+        + '<div style="color:#6b7079;font-size:11px;margin-top:6px">选「电脑真实光标」时，下面的形状/大小/颜色只对黄点生效</div>'
+        + '<div id="expAutoRow" style="margin-top:9px;display:flex;gap:8px;align-items:center;font-size:12px;color:#aeb3bb">'
+        + '<span id="expAutoBox" style="display:inline-flex;width:16px;height:16px;border-radius:4px;border:1px solid #3a3e4a;align-items:center;justify-content:center;font-size:12px;color:#8CE58C;cursor:pointer;background:' + ((function(){ try { return localStorage.getItem('pa.exp.mouseAuto') !== '0'; } catch(e){ return true; } })() ? 'rgba(140,229,140,.14)' : 'transparent') + '">' + ((function(){ try { return localStorage.getItem('pa.exp.mouseAuto') !== '0'; } catch(e){ return true; } })() ? '✓' : '') + '</span>'
+        + '<span>接鼠标时自动切换到「电脑真实光标」</span></div>';
     }
     // 实验版 E2：高清放大增强（放大停手后把该区域的原生像素贴回来）。
     // 用户要求做成设置里的开关，而不是靠 URL 参数。
