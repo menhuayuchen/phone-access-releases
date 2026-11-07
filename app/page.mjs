@@ -6477,7 +6477,11 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
   function expApplyMode(m) {
     var real = (m === 'real');
     if (window.__paExp) { window.__paExp.mode = m; window.__paExp.real = real; }
-        try { document.body.classList.toggle('mouse-real', !!real); } catch (e) { }
+    try { document.body.classList.toggle('mouse-real', !!real); } catch (e) { }
+    // 2026-11-07：切回「跟随手指」时必须把 ext-mouse 也清掉。
+    // body.ext-mouse #dot { display:none !important } —— 之前只 toggle 了 expNoDot，
+    // 这两个类留着，于是「先用真光标再切回来」黄点永远不显示（用户实测复现）。
+    if (!real) { try { document.body.classList.remove('ext-mouse'); } catch (e) { } }
     document.body.classList.toggle('expNoDot', real);
     var row = document.getElementById('expModeRow');
     if (row) {
@@ -6550,8 +6554,8 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
     // 2026-11-07：**真光标正式进产品**，不再要求 URL 参数。
     // 默认就加载（用户可以在 设置 → 个性化 → 光标显示 里切真假光标，
     // 规则：默认真光标关闭=黄点，显示电脑上的光标真光标）。
-    // 需要临时关掉时用 ?exp=nocursor；服务端 experiments.enabled=false 时 /ws-exp 404，
-    // 页面这边会静默失败、不影响画面和输入。
+    // 需要临时关掉时用 ?exp=nocursor；服务端 features.realCursor=false 时 /ws-exp 404，
+    // 页面这边会静默失败、不影响画面和输入。它是**正式功能**，不跟 experiments 开关联动。
     if (!want.nocursor) {
       // 2026-11-07 修 bug：设置里的「光标显示」要求 want.cursor 为真；want 只从 ?exp= 解析，
       // 默认没参数 → 设置项永远不渲染（用户找不到）。真光标默认开启，这里置 1。
