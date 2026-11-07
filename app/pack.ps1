@@ -788,6 +788,22 @@ if ($Zip) {
   }
 }
 
+# 2026-11-07：BOM 守卫。编辑工具（和不少脚本/生成器）会悄悄去掉 .ps1 的 UTF-8 BOM，
+# PowerShell 5.1 读无 BOM 的 UTF-8 会按 ANSI 解释 → 中文注释变乱码 → 解析失败 →
+# 装到客户机上启动脚本直接报错、服务起不来。今天一天踩了 4 次，所以让打包直接失败。
+$bomBad = @()
+foreach ($pf in (Get-ChildItem -LiteralPath $stage -Filter '*.ps1' -Recurse -File -ErrorAction SilentlyContinue)) {
+  $bytes = [System.IO.File]::ReadAllBytes($pf.FullName)
+  $ok = ($bytes.Length -ge 3 -and $bytes[0] -eq 0xEF -and $bytes[1] -eq 0xBB -and $bytes[2] -eq 0xBF)
+  if (-not $ok) { $bomBad += ($pf.FullName.Substring($stage.Length).TrimStart('\')) }
+}
+if ($bomBad.Count -gt 0) {
+  Write-ErrLine '这些 .ps1 缺 UTF-8 BOM（PowerShell 5.1 会按 ANSI 读，中文会乱码、脚本会解析失败）：'
+  foreach ($b in $bomBad) { Write-ErrLine ('  - ' + $b) }
+  throw '打包中止：先给上面这些文件补 BOM（UTF-8 with BOM），再重新打包'
+}
+Write-OkLine '所有 .ps1 均带 UTF-8 BOM（PowerShell 5.1 安全）'
+
 Write-Host ''
 Write-Host '打包完成。发给客户前最后确认一次：' -ForegroundColor Green
 Write-Host '  1) 客户解压后双击 安装轻屏.cmd（或 install.cmd），不要双击压缩包里的文件'
