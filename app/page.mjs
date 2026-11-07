@@ -1074,7 +1074,7 @@ async function rtc264Stats() {
           if (localStorage.getItem('hint.flow') !== '1') {
             localStorage.setItem('hint.flow', '1');
             setTimeout(function () {
-              try { setNote('提示：清晰模式约 8.9GB/小时；用手机流量可在设置里调低码率，或点「流畅」', 9000); } catch (e) { }
+              try { setNote('提示：清晰模式很费流量（约 8.9GB/小时）；用手机流量时建议调低画质，或点「流畅」', 9000); } catch (e) { }
             }, 6000);
           }
         } catch (e) { }
@@ -3265,8 +3265,8 @@ bindImg(img);
   // 用"可折叠分区卡片"的排版：标题一行、点一下收起，展开状态会记住
   // 默认收起的"高级"分区：第一次打开面板时界面更干净（客户点开才看）
   const DEFAULT_CLOSED = [
-    '本机机器码', '文本剪贴板', '高性能模式（Moonlight）', '高清串流（H.264）',
-    '个性化', '防窥屏（电脑前的人看不到）', '诊断'
+    '这台电脑的机器码', '剪贴板（手机 ↔ 电脑）', '串流玩游戏（Moonlight）', '画质与流量',
+    '外观（主题 / 光标）', '防窥屏', '出问题时导出诊断'
   ];
   function secClosedList() {
     try {
@@ -3332,7 +3332,7 @@ bindImg(img);
     rows.push('<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
       + setPill(ok, '已连接', s.installed ? '未连接' : '未安装')
       + '<span style="color:#868c96;font-size:12px">'
-      + escHtml(s.installed ? ((s.version ? 'Tailscale ' + s.version : 'Tailscale') + (s.backendState ? ' · ' + s.backendState : '')) : '这台电脑没装 Tailscale')
+      + escHtml(s.installed ? ((s.version ? 'Tailscale ' + s.version : 'Tailscale') + (s.backendState ? ' · ' + s.backendState : '')) : '这台电脑还没装 Tailscale')
       + '</span></div>');
     if (s.installed) {
       const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
@@ -5104,10 +5104,10 @@ bindImg(img);
     const ver = String(lic.version || '—');
     let body = '';
     const uq = lic.ultraQuota || null;   // 画面质量分区也要用（超清配额提示）
-    body += setSection('许可证', licenceInner(lic));
+    body += setSection('许可证（可选）', licenceInner(lic));
 
     // 机器码（可复制）
-    body += setSection('本机机器码',
+    body += setSection('这台电脑的机器码',
       '<div style="color:#868c96;font-size:12.5px;margin-bottom:8px">换许可证、报修时把这一串发给卖家</div>'
       + '<div style="display:flex;gap:8px;align-items:stretch">'
       + '<code style="flex:1;display:flex;align-items:center;font:14px/1.3 ui-monospace,Consolas,monospace;'
@@ -5139,7 +5139,7 @@ bindImg(img);
 
     // 连接体检（Tailscale）——2026-11-03 A1/A3：装没装、登没登、在不在线、手机是直连还是中继。
     // 客户最大的门槛就是这一步；数据来自服务端 /tailscale-status（只读，不透传节点公钥）。
-    body += setSection('连接体检（Tailscale）',
+    body += setSection('网络连接体检',
       '<div id="tsBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
       + '<button id="tsRefresh" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
@@ -5150,7 +5150,7 @@ bindImg(img);
       + '手机和电脑必须登录同一个 Tailscale 账号。</div>');
 
     // 文本剪贴板（2026-11-03，A5 第一步）：手机 ↔ 电脑 传一段文字。
-    body += setSection('文本剪贴板',
+    body += setSection('剪贴板（手机 ↔ 电脑）',
       '<div style="color:#868c96;font-size:12px;margin-bottom:8px">'
       + '把手机上的文字发到电脑，或在手机上读取电脑剪贴板（验证码、链接、命令最常用）。</div>'
       + '<textarea id="cbText" placeholder="在这里输入或粘贴文字…" style="width:100%;min-height:86px;box-sizing:border-box;'
@@ -5166,7 +5166,7 @@ bindImg(img);
       + '上限 64KB；写入后电脑上 Ctrl+V 就能用。剪贴板内容会经过你自己的 Tailscale 网络，不经过第三方。</div>');
 
     // 大文件传输（2026-11-06）：局域网/离线模式下手机↔电脑直传，速度就是 Wi-Fi 上限。
-    body += setSection('大文件传输（手机 ↔ 电脑）',
+    body += setSection('传文件（手机 ↔ 电脑）',
       '<div style="color:#868c96;font-size:12px;margin-bottom:8px">'
       + '不经过任何服务器、只走局域网：<b>4 路并发 + 断点续传</b>，速度能吃到 Wi-Fi 上限（Wi-Fi 6 常见 80–120 MB/s）。单个文件上限 20GB。</div>'
       + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
@@ -5187,7 +5187,7 @@ bindImg(img);
       + '<div id="fileList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>');
 
     // 高性能模式（Sunshine/Moonlight）——2026-11-03 S3：电脑装好 Sunshine 后，手机装 Moonlight 用 PIN 配对。
-    body += setSection('高性能模式（Moonlight）',
+    body += setSection('串流玩游戏（Moonlight）',
       '<div id="secSunshine"></div>'
       + '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div id="ssAddr" style="margin-top:10px"></div>'
@@ -5205,7 +5205,7 @@ bindImg(img);
     // 服务端 /set-quality 保留，兼容手机上缓存着的旧页面。
 
     // 高清串流（H.264）手动设置：分辨率/帧率/码率
-    body += setSection('高清串流（H.264）',
+    body += setSection('画质与流量',
       '<div style="display:flex;gap:14px;flex-wrap:wrap;color:#c9ccd1;font-size:12.5px;align-items:center">'
       + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560（原生·需设备支持）</option></select></label>'
       + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option></select></label>'
@@ -5222,10 +5222,10 @@ bindImg(img);
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>');
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
-    body += setSection('个性化', p13nInner(lic));
+    body += setSection('外观（主题 / 光标）', p13nInner(lic));
 
     // 防窥屏（privacy mode）：盖住电脑本机屏幕，手机端不受影响
-    body += setSection('防窥屏（电脑前的人看不到）',
+    body += setSection('防窥屏',
       '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">'
       + '开启后，电脑本机会被一层锁屏图盖住：屏幕前的人看不到桌面、鼠标点不动；'
       + '<b>你手机上的画面和控制不受影响</b>。<br>'
@@ -5250,7 +5250,7 @@ bindImg(img);
 
     // 离线模式（没有互联网 / 没有 Tailscale）：局域网访问 + 电脑热点 + USB 网络共享
     body += setSection('定时开关机（这台电脑）', powerInner());
-    body += setSection('离线模式（没有网络 / Tailscale）',
+    body += setSection('没有网络时（离线模式）',
       '<div id="offBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div style="color:#5c6169;font-size:11px;margin-top:8px;line-height:1.6">'
       + '没有互联网、也没装 Tailscale 时：电脑开热点（或手机开热点让电脑连），手机连上同一个网络后打开这里的地址。'
@@ -5261,7 +5261,7 @@ bindImg(img);
       + '<br>开启/关闭离线模式时会弹一次管理员授权（放行局域网端口），点「是」即可。</div>');
 
     // 诊断导出（给卖家排查：编码参数 + 链路状态 + 最近日志，访问密钥已打码）
-    body += setSection('诊断',
+    body += setSection('出问题时导出诊断',
       '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">画面/声音/连接出问题时，导出这份报告发给卖家。里面是编码参数、链路状态和最近日志，访问密钥已打码。</div>'
       + '<div style="display:flex;gap:10px;align-items:center;margin-top:10px;flex-wrap:wrap">'
       + '<button id="diagBtn" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
