@@ -1443,7 +1443,7 @@ function attachAudioWs(server, key) {  server.on('upgrade', (req, socket, head) 
     audioClients.add(ws);
     console.log('screen-server: audio ws connected (' + audioClients.size + ')');
     try {
-      ws.send(JSON.stringify({ type: 'audio', sampleRate: 48000, channels: 2, bits: 16, chunkMs: 20 }));
+      ws.send(JSON.stringify({ type: 'audio', sampleRate: 48000, channels: 2, bits: 16, chunkMs: 10 }));
     } catch { }
     ws.on('close', () => {
       audioClients.delete(ws);

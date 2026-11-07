@@ -10,7 +10,8 @@
 //
 // Protocol (written by audio.exe):
 //   [uint32 little-endian length][PCM payload] ...
-//   chunk length is 3840 bytes = 20 ms of 48 kHz / 16-bit / 2ch PCM.
+//   chunk length is 1920 bytes = 10 ms of 48 kHz / 16-bit / 2ch PCM
+//   （2026-11-07 起是 10ms；解析端本来就是按"长度前缀"自适应的，任何合法长度都收）
 //
 // Behavior:
 //   - connects to \\.\pipe\<pipeName>

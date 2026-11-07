@@ -19,12 +19,14 @@
 //
 // Wire protocol on the named pipe (byte mode):
 //   [uint32 little-endian length][PCM payload] ...
-//   chunk length = 3840 bytes = 20 ms of 48000 Hz / 16-bit / 2ch PCM
-//   (48000 * 0.020 * 2ch * 2 bytes = 3840). Chunks are written on a 20 ms
+//   chunk length = 1920 bytes = 10 ms of 48000 Hz / 16-bit / 2ch PCM
+//   (48000 * 0.010 * 2ch * 2 bytes = 1920). Chunks are written on a 10 ms
 //   wall-clock cadence. When no loopback data is available the chunk is padded
 //   with zero PCM (digital silence), so the downstream decoder keeps a stable
 //   pace. Capture data is buffered in a 2 second ring and trimmed to chunks;
 //   buffer overflow drops the oldest audio.
+//   （2026-11-07：20ms → 10ms。libwebrtc 本来就按 10ms 帧编码，10ms 进来正好 1:1，
+//    少一层串接缓冲；代价是包数翻倍，管道/CPU 实测无压力。）
 //
 // Logging:
 //   A line every 30 seconds: rms=<0.0000> chunks=<n> err=<n>
@@ -531,8 +533,8 @@ internal sealed class AudioRunner
 {
     private const int TargetRate = 48000;
     private const int TargetChannels = 2;
-    private const int ChunkMilliseconds = 20;
-    private const int ChunkBytes = TargetRate * ChunkMilliseconds / 1000 * TargetChannels * 2; // 3840
+    private const int ChunkMilliseconds = 10;
+    private const int ChunkBytes = TargetRate * ChunkMilliseconds / 1000 * TargetChannels * 2; // 10ms -> 1920
     private const int PipeWriteTimeoutMs = 2000;
 
     private readonly string _pipeName;
@@ -817,6 +819,30 @@ internal sealed class AudioRunner
                 {
                     Logger.Write("capture: no default render device, fallback to default constructor");
                     capture = new WasapiLoopbackCapture();
+                }
+                // 2026-11-07：NAudio 2.2.1 的 WasapiLoopbackCapture 只暴露 () 和 (MMDevice) 两个构造，
+                // 内部固定用默认 100ms 采集缓冲——这才是清晰模式"声音比画面晚"的真正来源
+                // （实测音频 214ms vs 视频 129ms；10ms chunk 改动对总延迟几乎无感，正好印证了这点）。
+                // 缓冲长度是私有字段 audioBufferMillisecondsLength，StartRecording(Initialize) 时才读，
+                // 所以这里提前用反射改成 20ms。字段/反射失败就保持默认值，不影响功能。
+                try
+                {
+                    System.Reflection.FieldInfo fldBuf = typeof(NAudio.CoreAudioApi.WasapiCapture).GetField(
+                        "audioBufferMillisecondsLength",
+                        System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
+                    if (fldBuf != null)
+                    {
+                        fldBuf.SetValue(capture, 20);
+                        Logger.Write("capture: buffer -> 20 ms (was NAudio default 100 ms)");
+                    }
+                    else
+                    {
+                        Logger.Write("capture: [warn] 找不到 audioBufferMillisecondsLength，保持默认 100 ms");
+                    }
+                }
+                catch (Exception exBuf)
+                {
+                    Logger.Write("capture: [warn] 设置采集缓冲失败（保持默认）：" + exBuf.Message);
                 }
                 WaveFormat format = capture.WaveFormat;
                 Logger.Write("capture: source " + format.SampleRate + "Hz/" + format.BitsPerSample
