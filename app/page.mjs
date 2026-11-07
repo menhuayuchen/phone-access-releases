@@ -2402,11 +2402,12 @@ overlay.addEventListener('pointermove', (e) => {
     // 不再 20ms 节流：鼠标要跟手（queue 内部已有 8ms 批量）
     lastMoveSent = Date.now();
     queue({ t: 'move', x: pm.x, y: pm.y });
-    // 真光标模式：本地预测自己画；否则用系统/手机自己的光标，不再叠一个
+    // 2026-11-07 按用户要求：外接鼠标时隐藏系统光标，只留一个（真光标模式画电脑光标，否则画箭头）
+    try { document.body.classList.add('mouse-real'); } catch (e) { }
     if (window.__paExp && window.__paExp.real) {
       try { if (window.__paCurLocal) window.__paCurLocal(pm.x, pm.y); } catch (e) { }
     } else {
-      try { hideMouseCur(); } catch (e) { }
+      showMouseCur(qm.x, qm.y);
     }
     const dd = document.getElementById('dot');
     if (dd) dd.style.display = 'none';
@@ -4373,7 +4374,7 @@ bindImg(img);
     }
     h += '</div>';
     // 实验版 E1（2026-11-07 按用户规则）：光标显示方式**二选一，不能同时存在**。
-    // 默认是跟随手指的黄点；检测到接了鼠标会自动切到电脑真实光标（只切一次）。
+    // 默认是跟随手指的黄点；想看到电脑上的真实光标形状，选「电脑真实光标」（不再自动切换）。
     if (window.__paExp && window.__paExp.want && window.__paExp.want.cursor) {
       const em = (function () { try { return localStorage.getItem('pa.exp.mode') === 'real' ? 'real' : 'dot'; } catch (e) { return 'dot'; } })();
       const mk = function (m, t1, t2) {
@@ -4387,7 +4388,7 @@ bindImg(img);
       h += '<div style="color:#868c96;font-size:12px;margin:12px 0 6px">光标显示</div>'
         + '<div style="display:flex;gap:8px" id="expModeRow">'
         + mk('dot', '跟随手指', '默认 · 黄点')
-        + mk('real', '电脑真实光标', '接鼠标自动切')
+        + mk('real', '电脑真实光标', '显示电脑上的光标')
         + '</div>'
         + '<div style="color:#6b7079;font-size:11px;margin-top:6px">选「电脑真实光标」时，下面的形状/大小/颜色只对黄点生效</div>';
     }
