@@ -2387,7 +2387,9 @@ function sunshineApi(method, apiPath, body, timeoutMs = 8000) {
     }
     req.on('timeout', () => { try { req.destroy(new Error('timeout')); } catch { } });
     req.on('error', (e) => done({ ok: false, httpStatus: 0, error: String((e && e.message) || e), body: data }));
-    if (body) { try { req.write(JSON.stringify(body)); } catch { } }
+    // 2026-11-07 修：调用方可能传对象，也可能传已序列化的 JSON 字符串；
+    // 原来一律 JSON.stringify，字符串会被二次转义 → Sunshine 收到非法 JSON（400）。
+    if (body) { try { req.write(typeof body === 'string' ? body : JSON.stringify(body)); } catch { } }
     req.end();
   });
 }
@@ -4883,6 +4885,127 @@ async function handler(req, res) {
     } catch (e) {
       try { res.writeHead(404, { 'content-type': 'text/plain; charset=utf-8' }); res.end('CA 还没生成（先在电脑上开一次离线模式）'); } catch { }
     }
+    return;
+  }
+  // ---- 游戏列表 / 添加游戏（2026-11-07）------------------------------------
+  // 目的：让用户不用进 Sunshine 的英文后台就能把游戏加进 Moonlight。
+  // 安全与防 bug 的几条底线：
+  //   · 只接受「Steam 库里真实存在」的 appid，或「真实存在的绝对路径 exe」——不接受任意命令字符串
+  //   · 加之前先查 Sunshine 现有应用，同 cmd 就返回 duplicate，不重复添加
+  //   · Sunshine 不可用时返回 ok:false + 原因，页面显示红字，不抛异常
+  function steamLibDirs() {
+    const roots = new Set();
+    try {
+      const reg = require('node:child_process').execFileSync('reg.exe', ['query', 'HKCU\\Software\\Valve\\Steam', '/v', 'SteamPath'],
+        { encoding: 'utf8', timeout: 4000, windowsHide: true });
+      const m = String(reg || '').match(/SteamPath\s+REG_SZ\s+(.+)/i);
+      if (m) roots.add(String(m[1]).trim());
+    } catch (e) { }
+    for (const d of ['C:\\Program Files (x86)\\Steam', 'C:\\Program Files\\Steam', 'D:\\Steam']) {
+      try { if (existsSync(d)) roots.add(d); } catch (e) { }
+    }
+    const libs = new Set();
+    for (const r of roots) {
+      const rr = String(r).replace(/\//g, '\\');
+      libs.add(rr);
+      try {
+        const vdf = readFileSync(join(rr, 'steamapps', 'libraryfolders.vdf'), 'utf8');
+        for (const mm of String(vdf).matchAll(/"path"\s+"([^"]+)"/g)) libs.add(String(mm[1]).replace(/\//g, '\\'));
+      } catch (e) { }
+    }
+    const out = [];
+    for (const d of libs) { try { if (existsSync(join(d, 'steamapps'))) out.push(d); } catch (e) { } }
+    return out;
+  }
+  function steamGames() {
+    const list = [];
+    const seen = new Set();
+    for (const lib of steamLibDirs()) {
+      const appsDir = join(lib, 'steamapps');
+      let files = [];
+      try { files = readdirSync(appsDir).filter((f) => /^appmanifest_\d+\.acf$/i.test(f)); } catch (e) { continue; }
+      for (const f of files) {
+        try {
+          const t = readFileSync(join(appsDir, f), 'utf8');
+          const appid = (String(t).match(/"appid"\s+"(\d+)"/) || [])[1] || '';
+          const name = (String(t).match(/"name"\s+"([^"]*)"/) || [])[1] || '';
+          const dir = (String(t).match(/"installdir"\s+"([^"]*)"/) || [])[1] || '';
+          if (!appid || !name || seen.has(appid)) continue;
+          if (/^(Steamworks|Proton|Steam Linux Runtime|SteamVR|Steam Client|Steam Console)/i.test(name)) continue;
+          const full = dir ? join(appsDir, 'common', dir) : '';
+          seen.add(appid);
+          list.push({ appid: appid, name: name, dir: full, installed: !!(full && existsSync(full)) });
+        } catch (e) { }
+      }
+    }
+    list.sort((a, b) => String(a.name).localeCompare(String(b.name), 'zh'));
+    return list;
+  }
+  function sunshineAppList(cb) {
+    sunshineApi('GET', '/api/apps?unique_id=1', null, 6000).then((r) => {
+      if (!r || !r.ok) { try { cb(new Error('sunshine-offline'), []); } catch (e) { } return; }
+      let apps = [];
+      try { const j = JSON.parse(r.body); apps = Array.isArray(j.apps) ? j.apps : []; } catch (e) { }
+      cb(null, apps);
+    });
+  }
+  if (url.pathname === '/game-list') {
+    const games = steamGames();
+    sunshineAppList((err, apps) => {
+      const added = new Set();
+      for (const a of apps) {
+        const m = String((a && a.cmd) || '').match(/steam:\/\/rungameid\/(\d+)/i);
+        if (m) added.add(m[1]);
+      }
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, sunshine: !err, games: games.map((g) => Object.assign({}, g, { added: added.has(g.appid) })) }));
+      } catch (e) { }
+    });
+    return;
+  }
+  if (url.pathname === '/game-add' && req.method === 'POST') {
+    const greply = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch (e) { } };
+    readBody(req, 8192).then((b) => {
+      let m = {};
+      try { m = JSON.parse(String(b || '{}')); } catch (e) { greply(400, { ok: false, error: '请求格式不对' }); return; }
+      let name = '';
+      let cmd = '';
+      let workDir = '';
+      if (m.appid) {
+        const id = String(m.appid).replace(/[^0-9]/g, '').slice(0, 10);
+        if (!id) { greply(400, { ok: false, error: '游戏 ID 不合法' }); return; }
+        const g = steamGames().find((x) => x.appid === id);
+        if (!g) { greply(404, { ok: false, error: 'Steam 库里没找到这个游戏（先确认已安装）' }); return; }
+        name = g.name;
+        cmd = 'steam://rungameid/' + g.appid;
+        workDir = g.dir || '';
+      } else if (m.exePath) {
+        const raw = String(m.exePath).trim().replace(/^"|"$/g, '');
+        if (!/^[A-Za-z]:\\/.test(raw)) { greply(400, { ok: false, error: '请填完整的 exe 路径（例如 D:\\Games\\游戏\\game.exe）' }); return; }
+        if (!/\.exe$/i.test(raw)) { greply(400, { ok: false, error: '只能添加 .exe 文件' }); return; }
+        try { if (!existsSync(raw)) { greply(404, { ok: false, error: '这个路径不存在' }); return; } } catch (e) { greply(400, { ok: false, error: '路径检查失败' }); return; }
+        name = String(m.name || '').trim().slice(0, 80) || raw.split('\\').pop().replace(/\.exe$/i, '');
+        cmd = raw;
+        workDir = raw.replace(/\\[^\\]+$/, '');
+      } else {
+        greply(400, { ok: false, error: '缺少 appid 或 exePath' });
+        return;
+      }
+      sunshineAppList((err, apps) => {
+        if (err) { greply(503, { ok: false, error: 'Sunshine 面板没连上（先确认串流组件在运行）' }); return; }
+        const dup = apps.find((a) => String((a && a.cmd) || '').trim().toLowerCase() === cmd.toLowerCase());
+        if (dup) { greply(200, { ok: true, duplicate: true, name: dup.name || name }); return; }
+        const body = { name: name, cmd: cmd, 'auto-detach': true, 'wait-all': true, index: -1 };
+        if (workDir) body['working-dir'] = workDir;
+        sunshineApi('POST', '/api/apps', body, 10000).then((r) => {
+          let ok = false; let msg = '';
+          try { const j = JSON.parse(r.body); ok = !!(j && j.status); msg = (j && j.error) || ''; } catch (e) { ok = false; }
+          if (ok) greply(200, { ok: true, added: true, name: name });
+          else greply(500, { ok: false, error: 'Sunshine 拒绝添加：' + (msg || ('HTTP ' + (r.httpStatus || '?'))) });
+        });
+      });
+    });
     return;
   }
   // ---- 定时开关机（2026-11-07）：规则存 power-schedule.json，引擎是 power-apply.ps1 ----

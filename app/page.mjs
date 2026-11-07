@@ -3901,6 +3901,62 @@ bindImg(img);
       }));
     };
     try { fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()).then(renderAddr).catch(() => { }); } catch (e) { }
+    // 2026-11-07：产品内“添加游戏”（Steam 列表 + 手动 exe），用户不用进 Sunshine 英文后台
+    const gamesHtml = (j) => {
+      const games = (j && Array.isArray(j.games)) ? j.games : [];
+      if (!j || !j.ok) return '<div style="color:#ff6b6b;font-size:12px">读取游戏列表失败</div>';
+      if (!j.sunshine) return '<div style="color:#ffb454;font-size:12px">串流组件没连上，先确认上面显示「已就绪」</div>';
+      if (!games.length) return '<div style="color:#6b7078;font-size:12px">这台电脑没检到已安装的 Steam 游戏</div>';
+      let h = '<div style="color:#aeb3bb;font-size:12px;margin-bottom:6px">这台电脑上已安装的 Steam 游戏（点「添加」就能在 Moonlight 里选）</div>';
+      h += games.map((g) => '<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #202228;font-size:12.5px">'
+        + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9ccd1">' + escHtml(g.name) + '</span>'
+        + (g.added
+          ? '<span style="color:#8CE58C;font-size:11.5px">已添加</span>'
+          : '<button data-gadd="' + escHtml(g.appid) + '" style="background:#2f6feb;color:#fff;border:0;border-radius:7px;padding:4px 10px;font-size:11.5px;cursor:pointer">添加</button>')
+        + '</div>').join('');
+      h += '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #23252c">'
+        + '<div style="color:#aeb3bb;font-size:12px;margin-bottom:5px">不是 Steam 的游戏？填 exe 完整路径也能加</div>'
+        + '<div style="display:flex;gap:6px;flex-wrap:wrap">'
+        + '<input id="gmExe" placeholder="D:\\Games\\Game\\game.exe" style="flex:1;min-width:180px;background:#0f1014;color:#e8eaee;border:1px solid #262932;border-radius:8px;padding:6px 9px;font-size:12px">'
+        + '<button id="gmAddExe" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:12px;cursor:pointer">添加 exe</button></div>'
+        + '</div>';
+      return h;
+    };
+    let gmBusy = false;
+    const loadGames = async () => {
+      const box2 = document.getElementById('ssGames');
+      if (!box2) return;
+      box2.innerHTML = '<div style="color:#868c96;font-size:12px">正在读取游戏列表…</div>';
+      try {
+        const j = await fetch('/game-list?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+        box2.innerHTML = gamesHtml(j);
+        box2.querySelectorAll('[data-gadd]').forEach((b) => b.addEventListener('click', async () => {
+          if (gmBusy) return;
+          gmBusy = true; b.disabled = true; b.textContent = '添加中…';
+          try {
+            const r = await fetch('/game-add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appid: b.getAttribute('data-gadd') }) }).then((x) => x.json());
+            if (r && r.ok && r.added) { b.outerHTML = '<span style="color:#8CE58C;font-size:11.5px">已添加</span>'; }
+            else if (r && r.ok && r.duplicate) { b.outerHTML = '<span style="color:#6b7078;font-size:11.5px">已添加过</span>'; }
+            else { b.disabled = false; b.textContent = '添加'; alert((r && r.error) || '添加失败'); }
+          } catch (e) { b.disabled = false; b.textContent = '添加'; }
+          gmBusy = false;
+        }));
+        const exeBtn = box2.querySelector('#gmAddExe');
+        if (exeBtn) exeBtn.addEventListener('click', async () => {
+          const inp = box2.querySelector('#gmExe');
+          const p2 = inp ? String(inp.value || '').trim() : '';
+          if (!p2) { alert('请填 exe 的完整路径'); return; }
+          exeBtn.disabled = true; exeBtn.textContent = '添加中…';
+          try {
+            const r = await fetch('/game-add', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ exePath: p2 }) }).then((x) => x.json());
+            if (r && r.ok) { alert(r.duplicate ? '这个已经添加过了' : ('已添加：' + (r.name || ''))); loadGames(); }
+            else alert((r && r.error) || '添加失败');
+          } catch (e) { alert('添加失败'); }
+          exeBtn.disabled = false; exeBtn.textContent = '添加 exe';
+        });
+      } catch (e) { box2.innerHTML = '<div style="color:#ff6b6b;font-size:12px">读取失败</div>'; }
+    };
+    try { loadGames(); } catch (e) { }
     let ssCreds = null;
     let ssCredsTried = false;
     const loadCreds = () => {
@@ -5211,6 +5267,7 @@ bindImg(img);
       '<div id="secSunshine"></div>'
       + '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
       + '<div id="ssAddr" style="margin-top:10px"></div>'
+      + '<div id="ssGames" style="margin-top:12px"></div>'
       + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'
       + '<button id="ssRefresh" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:9px;'
       + 'padding:8px 13px;font-size:12.5px;cursor:pointer">刷新</button>'
