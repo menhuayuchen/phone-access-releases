@@ -4964,6 +4964,34 @@ async function handler(req, res) {
     });
     return;
   }
+  // ---- 移除游戏（2026-11-07）--------------------------------------------
+  // 只允许删除「cmd 精确等于 steam://rungameid/<appid>」的条目，避免误删 Desktop / Steam Big Picture。
+  // Sunshine 的 DELETE 按下标删，删除后下标会变，所以每次现查现删。
+  if (url.pathname === '/game-remove' && req.method === 'POST') {
+    const rreply = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch (e) { } };
+    readBody(req, 4096).then((b) => {
+      let m = {};
+      try { m = JSON.parse(String(b || '{}')); } catch (e) { rreply(400, { ok: false, error: '请求格式不对' }); return; }
+      const id = String(m.appid || '').replace(/[^0-9]/g, '').slice(0, 10);
+      if (!id) { rreply(400, { ok: false, error: '缺少 appid' }); return; }
+      const want = ('steam://rungameid/' + id).toLowerCase();
+      sunshineAppList((err, apps) => {
+        if (err) { rreply(503, { ok: false, error: 'Sunshine 面板没连上' }); return; }
+        let idx = -1;
+        for (let i2 = 0; i2 < apps.length; i2++) {
+          if (String((apps[i2] && apps[i2].cmd) || '').trim().toLowerCase() === want) { idx = i2; break; }
+        }
+        if (idx < 0) { rreply(404, { ok: false, error: '列表里没有这个游戏（可能已经删掉了）' }); return; }
+        sunshineApi('DELETE', '/api/apps/' + idx, null, 8000).then((r) => {
+          let ok = false;
+          try { const j = JSON.parse(r.body); ok = !!(j && j.status); } catch (e) { ok = false; }
+          if (ok) rreply(200, { ok: true, removed: true });
+          else rreply(500, { ok: false, error: 'Sunshine 拒绝删除' });
+        });
+      });
+    });
+    return;
+  }
   if (url.pathname === '/game-add' && req.method === 'POST') {
     const greply = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch (e) { } };
     readBody(req, 8192).then((b) => {

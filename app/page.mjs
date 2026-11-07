@@ -3911,7 +3911,7 @@ bindImg(img);
       h += games.map((g) => '<div style="display:flex;gap:8px;align-items:center;padding:5px 0;border-bottom:1px solid #202228;font-size:12.5px">'
         + '<span style="flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;color:#c9ccd1">' + escHtml(g.name) + '</span>'
         + (g.added
-          ? '<span style="color:#8CE58C;font-size:11.5px">已添加</span>'
+          ? '<span style="color:#8CE58C;font-size:11.5px">已添加</span><button data-grm="' + escHtml(g.appid) + '" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer;margin-left:6px">移除</button>'
           : '<button data-gadd="' + escHtml(g.appid) + '" style="background:#2f6feb;color:#fff;border:0;border-radius:7px;padding:4px 10px;font-size:11.5px;cursor:pointer">添加</button>')
         + '</div>').join('');
       h += '<div style="margin-top:10px;padding-top:8px;border-top:1px solid #23252c">'
@@ -3940,6 +3940,15 @@ bindImg(img);
             else { b.disabled = false; b.textContent = '添加'; alert((r && r.error) || '添加失败'); }
           } catch (e) { b.disabled = false; b.textContent = '添加'; }
           gmBusy = false;
+        }));
+        box2.querySelectorAll('[data-grm]').forEach((rb) => rb.addEventListener('click', async () => {
+          if (!confirm('从 Moonlight 列表里移除这个游戏？（不会卸载游戏本身）')) return;
+          rb.disabled = true; rb.textContent = '…';
+          try {
+            const r = await fetch('/game-remove', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ appid: rb.getAttribute('data-grm') }) }).then((x) => x.json());
+            if (!(r && r.ok)) alert((r && r.error) || '移除失败');
+          } catch (e) { alert('移除失败'); }
+          loadGames();
         }));
         const exeBtn = box2.querySelector('#gmAddExe');
         if (exeBtn) exeBtn.addEventListener('click', async () => {
@@ -6241,6 +6250,9 @@ bindImg(img);
     // 需要临时关掉时用 ?exp=nocursor；服务端 experiments.enabled=false 时 /ws-exp 404，
     // 页面这边会静默失败、不影响画面和输入。
     if (!want.nocursor) {
+      // 2026-11-07 修 bug：设置里的「光标显示」要求 want.cursor 为真；want 只从 ?exp= 解析，
+      // 默认没参数 → 设置项永远不渲染（用户找不到）。真光标默认开启，这里置 1。
+      want.cursor = 1;
       try { expCursorStart(); window.__paExp.on.cursor = true; } catch (e) { console.warn('exp cursor:', e); }
       try { expInitMode(); window.__paExp.on.mode = true; } catch (e) { console.warn('exp mode:', e); }
     }
