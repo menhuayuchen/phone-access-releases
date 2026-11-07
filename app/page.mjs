@@ -4006,7 +4006,7 @@ bindImg(img);
           : job.phase === 'installing' ? '正在安装（电脑上会弹管理员授权，请点「是」）'
           : job.phase === 'error' ? ('失败：' + (job.error || '未知错误'))
           : '';
-        h = setPill(false, '', '未启用') + '<div style="margin-top:8px">这台电脑还没装「高性能模式」组件（Moonlight 用的 Sunshine）。</div>';
+        h = setPill(false, '', '未启用') + '<div style="margin-top:8px">这台电脑还没装串流组件（Moonlight 用的 Sunshine）。</div>';
         if (comp.configured) {
           h += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
             + '<button id="ssComp" ' + (busy ? 'disabled' : '') + ' style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
@@ -4031,7 +4031,7 @@ bindImg(img);
           + '<span id="ssInitMsg" style="font-size:12px;color:#868c96">' + escHtml(initBusy ? '等电脑上点「是」（管理员授权）…' : (jobInit.phase === 'error' ? jobInit.error : '')) + '</span>'
           + '</div>';
       } else if (false) {   // 2026-11-07：产品已全部免费，高性能模式不再需要许可证
-        h = setPill(false, '', '未授权') + '<div style="margin-top:8px">高性能模式需要许可证或处于试用期内；现在可以继续用网页模式。</div>';
+        h = setPill(false, '', '未授权') + '<div style="margin-top:8px"></div>';
       } else {
         const host = location.hostname || '本机';
         if (!selectedId || !(pairings || []).some((p) => p.id === selectedId)) {
@@ -4193,13 +4193,13 @@ bindImg(img);
   // ---- 设置面板「个性化」分区（许可证功能：主题/光标/自定义导入）------------------
   function p13nInner(lic) {
     const P = window.__paP13n;
-    if (!P) return '<div style="color:#868c96;font-size:12.5px">个性化模块未加载</div>';
+    if (!P) return '<div style="color:#868c96;font-size:12.5px">外观模块没加载</div>';
     const licensed = true;   // 2026-11-06 免费化：个性化对所有人生效
     const lock = licensed ? '' : ' <span style="font-size:11px">🔒</span>';
     let h = '';
     if (!licensed) {
       h += '<div style="color:#868c96;font-size:12.5px;margin-bottom:10px;line-height:1.6">'
-        + '个性化是许可证功能，免费版里显示默认外观。'
+        + '外观只影响你自己看到的样式，随时可以改。'
         + '<a href="#" id="p13nBuy" style="color:#8fb6ff">看看怎么解锁</a></div>';
     }
     const curT = licensed ? P.loadTheme() : 'dark';
@@ -4648,7 +4648,7 @@ bindImg(img);
           ? '<div style="color:#8fb6ff;font-size:12.5px;margin-top:6px;line-height:1.7">'
             + '这份许可证不会自动续费；到期后只是外观恢复默认，画面/触控/声音等全部功能照常免费。</div>'
           : '<div style="color:#868c96;font-size:12.5px;margin-top:6px;line-height:1.7">'
-            + '超清画质不限时长 · 个性化已解锁 · 同时观看不限台数</div>');
+            + '超清画质不限时长 · 外观全开 · 同时观看不限台数</div>');
       // 已授权也保留粘贴入口（换许可证 / 续期要用），默认折叠不占地方
       h += '<details style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
         + '<summary style="cursor:pointer;color:#8fb6ff;font-size:13px">粘贴许可证（可选：换电脑 / 找回设置时用）</summary>'
@@ -4663,7 +4663,7 @@ bindImg(img);
     }
     h += '<div style="color:#868c96;font-size:12.5px;margin-top:5px;line-height:1.7">'
       + (trialOn
-        ? '许可证有效期内：个性化全开 · 同时观看不限台数<br>'
+        ? '许可证有效期内：外观全开 · 同时观看不限台数<br>'
           + '试用结束后不会锁画面，自动回落到免费版（基础功能一直免费）。'
         : '免费版可用：画面 + 触控 + 声音 + 流畅模式 + 高清/标准画质（不限时）<br>'
           + '免费版限制：超清每天 1 小时 · 个性化锁定 · 同时观看最多 3 台')
@@ -5644,7 +5644,7 @@ bindImg(img);
         window.__paLic = j;
         if (!!j.usable !== was) {
           try { window.__paP13n.applyAll(true); } catch (e) { }
-          if (j.usable) setNote('许可证已生效：超清不限时长 · 个性化已解锁', 6000);
+          if (j.usable) setNote('许可证已生效：超清不限时长 · 外观全开', 6000);
         }
       }).catch(() => { });
     }, 30000);
