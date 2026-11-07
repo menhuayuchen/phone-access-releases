@@ -106,6 +106,8 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
           border:1px solid #2b2e35; border-radius:8px; display:none;
           font:12px/1.45 ui-monospace,Consolas,monospace; white-space:pre-wrap; word-break:break-all; }
 #cmdout.on { display:block; }
+/* 2026-11-07：真光标/外接鼠标模式下隐藏系统光标，只显示我们自己画的光标 */
+body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mouse-real canvas { cursor: none !important; }
 @media (max-width: 960px) {
   #hint { display: none !important; }
   #bar, .bar, header { font-size: 12px !important; }
@@ -2066,6 +2068,9 @@ const VK_BY_CODE = {
 const VK_MOD = { 0x10: 1, 0x11: 1, 0x12: 1, 0x5B: 1, 0x5C: 1 };
 
 function vkFromCode(code) {
+  // 2026-11-07：部分安卓外接键盘不发 event.code（空串），会全部落到 text 通道；
+  // 这里补一个按 event.key 名字转换的兜底，保证 Enter/Tab/方向键等特殊键仍能进电脑。
+  if (!code) return 0;
   if (!code) return 0;
   if (VK_BY_CODE[code]) return VK_BY_CODE[code];
   let m = /^Key([A-Z])$/.exec(code);        // KeyA → 0x41（字母在虚拟键码上是连续的）
@@ -2076,6 +2081,25 @@ function vkFromCode(code) {
   if (m) return 0x60 + Number(m[1]);
   m = /^F([1-9]|1[0-2])$/.exec(code);       // F1 → 0x70
   if (m) return 0x6F + Number(m[1]);
+  return 0;
+}
+// 2026-11-07：外接键盘兜底——部分安卓键盘不发 event.code，只有 event.key
+function vkFromKeyName(key) {
+  if (!key) return 0;
+  const map = {
+    Enter: 0x0D, Tab: 0x09, Escape: 0x1B, Backspace: 0x08, Delete: 0x2E, Insert: 0x2D,
+    ' ': 0x20, ArrowLeft: 0x25, ArrowUp: 0x26, ArrowRight: 0x27, ArrowDown: 0x28,
+    Home: 0x24, End: 0x23, PageUp: 0x21, PageDown: 0x22,
+    Shift: 0x10, Control: 0x11, Alt: 0x12, Meta: 0x5B,
+    PrintScreen: 0x2C, ScrollLock: 0x91, Pause: 0x13, CapsLock: 0x14
+  };
+  if (map[key]) return map[key];
+  const f = /^F([1-9]|1[0-2])$/.exec(key);
+  if (f) return 0x6F + Number(f[1]);
+  if (key.length === 1) {
+    const c = key.toUpperCase().charCodeAt(0);
+    if ((c >= 0x41 && c <= 0x5A) || (c >= 0x30 && c <= 0x39)) return c;
+  }
   return 0;
 }
 
@@ -2140,7 +2164,7 @@ document.addEventListener('keydown', (e) => {
   if (e.isComposing || e.keyCode === 229) return;      // 手机输入法合成中，交给系统
   if (!state.control) { keyBlockedHint(); return; }    // 与鼠标一致：控制关了就不注入
   if (e.target && e.target.tagName === 'BUTTON') focusStage();   // 免得空格/回车又点一次按钮
-  const vk = vkFromCode(e.code);
+  const vk = vkFromCode(e.code) || vkFromKeyName(e.key);
   if (vk) {
     e.preventDefault();
     if (heldByCode.has(e.code)) {
@@ -2234,7 +2258,35 @@ let ptr = null, longTimer = null, moved = false, dragBtn = -1, pinch = null, zoo
 // 多指手势期间置 true：抬手时不能把"最后一个手指离开"当成单点（缩放后尤其明显）
 let multiGesture = false;
 
+// 2026-11-07：外接鼠标走"电脑鼠标逻辑"。触屏那套（点哪移哪+点击、长按右键、拖动阈值）不参与。
+let mouseBtnDown = -1;
+function mouseModeOn() {
+  // 先无条件隐藏系统光标（这里失败也不能影响别的）
+  try { document.body.classList.add('mouse-real'); } catch (e) { }
+  if (window.__paExp) { window.__paExp.mode = 'real'; window.__paExp.real = true; }
+  try {
+    if (localStorage.getItem('pa.exp.mode') !== 'real') {
+      localStorage.setItem('pa.exp.mode', 'real');
+      if (typeof expInitMode === 'function') expInitMode();
+    }
+  } catch (e) { }
+}
 overlay.addEventListener('pointerdown', (e) => {
+  // 外接鼠标：立即在鼠标位置按下（右键交给 contextmenu，避免触发两次）
+  if (e.pointerType === 'mouse') {
+    mouseModeOn();
+    if (!state.control) return;
+    if (e.button === 2) return;
+    const qm0 = layoutPoint(e.clientX, e.clientY);
+    const pm0 = toScreen(qm0.x, qm0.y);
+    queue({ t: 'move', x: pm0.x, y: pm0.y });
+    const mb = (e.button === 1) ? 2 : 0;
+    mouseBtnDown = mb;
+    queue({ t: 'down', b: mb });
+    try { overlay.setPointerCapture(e.pointerId); } catch (err) { }
+    e.preventDefault();
+    return;
+  }
   // 主指针落下 = 新的一轮触摸序列：清掉上一轮可能残留的指针状态。
   // （三指手势常被浏览器用 pointercancel 收尾，pointerup 不一定全会来；不清理的话
   //  activePtr 里会一直留着旧 id，之后每次单指都被当成"多指"，画面就拖不动了。）
@@ -2324,6 +2376,7 @@ overlay.addEventListener('pointermove', (e) => {
   }
   // 手机外接鼠标：不需要按下也能移动（悬停），画一个箭头光标，隐藏触屏黄点
   if (e.pointerType === 'mouse' && state.control) {
+    if (mouseBtnDown < 0) mouseModeOn();
     const qm = layoutPoint(e.clientX, e.clientY);
     const nowM = Date.now();
     if (nowM - lastMoveSent > 20) {
@@ -2355,6 +2408,10 @@ overlay.addEventListener('pointermove', (e) => {
 });
 
 overlay.addEventListener('pointerup', (e) => {
+  if (e.pointerType === 'mouse') {
+    if (mouseBtnDown >= 0) { const mb = mouseBtnDown; mouseBtnDown = -1; queue({ t: 'up', b: mb }); }
+    return;
+  }
   activePtr.delete(e.pointerId); scrollAnchor = null;
   if (viewPan) {
     const vp = viewPan; viewPan = null;
@@ -6275,6 +6332,7 @@ bindImg(img);
   function expApplyMode(m) {
     var real = (m === 'real');
     if (window.__paExp) { window.__paExp.mode = m; window.__paExp.real = real; }
+        try { document.body.classList.toggle('mouse-real', !!real); } catch (e) { }
     document.body.classList.toggle('expNoDot', real);
     var row = document.getElementById('expModeRow');
     if (row) {
