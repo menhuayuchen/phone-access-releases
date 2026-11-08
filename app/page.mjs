@@ -4386,17 +4386,19 @@ bindImg(img);
           : job.phase === 'error' ? ('失败：' + (job.error || '未知错误'))
           : '';
         h = setPill(false, '', '未启用') + '<div style="margin-top:8px">这台电脑还没装串流组件（Moonlight 用的 Sunshine）。</div>';
-        if (comp.configured) {
+        const localMsi = !!(comp.localMsi || s.localMsi);
+        if (comp.configured || localMsi) {
           h += '<div style="margin-top:10px;display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
             + '<button id="ssComp" ' + (busy ? 'disabled' : '') + ' style="background:#2f6feb;color:#fff;border:0;border-radius:9px;'
             + 'padding:9px 15px;font-size:13px;cursor:pointer' + (busy ? ';opacity:.6' : '') + '">'
-            + (busy ? '处理中…' : '下载并安装组件（约 32MB）') + '</button>'
+            + (busy ? '处理中…' : (localMsi ? '安装高性能组件（用安装包自带的，约 1–2 分钟）' : '下载并安装组件（约 32MB）')) + '</button>'
             + '<span id="ssCompMsg" style="font-size:12px;color:#868c96">' + escHtml(phaseText) + '</span></div>'
             + '<div style="color:#6b7078;font-size:11px;margin-top:6px">Sunshine 是 GPL-3.0 独立程序（来源 LizardByte/Sunshine），'
-            + '安装后只绑 tailnet；手机还需另装 Moonlight。安装时电脑会弹管理员授权。</div>';
+            + '安装后只绑 tailnet；手机还需另装 Moonlight。安装时电脑会弹一次管理员授权，请点「是」；'
+            + (localMsi ? '组件随安装包自带，不需要联网。' : '需要联网下载。') + '</div>';
         } else {
-          h += '<div style="margin-top:8px;color:#868c96;font-size:12px">组件下载地址还没配置'
-            + '（上传组件后把链接和 SHA256 填进 product.config.json → components.sunshine）。</div>';
+          h += '<div style="margin-top:8px;color:#868c96;font-size:12px">当前安装包没带高性能组件（也没有下载地址）。'
+            + '重新下载完整安装包后，这里会出现安装按钮；不装也不影响网页模式。</div>';
         }
       } else if (!s.webUp || !s.credentialsSet) {
         const jobInit = s.init || {};

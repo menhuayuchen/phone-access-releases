@@ -1232,6 +1232,35 @@ function fetchToFileOnce(url, dest, onProgress, redirects) {
   });
 }
 
+// 2026-11-08：用安装包自带的 MSI 本地安装（不需要网络；用户要求"没装 Sunshine 时可以选安装"）。
+async function installSunshineLocalMsi(msiPath) {
+  const msi = msiPath || join(HERE, 'Sunshine-Windows-AMD64-installer.msi');
+  if (!fileExists(msi)) throw new Error('安装包没带高性能组件（缺少 Sunshine-Windows-AMD64-installer.msi）');
+  sunshineJob = { phase: 'installing', received: 0, total: 0, error: '', startedAt: Date.now() };
+  const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const integ = join(HERE, 'sunshine-integration.ps1');
+  if (!fileExists(integ)) throw new Error('缺少 sunshine-integration.ps1');
+  const runner = join(HERE, 'sunshine-install-run.ps1');
+  const lines = [
+    '$ErrorActionPreference = "Continue"',
+    'Start-Process powershell -Verb RunAs -ArgumentList @(',
+    '  "-NoProfile", "-ExecutionPolicy", "Bypass", "-File", ' + JSON.stringify(integ) + ',',
+    '  "-Action", "install", "-MsiPath", ' + JSON.stringify(msi) + ',',
+    '  "-AppDir", ' + JSON.stringify(HERE) + ', "-Quiet"',
+    ') | Out-Null'
+  ];
+  writeFileSync(runner, lines.join('\r\n'), 'utf8');
+  await new Promise((resolve) => {
+    const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner], { stdio: 'ignore', windowsHide: true });
+    child.on('exit', resolve);
+    child.on('error', resolve);
+  });
+  for (let i = 0; i < 90; i++) {
+    if (fileExists(SUNSHINE_EXE)) { sunshineJob.phase = 'done'; return; }
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+  throw new Error('安装没有完成（可能没点管理员授权，或安装器报错）');
+}
 async function downloadAndInstallSunshine() {
   const urls = Array.isArray(sunshineComp.urls) ? sunshineComp.urls.filter(Boolean) : [];
   const dest = join(HERE, 'sunshine-setup.msi');
@@ -3532,6 +3561,7 @@ async function handler(req, res) {
           init: sunshineInitJob,
           component: {
             configured: (Array.isArray(sunshineComp.urls) && sunshineComp.urls.length > 0 && !!sunshineComp.sha256),
+            localMsi: fileExists(join(HERE, 'Sunshine-Windows-AMD64-installer.msi')),
             job: sunshineJob
           },
           sunshine: cfg
@@ -4184,6 +4214,7 @@ async function handler(req, res) {
         ok: true,
         installed: fileExists(SUNSHINE_EXE),
         configured: configured,
+        localMsi: fileExists(join(HERE, 'Sunshine-Windows-AMD64-installer.msi')),
         name: String(sunshineComp.name || '高性能模式组件（Moonlight）'),
         sizeBytes: Number(sunshineComp.sizeBytes) || 0,
         sha256: String(sunshineComp.sha256 || ''),
@@ -4196,9 +4227,18 @@ async function handler(req, res) {
       const sreply = (code, obj) => {
         try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { }
       };
-      if (!isFullFunction()) return sreply(200, { ok: false, message: '高性能模式需要许可证或试用中。' });
-      if (!configured) return sreply(200, { ok: false, message: '组件下载地址还没配置（product.config.json → components.sunshine.urls）。' });
-      if (sunshineJob.phase === 'downloading') return sreply(200, { ok: true, job: sunshineJob });
+      // 2026-11-08：产品已全部免费，安装高性能组件不再需要许可证
+      if (fileExists(SUNSHINE_EXE)) return sreply(200, { ok: true, installed: true, message: '高性能组件已经装好了' });
+      if (sunshineJob.phase === 'downloading' || sunshineJob.phase === 'installing') return sreply(200, { ok: true, job: sunshineJob });
+      // 2026-11-08：安装包自带 MSI 就本地装（不需要网络）；否则退回下载流程。
+      const localMsi = join(HERE, 'Sunshine-Windows-AMD64-installer.msi');
+      if (fileExists(localMsi)) {
+        installSunshineLocalMsi(localMsi).catch((e) => {
+          sunshineJob = { phase: 'error', received: 0, total: 0, error: String((e && e.message) || e), startedAt: Date.now() };
+        });
+        return sreply(200, { ok: true, mode: 'local', job: sunshineJob });
+      }
+      if (!configured) return sreply(200, { ok: false, message: '这个安装包没带高性能组件（也没有下载地址）；请重新下载完整安装包。' });
       sunshineJob = { phase: 'downloading', received: 0, total: Number(sunshineComp.sizeBytes) || 0, error: '', startedAt: Date.now() };
       downloadAndInstallSunshine().catch((e) => {
         sunshineJob = { phase: 'error', received: sunshineJob.received || 0, total: sunshineJob.total || 0, error: String(e.message || e), startedAt: Date.now() };
