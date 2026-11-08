@@ -4430,6 +4430,7 @@ bindImg(img);
         .catch(() => { });
     };
     let lastPairings = [];
+      let lastPairCount = 0;   // 2026-11-08：已配对记录数（≥2 时提示清空重配）
     const setMsg = (t, c) => { if (msgEl) { msgEl.textContent = t; msgEl.style.color = c || '#868c96'; } };
     const stop = () => { if (timer) { clearInterval(timer); timer = 0; } };
     const step = (n, text) => '<div style="display:flex;gap:8px;margin:4px 0;font-size:12.5px;color:#aeb3bb;line-height:1.75">'
@@ -4489,8 +4490,32 @@ bindImg(img);
         } catch (e) { j = null; }
         pair.disabled = false;
         setMsg((j && (j.message || j.error)) || '配对失败', (j && j.ok) ? '#8CE58C' : '#ff6b6b');
+        if (j && j.needFix) { try { const fb = bodyEl.querySelector('#ssFix'); if (fb) { fb.style.color = '#8fb6ff'; fb.style.borderColor = '#2f6feb'; } } catch (e) { } }
         if (j && j.ok) { selectedId = ''; setTimeout(poll, 1200); }
         else { setTimeout(poll, 1500); }
+      });
+      const fixBtn = bodyEl.querySelector('#ssFix');
+      if (fixBtn) fixBtn.addEventListener('click', async () => {
+        const fm = bodyEl.querySelector('#ssFixMsg');
+        const say2 = (t, c) => { if (fm) { fm.textContent = t; fm.style.color = c || '#6b7078'; } };
+        fixBtn.disabled = true;
+        say2('正在修复：系统会弹一次管理员授权，请点「是」…', '#868c96');
+        let j = null;
+        try { j = await fetch('/sunshine-fix', { method: 'POST' }).then((r) => r.json()); } catch (e) { j = null; }
+        if (!j || !j.ok) { fixBtn.disabled = false; say2((j && (j.message || j.error)) || '启动修复失败', '#ff6b6b'); return; }
+        say2(j.message || '正在修复…', '#868c96');
+        // 轮询 /sunshine-status 的 fix 字段（最多 60 秒）
+        for (let i = 0; i < 40; i++) {
+          await new Promise((r) => setTimeout(r, 1500));
+          let st = null;
+          try { st = await fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { st = null; }
+          const fx = st && st.fix;
+          if (!fx) continue;
+          if (fx.phase === 'done') { fixBtn.disabled = false; say2('凭据已修好：回 Moonlight 重新点一次这台电脑，拿新的 4 位 PIN 再配对。', '#8CE58C'); lastSig = ''; setTimeout(poll, 800); return; }
+          if (fx.phase === 'error') { fixBtn.disabled = false; say2('修复失败：' + (fx.error || '未知原因') + '（可以再点一次，或重装高性能组件）', '#ff6b6b'); return; }
+        }
+        fixBtn.disabled = false;
+        say2('修复超时：可能没点管理员授权。再点一次「修复凭据」试试。', '#ffb454');
       });
       const unpair = bodyEl.querySelector('#ssUnpair');
       if (unpair) unpair.addEventListener('click', async () => {
@@ -4507,6 +4532,7 @@ bindImg(img);
     const render = (s, pairings) => {
       lastStatus = s;
       lastPairings = pairings || [];
+      lastPairCount = (p && Number(p.pairCount)) || 0;   // 2026-11-08：已配对数量（>1 要提醒清空重配）
       if (s && s.installed && s.webUp) loadCreds();
       const sig = JSON.stringify([s.installed, s.webUp, s.credentialsSet, s.licensed, (pairings || []).map((p) => p.id), ssCreds ? 1 : 0]);
       if (sig === lastSig) return;
@@ -4566,6 +4592,10 @@ bindImg(img);
           + step(1, '手机装 <b>Moonlight</b>（安卓点上面的「Moonlight 下载」；iPhone 在 App Store 搜 Moonlight）')
           + step(2, '按下面「怎么连」填地址；Moonlight 点这台电脑后，它会显示 4 位数字')
           + step(3, '把这 4 位数字填到下面的输入框，点「完成配对」')
+          + (lastPairCount >= 2 ? ('<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:rgba(255,180,84,.12);border:1px solid rgba(255,180,84,.35);color:#ffb454;font-size:12px;line-height:1.7">'
+              + '检测到这台电脑已经有 <b>' + lastPairCount + '</b> 条配对记录。重复配对会让 Moonlight 报 <b>401 / Certificate verification failed</b>。'
+              + '<br>建议：先点下面「清空配对」，然后在 Moonlight 里删除这台电脑、重新添加，再输一次 PIN。'
+              + '</div>') : '')
           + '<div id="ssPairs">' + pairsHtml(pairings) + '</div>'
           + '<div style="display:flex;gap:8px;margin-top:9px;flex-wrap:wrap;align-items:center">'
           + '<input id="ssPin" inputmode="numeric" maxlength="4" placeholder="4 位 PIN" style="width:110px;background:#0f1014;color:#e8eaee;'
@@ -4582,10 +4612,12 @@ bindImg(img);
           + (ssCreds ? ' <button id="ssPwShow" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">显示</button><button id="ssCopyPw" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:6px;padding:2px 7px;font-size:11px;cursor:pointer">复制密码</button>' : '')
           + '<div style="color:#6b7078;font-size:11px;margin-top:5px;line-height:1.7">管理页是电脑本机的 https 页面，第一次打开浏览器会提示证书不安全——选「继续」再登录。只在你自己家里/私人网络里用，别在公共 Wi-Fi 下打开。</div>'
           + '</div></details>'
-          + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
-          + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">配对一直不成功？清空旧配对再试</button></div>';
-          + '<div style="margin-top:10px"><button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
-          + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">清空配对（连不上时用）</button></div>';
+          + '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap;align-items:center">'
+          + '<button id="ssUnpair" style="background:#2a2d36;color:#ffb454;border:1px solid #3a3e4a;'
+          + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">配对一直不成功？清空旧配对再试</button>'
+          + '<button id="ssFix" style="background:#2a2d36;color:#8fb6ff;border:1px solid #3a3e4a;'
+          + 'border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">修复凭据（报 401 时用）</button></div>'
+          + '<div id="ssFixMsg" style="font-size:11.5px;color:#6b7078;margin-top:6px"></div>';
       }
       bodyEl.innerHTML = h;
       const pinEl = bodyEl.querySelector('#ssPin');

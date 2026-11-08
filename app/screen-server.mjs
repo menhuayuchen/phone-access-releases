@@ -1397,6 +1397,57 @@ async function runSunshineInit() {
   sunshineInitJob = { phase: 'error', error: '初始化没完成' + (t ? ('：' + t) : '（可能没点管理员授权）'), log: t, startedAt: sunshineInitJob.startedAt };
   return sunshineInitJob;
 }
+// ---- 高性能模式凭据修复（2026-11-08）：配对报 HTTP 401 时的一键自救 --------------
+// 401 = 我们文件里的 Basic 凭据和 Sunshine 自己存的不一致（换过密码/重装过/状态被重置）。
+// sunshine-integration.ps1 -Action credentials 会先用现有凭据读 /api/config 验证，
+// 不通就重新生成一对并写回文件（需要管理员重启 Sunshine，所以走 UAC 包装脚本）。
+let sunshineFixJob = { phase: 'idle', error: '', startedAt: 0, at: 0 };
+async function runSunshineCredFix() {
+  if (sunshineFixJob.phase === 'running') return sunshineFixJob;
+  sunshineFixJob = { phase: 'running', error: '', startedAt: Date.now(), at: Date.now() };
+  const ps = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+  const integ = join(HERE, 'sunshine-integration.ps1');
+  if (!fileExists(integ)) { sunshineFixJob = { phase: 'error', error: '缺少 sunshine-integration.ps1', startedAt: Date.now(), at: Date.now() }; return sunshineFixJob; }
+  const wrap = join(HERE, 'sunshine-fix-wrap.ps1');
+  const runner = join(HERE, 'sunshine-fix-run.ps1');
+  const log = join(HERE, 'sunshine-fix.log');
+  const tailLog = () => { try { const s = readFileSync(log, 'utf8'); return s.split(/\r?\n/).map((x) => x.trim()).filter(Boolean).slice(-4).join(' | '); } catch { return ''; } };
+  try { unlinkSync(log); } catch { }
+  try {
+    writeFileSync(wrap, [
+      '$ErrorActionPreference = "Continue"',
+      '& \'' + integ + '\' -Action credentials -AppDir \'' + HERE + '\' *> \'' + log + '\'',
+      'exit $LASTEXITCODE'
+    ].join('\r\n'), 'utf8');
+    writeFileSync(runner, [
+      '$ErrorActionPreference = "Continue"',
+      'Start-Process powershell -Verb RunAs -Wait -ArgumentList @("-NoProfile","-ExecutionPolicy","Bypass","-File",\'' + wrap + '\') | Out-Null'
+    ].join('\r\n'), 'utf8');
+  } catch (e) {
+    sunshineFixJob = { phase: 'error', error: String(e.message || e), startedAt: Date.now(), at: Date.now() };
+    return sunshineFixJob;
+  }
+  await new Promise((resolve) => {
+    const child = spawn(ps, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', runner], { stdio: 'ignore', windowsHide: true });
+    child.on('exit', resolve);
+    child.on('error', resolve);
+    setTimeout(resolve, 60000);   // 别让 Job 永久 running（UAC 没人点的时候）
+  });
+  // 用新的凭据验证一次：/api/config 通 = 修好了
+  for (let i = 0; i < 12; i++) {
+    const chk = await sunshineApiOnce('GET', '/api/config', null, 6000);
+    if (chk && chk.ok) {
+      sunshineProxyLog('凭据修复：验证通过（/api/config 200）');
+      sunshineFixJob = { phase: 'done', error: '', startedAt: sunshineFixJob.startedAt, at: Date.now() };
+      return sunshineFixJob;
+    }
+    await new Promise((r) => setTimeout(r, 2500));
+  }
+  const t = tailLog();
+  sunshineProxyLog('凭据修复：仍未通过 ' + (t || '（无日志）'));
+  sunshineFixJob = { phase: 'error', error: '修复没成功' + (t ? ('：' + t) : '（可能需要你在弹出的管理员授权里点「是」）'), log: t, startedAt: sunshineFixJob.startedAt, at: Date.now() };
+  return sunshineFixJob;
+}
 // ---- 实验版 E1（2026-11-07）：/ws-exp -------------------------------------
 // 只推"电脑上真实光标的位置和形状"，给手机端本地画一个光标用。
 // 为什么需要它：采集是 ddagrab=draw_mouse=0，光标从视频里被剥掉了；手机端本来
@@ -2532,7 +2583,28 @@ function readSunshineCreds() {
   if (j && j.username && j.password) return { username: String(j.username), password: String(j.password) };
   return null;
 }
+// 2026-11-08：给高性能模式加一条专属日志（只记状态码和截断后的响应体，不落任何凭据），
+// 以后手机上报"配对失败 HTTP 401"时，直接在电脑上看 sunshine-proxy.log 就知道是
+// "凭据与 Sunshine 不一致"还是"Sunshine 在重启"。同时把 401 自动重试一次。
+function sunshineProxyLog(line) {
+  try {
+    const f = join(HERE, 'sunshine-proxy.log');
+    try { if (statSync(f).size > 512 * 1024) renameSync(f, f + '.1'); } catch { }
+    appendFileSync(f, new Date().toISOString() + ' ' + String(line).replace(/[\r\n]+/g, ' ').slice(0, 400) + '\n');
+  } catch { }
+}
 function sunshineApi(method, apiPath, body, timeoutMs = 8000) {
+  return sunshineApiOnce(method, apiPath, body, timeoutMs).then((r) => {
+    // 401 多半是 Sunshine 刚重启/状态还没加载完（我们的凭据是文件读的，本身不会变）。
+    // 重试一次；仍 401 才判定为"凭据不一致"，由页面引导点「修复凭据」。
+    if (r && r.httpStatus === 401) {
+      sunshineProxyLog(method + ' ' + apiPath + ' -> 401，350ms 后重试一次');
+      return new Promise((res) => setTimeout(res, 350)).then(() => sunshineApiOnce(method, apiPath, body, timeoutMs));
+    }
+    return r;
+  });
+}
+function sunshineApiOnce(method, apiPath, body, timeoutMs = 8000) {
   return new Promise((resolve) => {
     const creds = readSunshineCreds();
     if (!creds) return resolve({ ok: false, httpStatus: 0, error: 'no-credentials', body: '' });
@@ -2555,7 +2627,7 @@ function sunshineApi(method, apiPath, body, timeoutMs = 8000) {
         }
       }, (res) => {
         res.on('data', (c) => { data += c; if (data.length > 256 * 1024) { try { res.destroy(); } catch { } } });
-        res.on('end', () => done({ ok: res.statusCode >= 200 && res.statusCode < 300, httpStatus: res.statusCode, body: data }));
+        res.on('end', () => { const out = { ok: res.statusCode >= 200 && res.statusCode < 300, httpStatus: res.statusCode, body: data }; if (!out.ok) sunshineProxyLog(method + ' ' + apiPath + ' -> ' + res.statusCode + ' ' + String(data || '').slice(0, 200)); done(out); });
         res.on('error', (e) => done({ ok: false, httpStatus: res.statusCode || 0, error: String((e && e.message) || e), body: data }));
       });
     } catch (e) {
@@ -2568,6 +2640,23 @@ function sunshineApi(method, apiPath, body, timeoutMs = 8000) {
     if (body) { try { req.write(typeof body === 'string' ? body : JSON.stringify(body)); } catch { } }
     req.end();
   });
+}
+// 2026-11-08：统计"已配对客户端数量"。反复配对会在 Sunshine 里堆出多条同名证书，
+// 客户端（Moonlight）随后就报 401 / Certificate verification failed —— 面板据此提前提醒。
+let sunshineClientsCache = { at: 0, count: 0, names: [] };
+async function sunshineClientStats() {
+  if (Date.now() - sunshineClientsCache.at < 10000) return sunshineClientsCache;
+  const r = await sunshineApiOnce('GET', '/api/clients/list', null, 5000);
+  let count = 0, names = [];
+  try {
+    const j = JSON.parse(r.body || '{}');
+    const list = Array.isArray(j && j.named_certs) ? j.named_certs : [];
+    const enabled = list.filter((x) => x && x.enabled !== false);
+    count = enabled.length;
+    names = enabled.map((x) => String(x.name || ''));
+  } catch { }
+  sunshineClientsCache = { at: Date.now(), count: count, names: names };
+  return sunshineClientsCache;
 }
 function sunshineWebUp() {
   return new Promise((resolve) => {
@@ -3621,6 +3710,7 @@ async function handler(req, res) {
           credentialsSet: creds,
           // 2026-11-08 删除 7 天试用：产品完全免费 → 恒为 true（页面靠它显示"可用"，不再因没有许可证而隐藏）
           licensed: isFullFunction(),
+          fix: sunshineFixJob,   // 2026-11-08：凭据修复进度（idle/running/done/error）
           lanIps: privateIps(),
           tailnetIp: (() => { try { const ifs = os.networkInterfaces(); for (const n of Object.keys(ifs)) { if (!/tailscale/i.test(n)) continue; for (const it of (ifs[n] || [])) { if (it && it.family === 'IPv4' && /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(it.address)) return it.address; } } } catch (e) { } return ''; })(),
           webPort: 47990,
@@ -3676,7 +3766,12 @@ async function handler(req, res) {
         name: String((p && p.name) || ''),
         address: String((p && p.address) || '')
       })).filter((p) => p.id);
-      sreply(200, { ok: true, pairings: pairings });
+      // 2026-11-08：顺带告诉页面"这台电脑已经配过几台"。反复配对会在 Sunshine 里堆出
+      // 多条同名证书，Moonlight 之后就会报 401 / Certificate verification failed，
+      // 页面据此提前提醒"先清空配对再重配"。
+      let cs = { count: 0, names: [] };
+      try { cs = await sunshineClientStats(); } catch { }
+      sreply(200, { ok: true, pairings: pairings, pairCount: cs.count, pairNames: cs.names });
     })();
     return;
   }
@@ -3728,7 +3823,17 @@ async function handler(req, res) {
           if (newest && newest !== pairingId) out = await tryPin(newest);
         }
         const { r, j, good } = out;
-        if (!r.ok) return sreply(200, { ok: false, message: 'Sunshine 拒绝了配对（HTTP ' + (r.httpStatus || 0) + '）' });
+        if (!r.ok) {
+          const st = r.httpStatus || 0;
+          // 2026-11-08：401 不是"PIN 错了"，而是本机凭据和 Sunshine 不一致 → 引导一键修复
+          if (st === 401) {
+            return sreply(200, {
+              ok: false, needFix: true,
+              message: '高性能模式凭据和 Sunshine 不一致（HTTP 401），不是 PIN 的问题。点下面「修复凭据」，等十几秒（会弹管理员授权），再重新配对一次。'
+            });
+          }
+          return sreply(200, { ok: false, message: 'Sunshine 拒绝了配对（HTTP ' + st + '）' + (st === 0 ? '：连不上 Sunshine，确认它还在运行' : '') });
+        }
         sreply(200, {
           ok: good,
           status: j ? j.status : null,
@@ -3737,6 +3842,16 @@ async function handler(req, res) {
       })();
     });
     return;
+  }
+  // POST /sunshine-fix —— 一键修复高性能模式凭据（配对报 HTTP 401 时用）。
+  // 会弹一次管理员授权（要重启 Sunshine 服务）。返回 job 状态，页面轮询 /sunshine-status 看 fix 字段。
+  if (url.pathname === '/sunshine-fix' && req.method === 'POST') {
+    const freply = (code, obj) => {
+      try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { }
+    };
+    if (!fileExists(SUNSHINE_EXE)) return freply(200, { ok: false, message: '这台电脑还没装高性能组件（Sunshine）。' });
+    runSunshineCredFix().catch(() => { });
+    return freply(200, { ok: true, phase: 'running', message: '正在修复凭据：系统会弹一次管理员授权，点「是」等十几秒再回来配对。' });
   }
   // POST /sunshine-unpair —— 清空已配对设备（Sunshine 的 unpair-all）。
   // 为什么要它：真机实测反复配对会堆出多条同名记录，之后重连报证书身份错误，
