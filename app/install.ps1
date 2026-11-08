@@ -82,6 +82,13 @@ function Write-Section {
   Write-Host ''
   Write-Host ('-------- ' + $Text) -ForegroundColor Cyan
   Add-Log ('[步骤] ' + $Text)
+  # 2026-11-08：每一步立即写进度文件。以前"卡在第 10 步然后关窗口"什么都不留，客户也找不到安装报告。
+  try {
+    $progDir = if ($script:InstallRoot) { $script:InstallRoot } else { $env:TEMP }
+    if (-not (Test-Path -LiteralPath $progDir)) { New-Item -ItemType Directory -Path $progDir -Force | Out-Null }
+    ('[{0}] {1}' -f (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'), $Text) |
+      Out-File -LiteralPath (Join-Path $progDir 'install-progress.log') -Append -Encoding utf8
+  } catch { }
 }
 
 function Write-Ok {
@@ -1822,8 +1829,23 @@ try {
     $script:SelfReportPath = Join-Path $reportDir ('自检报告-' + (Get-Date -Format 'yyyyMMdd-HHmmss') + '.txt')
     Write-Note '正在逐项检查（约 30 秒）。检查结果会写一份报告到「轻屏\报告」…'
     $psExeForCheck = Get-PowerShellExe
+    # 2026-11-08 修：原来同步等 selfcheck 且无超时。自检里 tailscale status --json / query session
+    # 在个别机器上会阻塞（实测 40+ 秒），安装器看起来就卡在第 10 步。现在：独立进程 + 最长 120 秒 + 进度提示。
+    $checkProc = $null
     try {
-      & $psExeForCheck -NoProfile -ExecutionPolicy Bypass -File $selfcheckPath -Quiet -ReportPath $script:SelfReportPath
+      $checkProc = Start-Process -FilePath $psExeForCheck -ArgumentList @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $selfcheckPath, '-Quiet', '-ReportPath', $script:SelfReportPath) -WindowStyle Hidden -PassThru
+      $waited = 0
+      $checkTimeout = 120
+      while ($checkProc -and -not $checkProc.HasExited -and $waited -lt $checkTimeout) {
+        Start-Sleep -Seconds 2
+        $waited += 2
+        if (($waited % 10) -eq 0) { Write-Host ('    自检进行中… ' + [string]$waited + 's（最多 ' + [string]$checkTimeout + 's）') -ForegroundColor Gray }
+      }
+      if ($checkProc -and -not $checkProc.HasExited) {
+        Write-WarnLine '自检超过 120 秒还没结束，已跳过（不影响安装；装好后可双击桌面「自查」再跑）。'
+        try { $checkProc.Kill() } catch { }
+        try { & taskkill.exe /PID ([string]$checkProc.Id) /T /F 2>$null | Out-Null } catch { }
+      }
     } catch {
       Write-WarnLine ('自检脚本没能运行完成：' + [string]$_.Exception.Message)
     }
@@ -2039,18 +2061,44 @@ if ($SkipHighPerformance) {
     foreach ($s in $script:ShortcutIssues) { Write-Host ('      · ' + $s) -ForegroundColor Gray }
   }
   Write-Host ('    桌面路径判定：' + $(if ($folderReason) { $folderReason } else { '用户桌面' })) -ForegroundColor Gray
+  # 2026-11-08：把"建了什么/哪里失败"写进文件夹，客户和卖家都不用猜
+  try {
+    $infoLines = @()
+    $infoLines += '轻屏 · 桌面文件夹信息'
+    $infoLines += ('时间：' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss'))
+    $infoLines += ('文件夹位置：' + $desktopDir)
+    $infoLines += ('桌面路径判定：' + $(if ($folderReason) { $folderReason } else { '用户桌面' }))
+    $infoLines += ('快捷方式成功：' + [string]$shortcutCount + ' / 8')
+    if ($script:ShortcutIssues -and $script:ShortcutIssues.Count -gt 0) {
+      $infoLines += '创建细节：'
+      foreach ($s in $script:ShortcutIssues) { $infoLines += ('  - ' + [string]$s) }
+      $infoLines += '如果缺图标：多半是杀毒软件拦截了创建快捷方式；重跑一次安装包，或把安装目录里的同名 .cmd 发送到桌面即可。'
+    } else {
+      $infoLines += '创建细节：全部成功'
+    }
+    Set-Content -LiteralPath (Join-Path $desktopDir '桌面快捷方式信息.txt') -Value ($infoLines -join "`r`n") -Encoding utf8 -ErrorAction SilentlyContinue
+  } catch { }
 
   # 手机入口：优先打开二维码（客户要扫码）；没有二维码就打开网址文件
   $qrPath = Join-Path $script:InstallRoot 'screen-qr.png'
   $urlFilePath = Join-Path $script:InstallRoot 'screen-url.txt'
+  # 2026-11-08 修：服务刚起来时 screen-url.txt 可能还没写出来（实测有延迟）。
+  # 原来立即判断会走"没生成"分支，客户什么都看不到。这里最多等 30 秒再决定。
+  $urlWait = 0
+  while ($urlWait -lt 30 -and -not (Test-Path -LiteralPath $qrPath) -and -not (Test-Path -LiteralPath $urlFilePath)) {
+    Start-Sleep -Seconds 1
+    $urlWait++
+  }
   if (Test-Path -LiteralPath $qrPath) {
     Write-Note '正在打开手机扫码入口：用手机扫这个二维码（手机要先连上 Tailscale）。'
     try { $null = Start-Process -FilePath $qrPath } catch { Write-WarnLine '二维码没能自动打开，文件在：' + $qrPath }
   } elseif (Test-Path -LiteralPath $urlFilePath) {
-    Write-WarnLine '二维码没能生成（这台电脑没有 python）。已经帮你打开网址文件，手机浏览器里输入里面的网址。'
+    Write-Note '正在打开手机入口文件（里面是带密钥的网址，别截图发给别人）。'
     try { $null = Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $urlFilePath + '"') } catch { Write-WarnLine ('网址文件在：' + $urlFilePath) }
   } else {
-    Write-WarnLine '手机入口还没生成（画面服务可能没起来）。先双击桌面「轻屏」文件夹里的「自查」看看问题出在哪。'
+    Write-WarnLine '手机入口文件 30 秒内还没生成（画面服务可能起得慢或没起来）。'
+    Write-Host ('  手动入口：双击 ' + (Join-Path $script:InstallRoot '手机入口.cmd') + ' 生成二维码；或重新运行一次安装包。') -ForegroundColor Yellow
+    try { $null = Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $script:InstallRoot + '"') } catch { }
   }
 
   # ---- 许可证 ---------------------------------------------------------------

@@ -107,7 +107,8 @@ function Get-SelfTailscale {
   if ($res.Path) {
     try { $info = Get-TailscaleInfo -TailscaleExe $res.Path } catch { }
     try {
-      $raw = (& $res.Path status --json 2>$null | Out-String)
+      # 2026-11-08：tailscale CLI 在 Tailscale 忙时会阻塞（实测 40+ 秒），加 6 秒超时避免自检卡死
+      $raw = Invoke-ExeCapture -Exe $res.Path -Arguments @('status','--json') -TimeoutSec 6
       if ($raw -and $raw.Trim()) { $json = $raw | ConvertFrom-Json }
     } catch { $json = $null }
   }
@@ -357,7 +358,8 @@ function Test-SelfTailnetAccess {
 
 function Test-SelfSession {
   $raw = ''
-  try { $raw = (query session 2>&1 | Out-String) } catch { $raw = '' }
+  # 2026-11-08：query session 在个别机器上会卡住，加 4 秒超时
+  try { $raw = Invoke-ExeCapture -Exe (Join-Path $env:SystemRoot 'System32\query.exe') -Arguments @('session') -TimeoutSec 4 } catch { $raw = '' }
   if (-not $raw -or -not $raw.Trim()) {
     return New-SelfResult 'unknown' '没法读取电脑的登录状态（可能是权限不足）' 'query session 无输出'
   }
