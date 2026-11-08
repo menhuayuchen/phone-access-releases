@@ -988,6 +988,7 @@ function stopRtc264() {
   R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0; R.playStart = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
+  try { avAutoStop(); } catch (e) { }
   try { rtc264AudioStop(); } catch (e) { }
   // 2026-11-08 P1b：同 PC 音频的状态必须一起清，否则重连后 audioSamePc 还是 true，
   // 音频会永远不再建立（P1 回退到旧纯音频连接时也永远起不来）。
@@ -1072,7 +1073,7 @@ async function startRtc264() {
             // 结果滑杆/校准全作用在音频 receiver 上（校准时还会 400ms 就报错退出）。
             if (e.track.kind === 'audio') {
               RTC264.audioReceiver = e.receiver;
-              if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvAudio();
+              if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + effectiveAudioDelay();
               if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
             } else {
               RTC264.videoReceiver = e.receiver;
@@ -1088,6 +1089,7 @@ async function startRtc264() {
           try { RTC264.audioTrack = e.track; } catch (err) { }
           try { R.media.addTrack(e.track); } catch (err) { }
           try { vid.muted = !state.audio; } catch (err) { }
+          avAutoStart();   // P1c：音频轨到了就开始自动对齐
           return;
         }
         try { R.media.addTrack(e.track); } catch (err) { }
@@ -1273,6 +1275,20 @@ function rtc264AudioUsePcm() {
 function loadAvSync() {
   try { const v = parseInt(localStorage.getItem('paAvSync') || '0', 10); return isFinite(v) ? Math.max(0, Math.min(400, v)) : 0; } catch (e) { return 0; }
 }
+// 2026-11-08 P1c：本地补偿值做一次"清账"。
+// P1 早期那版校准是坏的（receiver 认错 + 分析器没接 destination + 偶数配对取错值），
+// 手机上留下的 paAvSync/paAvAudio 可能是垃圾值（比如画面被推后 400ms）→ 越用越歪。
+// 这里按版本号一次性清掉旧值，之后就只在算法没变的情况下沿用。
+const AV_SCHEMA = '3';
+try {
+  if (localStorage.getItem('paAvSchema') !== AV_SCHEMA) {
+    localStorage.setItem('paAvSync', '0');
+    localStorage.setItem('paAvAudio', '0');
+    localStorage.setItem('paAvAuto', '0');
+    localStorage.setItem('paAvSchema', AV_SCHEMA);
+    console.log('avsync: 旧补偿值已清零（schema ' + AV_SCHEMA + '）');
+  }
+} catch (e) { }
 function saveAvSync(ms) {
   const m = Math.max(0, Math.min(400, Math.round(Number(ms) || 0)));
   try { localStorage.setItem('paAvSync', String(m)); } catch (e) { }
@@ -1282,7 +1298,7 @@ function applyAvSync(ms) {
   const m = saveAvSync(ms == null ? loadAvSync() : ms);
   try {
     const r = RTC264 && RTC264.videoReceiver;
-    if (r && ('jitterBufferTarget' in r)) r.jitterBufferTarget = 20 + m;
+    if (r && ('jitterBufferTarget' in r)) r.jitterBufferTarget = 20 + effectiveVideoDelay();
   } catch (e) { }
   const sl = document.querySelector('#avSync');
   if (sl) sl.value = String(m);
@@ -1298,17 +1314,104 @@ function saveAvAudio(ms) {
   try { localStorage.setItem('paAvAudio', String(m)); } catch (e) { }
   return m;
 }
+// 2026-11-08 P1c：自动对齐（不依赖白闪/提示音）。
+// 思路：Chrome 只会把画面往后挪（声音是基准），所以"画面比声音晚"在接收端**结构上修不了**。
+// 我们换一个可控的量：把**音频**也往后压，压到"两轨的到达→播出总延迟相等"。
+// 每 2 秒读一次 getStats 的抖动缓冲：视频比音频多压多少，就给音频补多少（收敛而不是一次到位）。
+function loadAvAuto() {
+  try { const v = parseInt(localStorage.getItem('paAvAuto') || '0', 10); return isFinite(v) ? Math.max(0, Math.min(400, v)) : 0; } catch (e) { return 0; }
+}
+function saveAvAuto(ms) {
+  const m = Math.max(0, Math.min(400, Math.round(Number(ms) || 0)));
+  try { localStorage.setItem('paAvAuto', String(m)); } catch (e) { }
+  return m;
+}
+function effectiveAudioDelay() {
+  return Math.max(0, Math.min(400, loadAvAudio() + (RTC264.autoAudio || 0)));
+}
+function effectiveVideoDelay() {
+  return Math.max(0, Math.min(400, loadAvSync() + (RTC264.autoVideo || 0)));
+}
 function applyAvAudio(ms) {
   const m = saveAvAudio(ms == null ? loadAvAudio() : ms);
   try {
     const r = RTC264 && RTC264.audioReceiver;
-    if (r && ('jitterBufferTarget' in r)) r.jitterBufferTarget = 20 + m;
+    if (r && ('jitterBufferTarget' in r)) r.jitterBufferTarget = 20 + effectiveAudioDelay();
   } catch (e) { }
   const sl = document.querySelector('#avAudio');
   if (sl) sl.value = String(m);
   const vl = document.querySelector('#avAudioVal');
   if (vl) vl.textContent = m + ' ms';
+  const al = document.querySelector('#avAutoVal');
+  if (al) al.textContent = effectiveAudioDelay() + ' ms';
   return m;
+}
+// 2026-11-08 P1c：自动对齐（不依赖白闪/提示音）。
+// Chrome 只会把画面往后挪（声音是基准），所以"画面本来就晚"在接收端修不了——
+// 但晚的那部分会体现在**抖动缓冲**上。这里每 2 秒读一次 getStats：
+//   · 视频缓冲 > 音频缓冲 → 视频晚 → 把**音频**往后补
+//   · 音频缓冲 > 视频缓冲 → 声音晚 → 把**画面**往后补
+// 每会话只决策一次（中途反复调会让 NetEq 每次重新涨缓冲，反而越调越歪）。
+function avAutoStart() {
+  try { if (RTC264.autoTimer) clearInterval(RTC264.autoTimer); } catch (e) { }
+  RTC264.autoT0 = Date.now();
+  RTC264.autoOnce = false;
+  RTC264.autoAudio = 0;
+  RTC264.autoVideo = 0;
+  RTC264.autoTimer = setInterval(function () {
+    try {
+      const R = RTC264;
+      if (R.autoOnce || !R.pc || !R.audioReceiver || !R.videoReceiver) return;
+      if (!state.audio || state.mode !== 'h264') return;
+      if (Date.now() - (R.autoT0 || 0) < 8000) return;   // 等两条流都稳定
+      R.pc.getStats().then(function (st) {
+        if (R.autoOnce) return;
+        let jbA = null, jbV = null, pkA = 0, frV = 0;
+        st.forEach(function (r) {
+          if (r.type !== 'inbound-rtp') return;
+          if (r.kind === 'audio') { pkA = r.packetsReceived || 0; if (r.jitterBufferEmittedCount) jbA = 1000 * r.jitterBufferDelay / r.jitterBufferEmittedCount; }
+          if (r.kind === 'video') { frV = r.framesDecoded || 0; if (r.jitterBufferEmittedCount) jbV = 1000 * r.jitterBufferDelay / r.jitterBufferEmittedCount; }
+        });
+        if (jbA == null || jbV == null || pkA < 300 || frV < 60) return;
+        const d = jbV - jbA;   // >0：视频多压着 → 视频晚
+        let applied = 0, side = 'none';
+        if (d > 60) {
+          R.autoAudio = Math.max(0, Math.min(280, Math.round(d / 10) * 10));
+          applied = R.autoAudio; side = 'audio';
+          try { R.audioReceiver.jitterBufferTarget = 20 + effectiveAudioDelay(); } catch (e) { }
+        } else if (d < -60) {
+          R.autoVideo = Math.max(0, Math.min(280, Math.round(-d / 10) * 10));
+          applied = R.autoVideo; side = 'video';
+          try { R.videoReceiver.jitterBufferTarget = 20 + effectiveVideoDelay(); } catch (e) { }
+        }
+        R.autoOnce = true;
+        R.lastAuto = { jbA: Math.round(jbA), jbV: Math.round(jbV), delta: Math.round(d), side: side, applied: applied };
+        try { console.log('avsync: 自动对齐 ' + side + ' +' + applied + 'ms（jbA=' + Math.round(jbA) + ' jbV=' + Math.round(jbV) + '）'); } catch (e) { }
+        avDiagReport('auto-align', R.lastAuto);
+        const al = document.querySelector('#avAutoVal');
+        if (al) al.textContent = '声音 +' + effectiveAudioDelay() + ' ms / 画面 +' + effectiveVideoDelay() + ' ms';
+      }).catch(function () { });
+    } catch (e) { }
+  }, 2000);
+}
+function avAutoStop() {
+  try { if (RTC264.autoTimer) clearInterval(RTC264.autoTimer); } catch (e) { }
+  RTC264.autoTimer = null;
+}
+// 校准结果上报给电脑端日志（只读诊断）。手机上排不出来的问题，下次直接看日志就知道。
+function avDiagReport(kind, extra) {
+  try {
+    const R = RTC264 || {};
+    const body = JSON.stringify(Object.assign({
+      kind: kind, t: Date.now(),
+      ua: navigator.userAgent,
+      mode: state.mode, audioOn: !!state.audio,
+      samePc: !!R.audioSamePc,
+      manualV: loadAvSync(), manualA: loadAvAudio(), auto: loadAvAuto(), effA: effectiveAudioDelay(),
+      lastAuto: R.lastAuto || null
+    }, extra || {}));
+    fetch('/avdiag', { method: 'POST', headers: { 'content-type': 'application/json' }, body: body }).catch(function () { });
+  } catch (e) { }
 }
 async function avCalibrate() {
   const msg = document.querySelector('#avMsg');
@@ -1376,8 +1479,8 @@ async function avCalibrate() {
     try { clearTimeout(hardStop); } catch (e) { }
     try { actx.close(); } catch (e) { }
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
-    if (evV.length < 1) { say('没检测到白闪：确认手机显示的是电脑画面、没有暂停', '#ffb454'); return; }
-    if (evA.length < 1) { say('没听到提示音：确认「声音」开着、手机没静音', '#ffb454'); return; }
+    if (evV.length < 1) { avDiagReport('calib-fail-flash', { evV: evV.length, evA: evA.length }); say('没检测到白闪：确认手机显示的是电脑画面、没有暂停', '#ffb454'); return; }
+    if (evA.length < 1) { avDiagReport('calib-fail-beep', { evV: evV.length, evA: evA.length }); say('没听到提示音：确认「声音」开着、手机没静音', '#ffb454'); return; }
     // 2026-11-08 P1b：把这次校准的原始事件暴露出来（只读诊断，方便远程排"校准不准/测不到"）。
     try { window.__paAvCalib = { evV: evV.slice(0), evA: evA.slice(0), hidden: !!document.hidden }; } catch (e) { }
     const diffs = [];
@@ -1388,15 +1491,16 @@ async function avCalibrate() {
     }
     // 2026-11-08 P1b：配对太少/离散太大就判"测不准"，绝不硬套一个值——
     // 原来只按中位数选，2 个配对时会选到较大的那个（实测直接把画面推了 400ms，反而更歪）。
-    if (diffs.length < 2) { say('测量不可靠（只配到 ' + diffs.length + ' 对），请再点一次校准，或直接拖滑杆', '#ffb454'); return; }
+    if (diffs.length < 2) { avDiagReport('calib-fail-pairs', { evV: evV, evA: evA, diffs: diffs }); say('测量不可靠（只配到 ' + diffs.length + ' 对），请再点一次校准，或直接拖滑杆', '#ffb454'); return; }
     diffs.sort((a, b) => a - b);
     const med = diffs[Math.floor((diffs.length - 1) / 2)];   // 下中位数（偶数个时取偏小的一侧）
     const spread = diffs[diffs.length - 1] - diffs[0];
-    if (spread > 260) { say('测量不稳定（相差 ' + Math.round(spread) + ' ms），请关掉别的声音再点一次', '#ffb454'); return; }
+    if (spread > 260) { avDiagReport('calib-fail-spread', { evV: evV, evA: evA, diffs: diffs }); say('测量不稳定（相差 ' + Math.round(spread) + ' ms），请关掉别的声音再点一次', '#ffb454'); return; }
     // 2026-11-08 P1b：把这次校准的原始事件暴露出来（只读诊断，方便远程排"校准不准/测不到"）。
     try { window.__paAvCalib = { med: Math.round(med), spread: Math.round(spread), evV: evV.slice(0), evA: evA.slice(0), pairs: diffs.slice(0), hidden: !!document.hidden }; } catch (e) { }
     // med = 声音到达时刻 − 画面到达时刻：正数=声音晚，负数=画面晚。
     // 在当前补偿的基础上累加，这样多点几次会逐步收敛（且换网络后能重新对齐）。
+    avDiagReport('calib-ok', { evV: evV, evA: evA, diffs: diffs, med: med, spread: spread });
     const curV = loadAvSync(), curA = loadAvAudio();
     if (med > 25) {
       const v = applyAvSync(Math.max(0, Math.min(400, curV + Math.round(med / 10) * 10)));
@@ -1449,7 +1553,7 @@ async function rtc264AudioStart() {
         if (e.receiver) {
           // 2026-11-08 P1b：「声音延后」补偿在这条旧纯音频连接上也要生效（P1 失败时的回退路径）
           RTC264.audioReceiver = e.receiver;
-          if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvAudio();
+          if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + effectiveAudioDelay();
           if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
         }
       } catch (err) { }
@@ -6119,6 +6223,7 @@ body += setSection('音画同步（清晰模式）',
   + '<input id="avAudio" type="range" min="0" max="400" step="10" value="' + loadAvAudio() + '" style="flex:1;min-width:130px">'
   + '<span id="avAudioVal" style="color:#8CE58C;font-size:12.5px;min-width:70px">' + loadAvAudio() + ' ms</span>'
   + '</div>'
+  + '<div style="font-size:11.5px;color:#6b7078;margin-top:6px">自动对齐：电脑端按实测把声音压后到与画面同拍；这里显示手机端再补的抖动补偿 <b id="avAutoVal" style="color:#8CE58C">' + effectiveAudioDelay() + ' ms</b>（自动收敛，不用手动调）</div>'
   + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
   + '<button id="avCalib" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 14px;font-size:12.5px;cursor:pointer">一次性自动校准</button>'
   + '<button id="avReset" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:8px 12px;font-size:12.5px;cursor:pointer">重置为 0</button>'

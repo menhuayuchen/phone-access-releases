@@ -35,7 +35,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const sidecarVersion = "0.4.0"
+const sidecarVersion = "0.5.0"
 
 // 2026-11-08 P1b：两轨共用同一个时钟原点（epoch）——视频按"帧到达侧车的时刻"、
 // 音频按"内容累计时间 + epoch 起点"。之前视频轨用 TrackLocalStaticSample，
@@ -145,6 +145,21 @@ func (s *session) pump() {
 			s.sent.Add(1)
 			s.lastSent.Store(time.Now().UnixMilli())
 			lastVideoTsUs.Store(f.tsUs)
+			// 自动对齐的输入：视频到达时刻 − 音频内容时刻（慢速均值，约 1 秒窗口）。
+			// 音频断过（超过 400ms 没写出）就不采信，避免把旧值当基准。
+			if a := lastAudioTsUs.Load(); a > 0 && time.Now().UnixMilli()-lastAudioWriteAt.Load() < 400 {
+				sk := f.tsUs - a
+				if sk < -500_000 {
+					sk = -500_000
+				} else if sk > 500_000 {
+					sk = 500_000
+				}
+				if old := skewEmaUs.Load(); old == 0 {
+					skewEmaUs.Store(sk)
+				} else {
+					skewEmaUs.Store(old + (sk-old)/60)
+				}
+			}
 		}
 	}
 }
@@ -190,6 +205,19 @@ var (
 	lastVideoTsUs atomic.Int64
 	lastAudioTsUs atomic.Int64
 	audioDelayMs  int
+	// 2026-11-08 P1c：发送端自动音画对齐。
+	// Pion 的 sender report 把 RTP 时间戳锚在"发包时刻"，浏览器因此认为两条轨都是
+	// "刚刚采集的"，它只会把画面往后挪（声音是基准），结构上无法修正"画面本来就晚"。
+	// 所以必须在发送端把声音也压后，目标是让"同一个真实时刻"的两轨同时发出去。
+	audioAutoAlign   bool
+	audioDelayCur    atomic.Int64 // 当前实际压后（毫秒）
+	skewEmaUs        atomic.Int64 // 视频到达时刻 − 音频内容时刻 的慢速均值（µs）
+	lastAudioWriteAt atomic.Int64 // 最近一次真正写出音频的墙钟（毫秒）
+	audioCh          = make(chan audioPkt, 512)
+	audioQueued      atomic.Int64
+	audioDelayLearned atomic.Int64
+	audioWrites      atomic.Uint64 // 累计写出的音频包数（自动对齐要等音频稳定后再决策） // 上一次会话学到的音频压后值（跨会话复用，避免每场都重新抖一次）
+	audioDropped     atomic.Uint64
 	// 音频输入诊断：最近一块 PCM 的峰值（0..32767）与到达时间、块数。
 	audioPeak      atomic.Int64
 	audioPeakAt    atomic.Int64
@@ -674,8 +702,13 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"turnOk":       tok,
 		"turnPort":     tp,
 		"avSkewMs":     skew,
-		"avResidualMs": skew - int64(audioDelayMs),
-		"audioDelayMs": audioDelayMs,
+		"avResidualMs": skew - audioDelayCur.Load(),
+		"audioDelayMs": audioDelayCur.Load(),
+		"audioAlignOn": audioAutoAlign,
+		"audioAlignTarget": audioTargetMs(audioDelayCur.Load()),
+		"skewEmaMs":    skewEmaUs.Load() / 1000,
+		"audioQueued":  audioQueued.Load(),
+		"audioDropped": audioDropped.Load(),
 		"videoTsMs":    vUs / 1000,
 		"audioTsMs":    aUs / 1000,
 		"audioPeak":    audioPeak.Load(),
@@ -745,7 +778,8 @@ func main() {
 	tcpAddr := flag.String("tcp", "", "监听 TCP 接收帧：addr:port")
 	audioAddr := flag.String("audio", "", "监听 TCP 接收音频帧：addr:port")
 	opusDLL := flag.String("opus-dll", "", "opus.dll 路径")
-	audioDelay := flag.Int("audio-delay", 0, "音频发送端延迟（毫秒）：把音频整轨推后，用来对齐视频链路的固有延迟")
+	audioDelay := flag.Int("audio-delay", 0, "音频发送端延迟（毫秒，固定值）：把音频整轨推后，用来对齐视频链路的固有延迟；给了就关闭自动对齐")
+	audioAlign := flag.Bool("audio-align", false, "自动把音频压后到与视频同拍（按实测到达差，每会话最多调两步；默认关，配置 rtc264.audioAutoAlign=true 打开）")
 	turnPort := flag.Int("turn-port", 3478, "内置 TURN 的 UDP 端口，0 表示关闭")
 	turnIP := flag.String("turn-ip", "", "覆盖 TURN 中继/监听地址（默认取第一个 tailnet IP）")
 	logFile := flag.String("log", "", "日志文件（可选）")
@@ -763,8 +797,12 @@ func main() {
 	if audioDelayMs > 600 {
 		audioDelayMs = 600
 	}
+	// 2026-11-08 P1c：手动给了 -audio-delay 就走固定值，否则默认自动对齐。
+	audioAutoAlign = *audioAlign && audioDelayMs == 0
 	if audioDelayMs > 0 {
-		logf("音频发送端延迟 %dms（对齐视频链路延迟）", audioDelayMs)
+		logf("音频发送端延迟 %dms（固定值，关闭自动对齐）", audioDelayMs)
+	} else if audioAutoAlign {
+		logf("音频自动对齐已开启（按 视频到达−音频内容 的慢速均值收敛，上限 400ms）")
 	}
 
 	me := &webrtc.MediaEngine{}

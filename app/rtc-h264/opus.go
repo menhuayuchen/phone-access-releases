@@ -86,6 +86,7 @@ func startAudioFeed(addr string, enc *opusEncoder) {
 		return
 	}
 	logf("audio feed listening %s", addr)
+	startAudioPacer()
 	go func() {
 		for {
 			conn, err := ln.Accept()
@@ -125,6 +126,106 @@ func writeAudioAll(payload []byte, ts uint32) {
 	audioMu.Unlock()
 	// 音频内容时间（µs，相对 epoch）：ts 是 48kHz 计数，换算回微秒。
 	lastAudioTsUs.Store(int64(ts) * 1_000_000 / 48000)
+	lastAudioWriteAt.Store(time.Now().UnixMilli())
+	audioWrites.Add(1)
+}
+
+// audioPkt 是编码好、等着按节拍吐出去的一包音频。
+type audioPkt struct {
+	at      time.Time // 进入发送队列的时刻（用来算"已经压了多久"）
+	payload []byte
+	ts      uint32
+}
+
+// 所有音频连接共用一条输出队列 + 一个节拍器：
+//   · 节拍器（4ms tick，一次最多吐一包）把音频从"跟着 PCM 到达抖"变成"按 10ms 匀速"；
+//   · 同时按 audioTargetMs() 把音频整体压后，用来对齐视频链路固有的延迟。
+func startAudioPacer() {
+	go audioPacer()
+}
+
+func audioPacer() {
+	tick := time.NewTicker(5 * time.Millisecond)
+	defer tick.Stop()
+	q := make([]audioPkt, 0, 256)
+	curMs := audioDelayLearned.Load() // 上一次会话学到的值（0 = 还没学到）
+	audioDelayCur.Store(curMs)
+	frozen := curMs > 0 // 有历史值就直接用，不再中途动
+	steps := 0
+	lastStep := time.Now()
+	for now := range tick.C {
+		// 收包
+		for len(audioCh) > 0 {
+			q = append(q, <-audioCh)
+		}
+		if len(q) > 250 { // 超过 2.5 秒就丢最旧的，宁可断续也不让时间轴无限拖后
+			drop := len(q) - 250
+			q = q[drop:]
+			audioDropped.Add(uint64(drop))
+		}
+		// 2026-11-08 P1c：**最多调两步，之后冻结**。
+		// 实测中途反复微调（+13ms、-20ms…）会让 Chrome 的 NetEq 每次都重新涨缓冲
+		// （音频抖动缓冲 58→165ms 一路爬），反而越调越歪。
+		// 起步那次采样常常被启动抖动污染（实测 4 秒时算出 83ms，真实值只有 ~30ms），
+		// 所以要求"已经写了 5 秒音频"再算，并允许纠一次。
+		if audioAutoAlign && audioDelayMs == 0 && !frozen &&
+			steps < 2 && audioWrites.Load() > 500 && now.Sub(lastStep) > 6*time.Second {
+			target := audioTargetMs(curMs)
+			if d := target - curMs; d > 20 || d < -20 {
+				curMs = target
+				audioDelayCur.Store(curMs)
+				audioDelayLearned.Store(curMs)
+				steps++
+				lastStep = now
+				if steps >= 2 {
+					frozen = true
+				}
+				logf("自动对齐：音频压后 %dms（第 %d 步，实测 视频到达−音频内容 = %dms）", curMs, steps, skewEmaUs.Load()/1000)
+			} else {
+				frozen = true
+				logf("自动对齐：实测差 %dms，不需要再压（冻结在 %dms）", skewEmaUs.Load()/1000, curMs)
+			}
+		}
+		audioQueued.Store(int64(len(q)))
+		// 把到期的包都吐出去（Windows ticker 实际十几毫秒一次，必须一次吐完，
+		// 否则喂不动 100 包/秒，队列会越积越多）。
+		delay := time.Duration(curMs) * time.Millisecond
+		n := 0
+		for len(q) > 0 && now.Sub(q[0].at) >= delay {
+			p := q[0]
+			q = q[1:]
+			writeAudioAll(p.payload, p.ts)
+			n++
+			if n > 60 {
+				break
+			}
+		}
+	}
+}
+
+// audioTargetMs 算出音频应该比视频压后多少毫秒。
+//   · -audio-delay N  > 0：按固定值（手动，关自动）；
+//   · 否则自动：用视频到达时刻 − 音频内容时刻的慢速均值做积分，
+//     目标是把两者差压到 0（也就是"同一个真实时刻，两轨同时发出去"）。
+func audioTargetMs(curMs int64) int64 {
+	if audioDelayMs > 0 {
+		return int64(audioDelayMs)
+	}
+	if !audioAutoAlign {
+		return 0
+	}
+	ema := skewEmaUs.Load()
+	if ema == 0 {
+		return curMs
+	}
+	t := curMs - ema/1000
+	if t < 0 {
+		t = 0
+	}
+	if t > 400 {
+		t = 400
+	}
+	return t
 }
 
 func readAudioFeed(conn net.Conn, enc *opusEncoder) {
@@ -132,23 +233,6 @@ func readAudioFeed(conn net.Conn, enc *opusEncoder) {
 	hdr := make([]byte, 16)
 	var tsAcc uint32
 	var inited bool
-
-	// 发送端延迟队列（-audio-delay）：只在这一条音频管道里排队，
-	// 用独立的 goroutine 按 "入队时刻 + delay" 到期吐包，不跟着 PCM 到达节奏抖。
-	queue := make(chan audioOut, 64)
-	delay := time.Duration(audioDelayMs) * time.Millisecond
-	if audioDelayMs > 0 {
-		go func() {
-			for p := range queue {
-				if wait := time.Until(p.due); wait > 0 {
-					time.Sleep(wait)
-				}
-				writeAudioAll(p.payload, p.ts)
-			}
-		}()
-		var closeOnce sync.Once
-		defer closeOnce.Do(func() { close(queue) })
-	}
 
 	epochTicks := func() uint32 { return uint32(usSinceEpoch() * 48000 / 1_000_000) }
 
@@ -201,13 +285,17 @@ func readAudioFeed(conn net.Conn, enc *opusEncoder) {
 		}
 		ts := tsAcc
 		tsAcc += samplesPerCh
-		if audioDelayMs > 0 {
-			select {
-			case queue <- audioOut{due: time.Now().Add(delay), payload: packet, ts: ts}:
-			default: // 队列满：丢这一包，宁可短暂断续也不要拖时间轴
-			}
-		} else {
+		// 2026-11-08 P1c：延迟为 0 时**直接写**，不经过队列——队列由 Windows 的
+		// 十几毫秒 ticker 驱动，会白给音频加一层 15ms 抖动（实测把 Chrome 的音频
+		// 抖动缓冲从 60ms 顶到 95~285ms）。只有真的要压后时才排队。
+		if audioDelayCur.Load() <= 0 && audioDelayMs <= 0 {
 			writeAudioAll(packet, ts)
+			continue
+		}
+		select {
+		case audioCh <- audioPkt{at: time.Now(), payload: packet, ts: ts}:
+		default:
+			audioDropped.Add(1)
 		}
 	}
 }

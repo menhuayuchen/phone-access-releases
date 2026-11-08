@@ -894,6 +894,9 @@ function start264() {
     // 不依赖浏览器支持音频 jitterBufferTarget（老内核/老手机只能这样）。默认 0 = 不动。
     const aDelay = Number(CFG264.audioDelayMs) || 0;
     if (aDelay > 0) args.push('-audio-delay', String(aDelay));
+    // 2026-11-08 P1c：自动对齐（默认开）。它按"视频到达 − 音频内容"的实测差值把音频压后，
+    // 让同一个真实时刻的两轨同时发出去——Pion 的时间戳锚在发包时刻，浏览器自己修不了"画面晚"。
+    if (CFG264.audioAutoAlign === true) args.push('-audio-align=true');
     if (RTC264_TURN_PORT > 0) args.push('-turn-port', String(RTC264_TURN_PORT));
     const logPath = join(HERE, 'rtc-h264', 'sidecar.log');
     try { if (statSync(logPath).size > 1024 * 1024) renameSync(logPath, logPath + '.1'); } catch { }
@@ -4644,6 +4647,22 @@ async function handler(req, res) {
   if (url.pathname === '/restart-service' && req.method === 'POST') {
     try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end('{"ok":true,"restarting":true}'); } catch (e) { }
     setTimeout(() => { try { process.exit(0); } catch (e) { } }, 300);
+    return;
+  }
+
+  // 2026-11-08 P1c：手机端音画诊断上报（校准失败/成功、自动对齐状态）。
+  // 手机上的现象看不到，就让它自己把数字发回来，写进 avsync-diag.log，下次排障不用猜。
+  if (url.pathname === '/avdiag' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { if (body.length < 65536) body += c; });
+    req.on('end', () => {
+      try {
+        const line = new Date().toISOString() + ' ' + (body || '{}').replace(/[\r\n]+/g, ' ').slice(0, 4000);
+        appendFileSync(join(HERE, 'avsync-diag.log'), line + '\n');
+        console.log('avdiag: ' + line.slice(24, 400));
+      } catch { }
+      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end('{"ok":true}'); } catch { }
+    });
     return;
   }
 
