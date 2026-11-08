@@ -1086,15 +1086,64 @@ try {
     Add-EnvCheck '安装盘剩余空间' $false '读不到安装盘剩余空间' $false '不影响安装，卖家会远程帮你确认。'
   }
 
-  # 2.5 能不能出网到 Tailscale（硬门槛 H4）
-  $networkOk = Test-TcpPort -HostName 'login.tailscale.com' -Port 443 -TimeoutMs 6000
-  Add-EnvCheck '能不能连上 Tailscale 登录服务器' $networkOk $(if ($networkOk) { '能连上（login.tailscale.com）' } else { '连不上（login.tailscale.com:443）' }) $true `
+  # 2.5 能不能出网到 Tailscale（2026-11-08 改为软门槛）
+  # 旧逻辑只测 login.tailscale.com:443 且失败就中止安装 —— 在"只有 IPv4 / 被墙 / 虚拟机没有 IPv6"的机器上会误杀。
+  # 实测：这台能用 Tailscale 的机器其实是走 IPv6 连 2606:b740:1:20::102；VMware NAT 的虚拟机没有 IPv6，IPv4 又被挡，必然失败。
+  # 新逻辑：① Tailscale 已安装且已登录（BackendState=Running）→ 直接通过，不再探测；
+  #         ② 否则 controlplane / login 两个域名 × IPv4/IPv6 任意一条能通即通过；
+  #         ③ 仍失败只警告、不阻断安装（装完在手机设置里能看到 Tailscale 状态）。
+  $networkOk = $false
+  $networkDetail = ''
+  $tsAlreadyRunning = $false
+  try {
+    $tsCandidates = @()
+    if ($env:ProgramFiles) { $tsCandidates += (Join-Path $env:ProgramFiles 'Tailscale\tailscale.exe') }
+    if (${env:ProgramFiles(x86)}) { $tsCandidates += (Join-Path ${env:ProgramFiles(x86)} 'Tailscale\tailscale.exe') }
+    foreach ($tsExe in $tsCandidates) {
+      if (-not (Test-Path -LiteralPath $tsExe)) { continue }
+      try {
+        $stRaw = (& $tsExe status --json 2>$null | Out-String)
+        if ($stRaw -and $stRaw.Trim()) {
+          $stObj = $stRaw | ConvertFrom-Json
+          if ($stObj.BackendState -eq 'Running') { $tsAlreadyRunning = $true; break }
+        }
+      } catch { }
+    }
+  } catch { }
+  if ($tsAlreadyRunning) {
+    $networkOk = $true
+    $networkDetail = 'Tailscale 已安装并已登录（跳过网络探测）'
+  } else {
+    # 总探测预算 15 秒，避免网络极差时安装器卡 1 分多钟（每个地址 3 秒、每个地址族最多试 2 个）
+    $probeDeadline = (Get-Date).AddSeconds(15)
+    foreach ($h in @('controlplane.tailscale.com', 'login.tailscale.com')) {
+      if ($networkOk -or (Get-Date) -gt $probeDeadline) { break }
+      foreach ($fam in @('InterNetwork', 'InterNetworkV6')) {
+        if ($networkOk -or (Get-Date) -gt $probeDeadline) { break }
+        try {
+          $addrs = @([System.Net.Dns]::GetHostAddresses($h) | Where-Object { $_.AddressFamily.ToString() -eq $fam } | Select-Object -First 2)
+          foreach ($a in $addrs) {
+            if ((Get-Date) -gt $probeDeadline) { break }
+            $ipTxt = $a.IPAddressToString
+            if (Test-TcpPort -HostName $ipTxt -Port 443 -TimeoutMs 3000) {
+              $networkOk = $true
+              if ($fam -eq 'InterNetwork') { $networkDetail = '能连上（' + $h + ' / IPv4）' }
+              else { $networkDetail = '能连上（' + $h + ' / IPv6）' }
+              break
+            }
+          }
+        } catch { }
+      }
+    }
+    if (-not $networkOk) { $networkDetail = '连不上 Tailscale（controlplane/login，IPv4+IPv6 都试过）' }
+  }
+  Add-EnvCheck '能不能连上 Tailscale' $networkOk $networkDetail $false `
     (@(
-      '你的网络连不上 Tailscale 的登录服务器。手机端唯一的入口就是它，连不上就装不了。',
-      '按顺序试：',
+      '网络连不上 Tailscale 的服务器（controlplane/login 两个都试过 IPv4+IPv6）。',
+      '不影响继续安装，但装好后手机可能连不上电脑。按顺序试：',
       '  1) 先确认这台电脑能正常打开网页；',
-      '  2) 如果用的是公司/学校网络，换手机热点试一次；',
-      '  3) 还是不行，把这份报告发给卖家。'
+      '  2) 公司/学校网络常限制 Tailscale，换手机热点试一次；',
+      '  3) 如果这台电脑已经装过 Tailscale 并登录过，通常可以直接用；仍不行把报告发给卖家。'
     ) -join "`n")
 
   # 2.6 .NET 运行环境（软门槛：抓屏/声音程序是 .NET 编译的）
