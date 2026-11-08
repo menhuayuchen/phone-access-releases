@@ -841,6 +841,7 @@ const RTC264_PORT = Number(CFG264.port) || 9800;
 const RTC264_FEED_PORT = Number(CFG264.feedPort) || 9900;
 const RTC264_AUDIO_PORT = RTC264_FEED_PORT + 2;   // 2026-11-08 P1：音频帧输入（带 µs 时间戳）
 let conn264Audio = null;
+let conn264AudioRetry = 0;   // 音频帧输入的重连次数（侧车刚起来时端口还没 listen）
 const RTC264_EXE = join(HERE, 'rtc-h264', 'rtc-h264.exe');
 const RTC264_TURN_PORT = CFG264.turn === false ? 0 : (Number(CFG264.turnPort) || 3478);
 let rtc264Spawning = false;
@@ -889,6 +890,10 @@ function start264() {
     if (side264) return;
     const args = ['-port', String(RTC264_PORT), '-tcp', '127.0.0.1:' + RTC264_FEED_PORT];
     if (CFG264.audioSync) args.push('-audio', '127.0.0.1:' + RTC264_AUDIO_PORT, '-opus-dll', join(HERE, 'rtc-h264', 'opus.dll'));
+    // 2026-11-08 P1b：发送端音频延迟（毫秒）。画面本来就比声音慢时，把声音整轨推后去对齐，
+    // 不依赖浏览器支持音频 jitterBufferTarget（老内核/老手机只能这样）。默认 0 = 不动。
+    const aDelay = Number(CFG264.audioDelayMs) || 0;
+    if (aDelay > 0) args.push('-audio-delay', String(aDelay));
     if (RTC264_TURN_PORT > 0) args.push('-turn-port', String(RTC264_TURN_PORT));
     const logPath = join(HERE, 'rtc-h264', 'sidecar.log');
     try { if (statSync(logPath).size > 1024 * 1024) renameSync(logPath, logPath + '.1'); } catch { }
@@ -921,9 +926,17 @@ function connect264Audio() {
   const c = net.connect(RTC264_AUDIO_PORT, '127.0.0.1');
   conn264Audio = c;
   try { c.setNoDelay(true); } catch { }
-  c.on('connect', () => console.log('rtc264: 音频帧输入已连接'));
+  c.on('connect', () => { conn264AudioRetry = 0; console.log('rtc264: 音频帧输入已连接'); });
   c.on('error', () => { });
-  c.on('close', () => { if (conn264Audio === c) conn264Audio = null; });
+  c.on('close', () => {
+    if (conn264Audio === c) conn264Audio = null;
+    // 2026-11-08：侧车刚拉起来时端口还没 listen，第一次连必然被拒。
+    // 原来这里没有重连，音频就永远连不上（P1 实测：画面正常、没声音）。
+    if (CFG264.audioSync && side264 && conn264AudioRetry < 600) {
+      conn264AudioRetry++;
+      setTimeout(connect264Audio, Math.min(400 * conn264AudioRetry, 5000));
+    }
+  });
 }
 function send264Audio(pcm) {
   if (!CFG264.audioSync || !conn264Audio || !pcm || !pcm.length) return;
@@ -977,6 +990,8 @@ function onHealth264() {
     h264Ensure();                     // 有会话就必须有编码器（上一只在退就排队）
     // 帧输入断了先补帧输入：重启 ffmpeg 也喂不进侧车，只会白折腾
     if ((!conn264 || conn264.destroyed) && side264) connect264Feed();
+    // 音频帧输入同理（P1 打开音频时；侧车重启后这一条必须补）
+    if (CFG264.audioSync && (!conn264Audio || conn264Audio.destroyed) && side264) connect264Audio();
     const feedOk = !!conn264 && !conn264.destroyed && conn264.writable;
     const ranFor = h264.startedAt ? now - h264.startedAt : 0;
     if (feedOk && h264.proc && ranFor > 15000 && rtc264Status.lastFrameMs > 8000 && now - rtc264RestartAt > 30000) {

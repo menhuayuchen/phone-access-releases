@@ -29,39 +29,68 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/rtp"
+	"github.com/pion/rtp/codecs"
 	"github.com/pion/turn/v4"
 	"github.com/pion/webrtc/v4"
-	"github.com/pion/webrtc/v4/pkg/media"
 )
 
-const sidecarVersion = "0.3.0"
+const sidecarVersion = "0.4.0"
+
+// 2026-11-08 P1b：两轨共用同一个时钟原点（epoch）——视频按"帧到达侧车的时刻"、
+// 音频按"内容累计时间 + epoch 起点"。之前视频轨用 TrackLocalStaticSample，
+// RTP 时间戳是按帧率合成的（每帧固定 +1/60 秒），采集/编码实际不是 60fps 时
+// 视频时间轴就跟真实时间脱节；音频却是累计真实时长，两条轨对不上。
+var epoch = time.Now()
+
+// usSinceEpoch 返回相对 epoch 的微秒数（单调时钟，不受系统改时间影响）。
+func usSinceEpoch() int64 { return time.Since(epoch).Microseconds() }
 
 // ---------------------------------------------------------------- 会话
 
+// frame.tsUs 是这一帧到达侧车（=编码输出）的时刻，微秒，相对 epoch。
+// 视频 RTP 时间戳就用它换算：ts = tsUs * 90000 / 1e6。
 type frame struct {
 	data []byte
 	key  bool
+	tsUs int64
 }
 
 type session struct {
-	id       string
-	pc       *webrtc.PeerConnection
-	track    *webrtc.TrackLocalStaticSample
-	aTrack   *webrtc.TrackLocalStaticRTP
-	aSeq     uint16
-	aSent    atomic.Uint64
-	ch       chan frame
-	done     chan struct{}
-	created  time.Time
-	answered atomic.Bool
-	ready    atomic.Bool
-	stopped  atomic.Bool
-	closeOne sync.Once
-	keyMu    sync.Mutex
-	needKey  bool
-	sent     atomic.Uint64
-	lastSent atomic.Int64
-	dropped  atomic.Uint64
+	id        string
+	pc        *webrtc.PeerConnection
+	track     *webrtc.TrackLocalStaticRTP
+	payloader *codecs.H264Payloader
+	vSeq      uint16
+	vTsCache  uint32
+	vHasTs    bool
+	aTrack    *webrtc.TrackLocalStaticRTP
+	aSeq      uint16
+	aSent     atomic.Uint64
+	ch        chan frame
+	done      chan struct{}
+	created   time.Time
+	answered  atomic.Bool
+	ready     atomic.Bool
+	stopped   atomic.Bool
+	closeOne  sync.Once
+	keyMu     sync.Mutex
+	needKey   bool
+	sent      atomic.Uint64
+	lastSent  atomic.Int64
+	dropped   atomic.Uint64
+}
+
+// videoTs 把到达微秒换算成 90kHz RTP 时间戳，并保证同一会话内严格递增
+// （同一 µs 内到两帧、或到达顺序抖动时，RTP 时间戳回退会让浏览器把帧丢掉）。
+func (s *session) videoTs(tsUs int64) uint32 {
+	ts := uint32(tsUs * 90000 / 1_000_000)
+	if s.vHasTs && ts <= s.vTsCache {
+		ts = s.vTsCache + 1
+	}
+	s.vTsCache = ts
+	s.vHasTs = true
+	return ts
 }
 
 func (s *session) pump() {
@@ -82,13 +111,40 @@ func (s *session) pump() {
 				s.needKey = false
 			}
 			s.keyMu.Unlock()
-			if err := s.track.WriteSample(media.Sample{Data: f.data, Duration: sampleDur}); err != nil {
-				logf("session %s WriteSample: %v", s.id, err)
+
+			// 2026-11-08 P1b：自己分包 + 真实到达时间戳写 RTP（不再用
+			// TrackLocalStaticSample 的合成时间戳）。H.264 的 FU-A / STAP-A 由
+			// codecs.H264Payloader 负责，序号自己递增，同一帧的所有分片共用一个时间戳。
+			ts := s.videoTs(f.tsUs)
+			payloads := s.payloader.Payload(packetMTU, f.data)
+			if len(payloads) == 0 {
+				continue
+			}
+			writeErr := false
+			for i, pl := range payloads {
+				pkt := &rtp.Packet{
+					Header: rtp.Header{
+						Version:        2,
+						Marker:         i == len(payloads)-1,
+						SequenceNumber: s.vSeq,
+						Timestamp:      ts,
+					},
+					Payload: pl,
+				}
+				if err := s.track.WriteRTP(pkt); err != nil {
+					logf("session %s WriteRTP: %v", s.id, err)
+					writeErr = true
+					break
+				}
+				s.vSeq++
+			}
+			if writeErr {
 				go dropSession(s.id, "write-error")
 				return
 			}
 			s.sent.Add(1)
 			s.lastSent.Store(time.Now().UnixMilli())
+			lastVideoTsUs.Store(f.tsUs)
 		}
 	}
 }
@@ -106,8 +162,10 @@ func (s *session) feed(f frame) {
 
 var (
 	audioEnabled bool
-	api       *webrtc.API
-	sampleDur = time.Second / 60
+	api          *webrtc.API
+	sampleDur    = time.Second / 60
+	// packetMTU 与 Pion 内部 outboundMTU 一致（1200，扣掉 12 字节 RTP 头）。
+	packetMTU = uint16(1188)
 
 	mu       sync.Mutex
 	sessions = map[string]*session{}
@@ -125,6 +183,17 @@ var (
 	droppedFrames atomic.Uint64
 	lastFrameUnix atomic.Int64
 	startedAt     = time.Now()
+
+	// 2026-11-08 P1b 诊断：两条轨最近一次写出的绝对时间（µs，相对 epoch）。
+	// 两者之差 = 「视频链路比音频链路多延迟了多少」，也就是用户在手机上看到的音画差，
+	// 用 /health 的 avSkewMs 暴露出来（负=画面晚、正=声音晚）。
+	lastVideoTsUs atomic.Int64
+	lastAudioTsUs atomic.Int64
+	audioDelayMs  int
+	// 音频输入诊断：最近一块 PCM 的峰值（0..32767）与到达时间、块数。
+	audioPeak      atomic.Int64
+	audioPeakAt    atomic.Int64
+	audioPcmBlocks atomic.Uint64
 
 	logPath string
 
@@ -285,7 +354,9 @@ func newSession() (*session, error) {
 		return nil, err
 	}
 	id := randHex(6)
-	track, err := webrtc.NewTrackLocalStaticSample(webrtc.RTPCodecCapability{
+	// 2026-11-08 P1b：视频轨改成 TrackLocalStaticRTP（自己给真实到达时间戳），
+	// 不再用 TrackLocalStaticSample 的"每帧 +1/fps"合成时间戳。
+	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
 		MimeType:    webrtc.MimeTypeH264,
 		ClockRate:   90000,
 		SDPFmtpLine: "profile-level-id=42c032;packetization-mode=1;level-asymmetry-allowed=1",
@@ -311,14 +382,15 @@ func newSession() (*session, error) {
 		}
 	}
 	s := &session{
-		id:      id,
-		pc:      pc,
-		track:   track,
-		aTrack:  aTrack,
-		ch:      make(chan frame, 3),
-		done:    make(chan struct{}),
-		created: time.Now(),
-		needKey: true,
+		id:        id,
+		pc:        pc,
+		track:     track,
+		payloader: &codecs.H264Payloader{},
+		aTrack:    aTrack,
+		ch:        make(chan frame, 3),
+		done:      make(chan struct{}),
+		created:   time.Now(),
+		needKey:   true,
 	}
 	pc.OnConnectionStateChange(func(st webrtc.PeerConnectionState) {
 		logf("session %s connection=%s", id, st.String())
@@ -375,7 +447,10 @@ func liveCount() int {
 
 func feedFrame(data []byte, key bool) {
 	framesIn.Add(1)
-	lastFrameUnix.Store(time.Now().UnixMilli())
+	now := time.Now()
+	lastFrameUnix.Store(now.UnixMilli())
+	// 到达时刻（微秒，相对 epoch）：这就是视频 RTP 时间戳的基准。
+	tsUs := now.Sub(epoch).Microseconds()
 	mu.Lock()
 	ls := live
 	mu.Unlock()
@@ -387,7 +462,7 @@ func feedFrame(data []byte, key bool) {
 		if s.stopped.Load() {
 			continue
 		}
-		s.feed(frame{data: data, key: key})
+		s.feed(frame{data: data, key: key, tsUs: tsUs})
 	}
 }
 
@@ -580,17 +655,38 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 	turnMu.Lock()
 	tok, tp := turnOK, turnPort
 	turnMu.Unlock()
+	// P1b 诊断：视频/音频两条轨最近写出的绝对时间差（毫秒）。
+	// 负值 = 视频比音频晚（画面慢），正值 = 声音晚。手机上的实际音画差基本等于它。
+	vUs, aUs := lastVideoTsUs.Load(), lastAudioTsUs.Load()
+	skew := int64(-99999)
+	if vUs > 0 && aUs > 0 {
+		skew = (vUs - aUs) / 1000
+	}
 	writeJSON(w, 200, map[string]any{
-		"ok":          true,
-		"version":     sidecarVersion,
-		"uptimeSec":   int64(time.Since(startedAt).Seconds()),
-		"sessions":    n,
-		"pending":     pending,
-		"lastFrameMs": age,
-		"framesIn":    framesIn.Load(),
-		"dropped":     droppedFrames.Load(),
-		"turnOk":      tok,
-		"turnPort":    tp,
+		"ok":           true,
+		"version":      sidecarVersion,
+		"uptimeSec":    int64(time.Since(startedAt).Seconds()),
+		"sessions":     n,
+		"pending":      pending,
+		"lastFrameMs":  age,
+		"framesIn":     framesIn.Load(),
+		"dropped":      droppedFrames.Load(),
+		"turnOk":       tok,
+		"turnPort":     tp,
+		"avSkewMs":     skew,
+		"avResidualMs": skew - int64(audioDelayMs),
+		"audioDelayMs": audioDelayMs,
+		"videoTsMs":    vUs / 1000,
+		"audioTsMs":    aUs / 1000,
+		"audioPeak":    audioPeak.Load(),
+		"audioPeakAgeMs": func() int64 {
+			t := audioPeakAt.Load()
+			if t == 0 {
+				return -1
+			}
+			return time.Now().UnixMilli() - t
+		}(),
+		"audioBlocks": audioPcmBlocks.Load(),
 	})
 }
 
@@ -612,7 +708,10 @@ const pageHTML = `<!doctype html><html><head><meta charset="utf-8">
   const pc=new RTCPeerConnection({iceServers:ice,iceTransportPolicy:relay?'relay':'all'});
   window.__pc=pc;
   const v=document.getElementById('v');
-  pc.ontrack=(e)=>{ v.srcObject=new MediaStream([e.track]); };
+  // 2026-11-08 P1b：现在同一条 PC 有音频+视频两条轨，必须都加进同一个 MediaStream，
+  // 否则后到的 ontrack 会把 srcObject 整个换掉（视频轨被踢走，表现成"解了码但黑屏"）。
+  const stream=new MediaStream();
+  pc.ontrack=(e)=>{ stream.addTrack(e.track); v.srcObject=stream; };
   pc.oniceconnectionstatechange=()=>{ s.textContent='ice '+pc.iceConnectionState+(relay?' (relay-only)':''); };
   await pc.setRemoteDescription({type:'offer',sdp:o.sdp});
   const ans=await pc.createAnswer(); await pc.setLocalDescription(ans);
@@ -641,11 +740,12 @@ const pageHTML = `<!doctype html><html><head><meta charset="utf-8">
 func main() {
 	port := flag.Int("port", 9800, "本机 HTTP/信令端口（只在 127.0.0.1 监听）")
 	host := flag.String("host", "127.0.0.1", "HTTP 监听地址")
-	fps := flag.Int("fps", 60, "帧率（Sample 时长的分母）")
+	fps := flag.Int("fps", 60, "帧率（只用于 -loop 回放节奏；视频时间戳已改真实到达时刻）")
 	loop := flag.Bool("loop", false, "回放 stdin 收到的帧（测试模式）")
 	tcpAddr := flag.String("tcp", "", "监听 TCP 接收帧：addr:port")
 	audioAddr := flag.String("audio", "", "监听 TCP 接收音频帧：addr:port")
 	opusDLL := flag.String("opus-dll", "", "opus.dll 路径")
+	audioDelay := flag.Int("audio-delay", 0, "音频发送端延迟（毫秒）：把音频整轨推后，用来对齐视频链路的固有延迟")
 	turnPort := flag.Int("turn-port", 3478, "内置 TURN 的 UDP 端口，0 表示关闭")
 	turnIP := flag.String("turn-ip", "", "覆盖 TURN 中继/监听地址（默认取第一个 tailnet IP）")
 	logFile := flag.String("log", "", "日志文件（可选）")
@@ -655,6 +755,16 @@ func main() {
 	sampleDur = time.Second / time.Duration(*fps)
 	if *fps <= 0 {
 		sampleDur = time.Second / 60
+	}
+	audioDelayMs = *audioDelay
+	if audioDelayMs < 0 {
+		audioDelayMs = 0
+	}
+	if audioDelayMs > 600 {
+		audioDelayMs = 600
+	}
+	if audioDelayMs > 0 {
+		logf("音频发送端延迟 %dms（对齐视频链路延迟）", audioDelayMs)
 	}
 
 	me := &webrtc.MediaEngine{}
@@ -694,18 +804,20 @@ func main() {
 		addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 		logf("HTTP 信令监听 %s（版本 %s）", addr, sidecarVersion)
 		if *audioAddr != "" {
-		dll := *opusDLL
-		if dll == "" { dll = "opus.dll" }
-		enc, err := newOpusEncoder(dll)
-		if err != nil {
-			logf("opus init failed: %v", err)
-		} else {
-			audioEnabled = true
-			startAudioFeed(*audioAddr, enc)
-			logf("audio track enabled (dll=%s)", dll)
+			dll := *opusDLL
+			if dll == "" {
+				dll = "opus.dll"
+			}
+			enc, err := newOpusEncoder(dll)
+			if err != nil {
+				logf("opus init failed: %v", err)
+			} else {
+				audioEnabled = true
+				startAudioFeed(*audioAddr, enc)
+				logf("audio track enabled (dll=%s)", dll)
+			}
 		}
-	}
-	if err := http.ListenAndServe(addr, nil); err != nil {
+		if err := http.ListenAndServe(addr, nil); err != nil {
 			logf("HTTP 退出：%v", err)
 		}
 	}()

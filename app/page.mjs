@@ -989,6 +989,12 @@ function stopRtc264() {
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
   try { rtc264AudioStop(); } catch (e) { }
+  // 2026-11-08 P1b：同 PC 音频的状态必须一起清，否则重连后 audioSamePc 还是 true，
+  // 音频会永远不再建立（P1 回退到旧纯音频连接时也永远起不来）。
+  R.audioSamePc = false;
+  R.audioTrack = null;
+  R.audioReceiver = null;
+  R.videoReceiver = null;
   R.media = null;
   if (R.pc) {
     try { R.pc.ontrack = null; R.pc.oniceconnectionstatechange = null; R.pc.close(); } catch (e) { }
@@ -1061,15 +1067,25 @@ async function startRtc264() {
       try {
         try {
           if (e.receiver) {
-            RTC264.videoReceiver = e.receiver;
-            if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvSync();
-            if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+            // 2026-11-08 P1b：音/视频各自的 receiver 分开记。
+            // 原来不分 kind 一律写成 videoReceiver，音频轨到达后把视频的覆盖掉了，
+            // 结果滑杆/校准全作用在音频 receiver 上（校准时还会 400ms 就报错退出）。
+            if (e.track.kind === 'audio') {
+              RTC264.audioReceiver = e.receiver;
+              if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvAudio();
+              if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+            } else {
+              RTC264.videoReceiver = e.receiver;
+              if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvSync();
+              if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+            }
           }
         } catch (err) { }
         if (e.track.kind === 'audio') {
           // 2026-11-08 P1：同一条 PC 送来的音频，直接用（Chrome 会自动对齐音画）
           R.audioSamePc = true;
-          try { if (e.receiver) { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20; if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } } catch (err) { }
+          // P1b：P1 漏了这一步——校准/统计都靠 RTC264.audioTrack，null 时校准直接说"音频还没连上"
+          try { RTC264.audioTrack = e.track; } catch (err) { }
           try { R.media.addTrack(e.track); } catch (err) { }
           try { vid.muted = !state.audio; } catch (err) { }
           return;
@@ -1248,9 +1264,12 @@ function rtc264AudioStop() {
 function rtc264AudioUsePcm() {
   try { return new URLSearchParams(location.search).get('audio') === 'pcm'; } catch (e) { return false; }
 }
-// 2026-11-08 音画同步：C 方案滑杆 + 一次性自动校准。
-// 声音/画面是两条独立链路；实测一次"白闪 vs 提示音"的到达时差，然后把画面按同一时钟往后挪。
-// 只挪画面（jitterBufferTarget 毫秒延迟），因为实测常见是"声音比画面晚"。
+// 2026-11-08 音画同步：滑杆 + 一次性自动校准。
+// 声音/画面是两条独立链路；实测一次"白闪 vs 提示音"的到达时差，然后按同一时钟错开。
+// 两个方向都要能补：
+//   · 声音比画面晚 → 延迟画面（jitterBufferTarget 加在视频 receiver 上）
+//   · 画面比声音晚（更常见：视频要采集+编码+大码率排队）→ 延迟声音（Chrome 支持音频 receiver 的
+//     jitterBufferTarget，2026-11-08 lab 实测：目标 200ms → 实际播出晚 166~188ms，基本 1:1）
 function loadAvSync() {
   try { const v = parseInt(localStorage.getItem('paAvSync') || '0', 10); return isFinite(v) ? Math.max(0, Math.min(400, v)) : 0; } catch (e) { return 0; }
 }
@@ -1271,6 +1290,26 @@ function applyAvSync(ms) {
   if (vl) vl.textContent = m + ' ms';
   return m;
 }
+function loadAvAudio() {
+  try { const v = parseInt(localStorage.getItem('paAvAudio') || '0', 10); return isFinite(v) ? Math.max(0, Math.min(400, v)) : 0; } catch (e) { return 0; }
+}
+function saveAvAudio(ms) {
+  const m = Math.max(0, Math.min(400, Math.round(Number(ms) || 0)));
+  try { localStorage.setItem('paAvAudio', String(m)); } catch (e) { }
+  return m;
+}
+function applyAvAudio(ms) {
+  const m = saveAvAudio(ms == null ? loadAvAudio() : ms);
+  try {
+    const r = RTC264 && RTC264.audioReceiver;
+    if (r && ('jitterBufferTarget' in r)) r.jitterBufferTarget = 20 + m;
+  } catch (e) { }
+  const sl = document.querySelector('#avAudio');
+  if (sl) sl.value = String(m);
+  const vl = document.querySelector('#avAudioVal');
+  if (vl) vl.textContent = m + ' ms';
+  return m;
+}
 async function avCalibrate() {
   const msg = document.querySelector('#avMsg');
   const btn = document.querySelector('#avCalib');
@@ -1278,11 +1317,9 @@ async function avCalibrate() {
   if (state.mode !== 'h264') { say('先切到「清晰」模式再校准', '#ffb454'); return; }
   if (!state.audio) { say('先打开「声音」再校准', '#ffb454'); return; }
   const track = (RTC264 && RTC264.audioTrack) || null;
-  const recv = RTC264 && RTC264.videoReceiver;
   if (!track) { say('音频还没连上，等 2 秒再点一次', '#ffb454'); return; }
   if (btn) { btn.disabled = true; btn.style.opacity = '.6'; }
   say('正在准备校准…', '#868c96');
-  try { if (recv && ('jitterBufferTarget' in recv)) recv.jitterBufferTarget = 20; } catch (e) { }
   const AC = window.AudioContext || window.webkitAudioContext;
   if (!AC) { say('这个浏览器不支持自动校准，请用滑杆手动调', '#ffb454'); if (btn) { btn.disabled = false; btn.style.opacity = '1'; } return; }
   const actx = new AC();
@@ -1292,6 +1329,10 @@ async function avCalibrate() {
     analyser = actx.createAnalyser();
     analyser.fftSize = 1024;
     src.connect(analyser);
+    // 2026-11-08 P1b：分析器必须挂到 destination 上（中间串一个 0 增益，不会多出声），
+    // 否则这条 WebAudio 图没有"输出端"，Chrome 不一定按实时拉数据，
+    // getFloatTimeDomainData 可能读到过期/空白块——实测表现为"3 声只测到 2 声、还错位"。
+    try { const mute = actx.createGain(); mute.gain.value = 0; analyser.connect(mute); mute.connect(actx.destination); } catch (e) { }
     await Promise.race([actx.resume(), new Promise((r) => setTimeout(r, 1500))]);
     if (actx.state !== 'running') {
       say('浏览器没让音频上下文启动：先点一下画面再点校准，或用下面的滑杆手动调', '#ffb454');
@@ -1309,13 +1350,16 @@ async function avCalibrate() {
   const evV = [], evA = [];
   let armedV = true, lastA = 0, running = true;
   const t0 = performance.now();
+  // 2026-11-08 P1b：窗口从 6.5s 放到 11s。PowerShell 拉起 + 三次白闪本身就要 4~6 秒，
+  // 冷启动（第一次校准）经常 8 秒才闪完，原来的 6.5 秒会漏掉后面的提示音。
+  const WIN_MS = 11000;
   const hardStop = setTimeout(() => {
     if (!running) return;
     running = false;
     try { actx.close(); } catch (e) { }
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
     say('校准超时：请用下面的滑杆手动调', '#ffb454');
-  }, 12000);
+  }, 18000);
   const audioTick = () => {
     if (!running) return;
     const t = performance.now();
@@ -1324,7 +1368,7 @@ async function avCalibrate() {
     for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
     rms = Math.sqrt(rms / buf.length);
     if (rms > 0.10 && t - lastA > 350) { evA.push(t); lastA = t; }
-    if (t - t0 < 6500) setTimeout(audioTick, 10);
+    if (t - t0 < WIN_MS) setTimeout(audioTick, 10);
   };
   audioTick();
   const finish = () => {
@@ -1334,25 +1378,42 @@ async function avCalibrate() {
     if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
     if (evV.length < 1) { say('没检测到白闪：确认手机显示的是电脑画面、没有暂停', '#ffb454'); return; }
     if (evA.length < 1) { say('没听到提示音：确认「声音」开着、手机没静音', '#ffb454'); return; }
+    // 2026-11-08 P1b：把这次校准的原始事件暴露出来（只读诊断，方便远程排"校准不准/测不到"）。
+    try { window.__paAvCalib = { evV: evV.slice(0), evA: evA.slice(0), hidden: !!document.hidden }; } catch (e) { }
     const diffs = [];
     for (const tv of evV) {
       let best = null;
       for (const ta of evA) { if (best == null || Math.abs(ta - tv) < Math.abs(best - tv)) best = ta; }
       if (best != null) { const d = best - tv; if (d > -600 && d < 900) diffs.push(d); }
     }
-    if (!diffs.length) { say('测量失败，请用滑杆手动调', '#ffb454'); return; }
+    // 2026-11-08 P1b：配对太少/离散太大就判"测不准"，绝不硬套一个值——
+    // 原来只按中位数选，2 个配对时会选到较大的那个（实测直接把画面推了 400ms，反而更歪）。
+    if (diffs.length < 2) { say('测量不可靠（只配到 ' + diffs.length + ' 对），请再点一次校准，或直接拖滑杆', '#ffb454'); return; }
     diffs.sort((a, b) => a - b);
-    const med = diffs[Math.floor(diffs.length / 2)];
-    const v = applyAvSync(Math.max(0, Math.min(400, Math.round(med / 10) * 10)));
-    if (med > 25) say('校准完成：声音比画面晚约 ' + Math.round(med) + ' ms，已把画面延迟调到 ' + v + ' ms', '#8CE58C');
-    else if (med < -25) say('校准完成：画面比声音晚约 ' + Math.abs(Math.round(med)) + ' ms，滑杆先归 0', '#ffb454');
-    else say('校准完成：本来就基本同步（差 ' + Math.round(med) + ' ms）', '#8CE58C');
+    const med = diffs[Math.floor((diffs.length - 1) / 2)];   // 下中位数（偶数个时取偏小的一侧）
+    const spread = diffs[diffs.length - 1] - diffs[0];
+    if (spread > 260) { say('测量不稳定（相差 ' + Math.round(spread) + ' ms），请关掉别的声音再点一次', '#ffb454'); return; }
+    // 2026-11-08 P1b：把这次校准的原始事件暴露出来（只读诊断，方便远程排"校准不准/测不到"）。
+    try { window.__paAvCalib = { med: Math.round(med), spread: Math.round(spread), evV: evV.slice(0), evA: evA.slice(0), pairs: diffs.slice(0), hidden: !!document.hidden }; } catch (e) { }
+    // med = 声音到达时刻 − 画面到达时刻：正数=声音晚，负数=画面晚。
+    // 在当前补偿的基础上累加，这样多点几次会逐步收敛（且换网络后能重新对齐）。
+    const curV = loadAvSync(), curA = loadAvAudio();
+    if (med > 25) {
+      const v = applyAvSync(Math.max(0, Math.min(400, curV + Math.round(med / 10) * 10)));
+      say('校准完成：声音比画面晚约 ' + Math.round(med) + ' ms，已把画面延后 ' + v + ' ms', '#8CE58C');
+    } else if (med < -25) {
+      const a = applyAvAudio(Math.max(0, Math.min(400, curA + Math.round(-med / 10) * 10)));
+      if (a > 0) say('校准完成：画面比声音慢约 ' + Math.round(-med) + ' ms，已把声音延后 ' + a + ' ms（过 2 秒稳定）', '#8CE58C');
+      else say('校准完成：画面比声音慢约 ' + Math.round(-med) + ' ms，但声音已经到上限了，请用滑杆手动调', '#ffb454');
+    } else {
+      say('校准完成：本来就基本同步（差 ' + Math.round(med) + ' ms）', '#8CE58C');
+    }
   };
   const videoTick = () => {
     if (!running) return;
     const t = performance.now();
     if (armedV && brightness() > 0.92) { evV.push(t); armedV = false; setTimeout(() => { armedV = true; }, 400); }
-    if (t - t0 < 6500) requestAnimationFrame(videoTick);
+    if (t - t0 < WIN_MS) requestAnimationFrame(videoTick);
     else finish();
   };
   requestAnimationFrame(videoTick);
@@ -1386,7 +1447,9 @@ async function rtc264AudioStart() {
     pc.ontrack = function (e) {
       try {
         if (e.receiver) {
-          if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20;
+          // 2026-11-08 P1b：「声音延后」补偿在这条旧纯音频连接上也要生效（P1 失败时的回退路径）
+          RTC264.audioReceiver = e.receiver;
+          if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvAudio();
           if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
         }
       } catch (err) { }
@@ -1415,6 +1478,13 @@ function applyRtc264Audio() {
   if (!RTC264.pc) return;
   vid.muted = !state.audio;
   if (state.audio) {
+    // P1：音频在同一条 PC 里。曾经"关声音→再开"会因为 rtc264AudioStart() 直接 return
+    // 而永远没声音（轨被 rtc264AudioStop 从 MediaStream 里摘掉了），这里补回去。
+    if (RTC264.audioSamePc && RTC264.audioTrack && RTC264.media) {
+      try {
+        if (RTC264.media.getAudioTracks().indexOf(RTC264.audioTrack) < 0) RTC264.media.addTrack(RTC264.audioTrack);
+      } catch (e) { }
+    }
     if (rtc264AudioUsePcm()) {
       try { rtc264AudioStop(); } catch (e) { }
       try { startPcmAudio(); } catch (e) { }
@@ -3957,12 +4027,18 @@ bindImg(img);
     }
     // 音画同步：滑杆 + 一键校准（2026-11-08）
     const avSlider = box.querySelector('#avSync');
+    const avAudioSlider = box.querySelector('#avAudio');
     const avBtn = box.querySelector('#avCalib');
     const avReset = box.querySelector('#avReset');
     if (avSlider) avSlider.addEventListener('input', () => { applyAvSync(Number(avSlider.value)); const mm = box.querySelector('#avMsg'); if (mm) mm.textContent = ''; });
+    if (avAudioSlider) avAudioSlider.addEventListener('input', () => { applyAvAudio(Number(avAudioSlider.value)); const mm = box.querySelector('#avMsg'); if (mm) mm.textContent = ''; });
     if (avBtn) avBtn.addEventListener('click', () => { avCalibrate(); });
-    if (avReset) avReset.addEventListener('click', () => { applyAvSync(0); const mm = box.querySelector('#avMsg'); if (mm) mm.textContent = '已重置为 0'; });
+    if (avReset) avReset.addEventListener('click', () => {
+      applyAvSync(0); try { applyAvAudio(0); } catch (e) { }
+      const mm = box.querySelector('#avMsg'); if (mm) mm.textContent = '已重置为 0';
+    });
     try { applyAvSync(loadAvSync()); } catch (e) { }
+    try { applyAvAudio(loadAvAudio()); } catch (e) { }
     const updateFlow = () => {
       const el = box.querySelector('#hqFlow');
       const k = AUTOQ.on ? AUTOQ.kbps : (Number(kSel.value) || 0);
@@ -6026,15 +6102,22 @@ bindImg(img);
       + '<input type="checkbox" id="hqWin"> 单窗口采集（实验：只传选中的窗口，被挡住也能抓；约 10–30fps）</label>'
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>'
   + '<div id="hqCap" style="font-size:11.5px;color:#6b7078;margin-top:6px;line-height:1.6"></div>');
-// 音画同步（2026-11-08）：滑杆 + 一次性自动校准
+// 音画同步（2026-11-08）：两个方向各一根滑杆 + 一次性自动校准
 body += setSection('音画同步（清晰模式）',
   '<div style="color:#868c96;font-size:12px;margin-bottom:8px;line-height:1.75">'
-  + '声音和画面走的是两条链路，可能差几十到几百毫秒。声音比画面<b>晚</b>时把下面调大（延迟画面去追声音）。'
-  + '点「一次性自动校准」：电脑会白闪 3 次并响 3 声，手机会实测一次端到端差值并自动填好；网络变化大时可以再校准。'
-  + '（大厂做法是音视频共用同一时钟自动对齐；这里是更通用的折中方案。）</div>'
+  + '声音和画面走的是两条链路，可能差几十到几百毫秒。'
+  + '<b>声音晚</b>就把「画面延后」调大；<b>画面晚</b>（视频要采集+编码，通常是这种）就把「声音延后」调大。'
+  + '点「一次性自动校准」：电脑会白闪 3 次并响 3 声，手机会实测一次端到端差值，自动判断该补哪一边并填好；网络变化大时可以再校准一次。'
+  + '（大厂做法是音视频共用同一时钟在发送端对齐；这里是兼容旧内核/旧手机的折中方案。）</div>'
   + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-  + '<input id="avSync" type="range" min="0" max="400" step="10" value="' + loadAvSync() + '" style="flex:1;min-width:150px">'
+  + '<span style="color:#c9ccd1;font-size:12px;min-width:74px">画面延后</span>'
+  + '<input id="avSync" type="range" min="0" max="400" step="10" value="' + loadAvSync() + '" style="flex:1;min-width:130px">'
   + '<span id="avSyncVal" style="color:#8CE58C;font-size:12.5px;min-width:70px">' + loadAvSync() + ' ms</span>'
+  + '</div>'
+  + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:6px">'
+  + '<span style="color:#c9ccd1;font-size:12px;min-width:74px">声音延后</span>'
+  + '<input id="avAudio" type="range" min="0" max="400" step="10" value="' + loadAvAudio() + '" style="flex:1;min-width:130px">'
+  + '<span id="avAudioVal" style="color:#8CE58C;font-size:12.5px;min-width:70px">' + loadAvAudio() + ' ms</span>'
   + '</div>'
   + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
   + '<button id="avCalib" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 14px;font-size:12.5px;cursor:pointer">一次性自动校准</button>'
