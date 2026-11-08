@@ -4531,7 +4531,81 @@ async function handler(req, res) {
     setTimeout(() => { try { process.exit(0); } catch { } }, 800);
     return;
   }
-  if (url.pathname === '/hotspot/on' || url.pathname === '/hotspot/off') {
+  // 2026-11-08：只重跑离线模式的防火墙放行，**不改配置、不重启服务**。
+  // 之前页面上的「修复」按钮走 /offline/on，会顺带把离线模式打开（改绑所有网卡 + 明文 HTTP），
+  // 用户只是想修一条防火墙规则，结果整个姿态变了。
+  if (url.pathname === '/offline/repair' && req.method === 'POST') {
+    globalThis.__paRepairLast = globalThis.__paRepairLast || 0;
+    if (Date.now() - globalThis.__paRepairLast < 3000) {
+      try { res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: '操作太快，等 3 秒再试' })); } catch { }
+      return;
+    }
+    globalThis.__paRepairLast = Date.now();
+    try {
+      const fwR = join(HERE, 'offline-firewall.ps1');
+      if (fileExists(fwR)) {
+        const psR = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+        const argR = "-NoProfile -ExecutionPolicy Bypass -File \"" + fwR + "\" -Action on";
+        spawn(psR, ['-NoProfile', '-Command', "Start-Process -FilePath '" + psR + "' -ArgumentList '" + argR.replace(/'/g, "''") + "' -Verb RunAs -WindowStyle Hidden"],
+          { windowsHide: true, stdio: 'ignore' }).unref();
+      }
+      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ ok: true, repairing: true, note: '请在电脑上点「是」：只修复防火墙放行，不改任何开关' })); } catch { }
+    } catch (e) {
+      try { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e) })); } catch { }
+    }
+    return;
+  }  // ---- 同一 Wi-Fi 串流开关（2026-11-08）---------------------------------------
+  // 只放行 Sunshine 自己的端口（程序限定 Sunshine.exe、来源仅私有网段、不含 47990）。
+  // 和 screen.lan / screen.offline 完全独立：不动 8660/8661/8662 的监听与规则。
+  if (url.pathname === '/stream/lan/on' || url.pathname === '/stream/lan/off' || url.pathname === '/stream/status') {
+    const isStatus = url.pathname === '/stream/status';
+    const on = url.pathname === '/stream/lan/on';
+    const cfgPathS = join(HERE, 'product.config.json');
+    const readCfgS = () => { try { return JSON.parse(readFileSync(cfgPathS, 'utf8').replace(/^\uFEFF/, '')); } catch { return {}; } };
+    if (isStatus) {
+      let rules = 0;
+      try {
+        const psS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+        const outS = String(execFileSync(psS, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-Command',
+          "(Get-NetFirewallRule -DisplayName 'PA-STREAM-LAN-*' -ErrorAction SilentlyContinue | Measure-Object).Count"], { encoding: 'utf8', timeout: 6000, windowsHide: true }) || '').trim();
+        rules = Number(outS) || 0;
+      } catch { }
+      const cS = readCfgS();
+      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify({ ok: true, enabled: !!(cS.screen && cS.screen.lanStream), rules })); } catch { }
+      return;
+    }
+    // 防抖：3 秒内重复切换忽略（UAC 很吵）
+    globalThis.__paStreamLast = globalThis.__paStreamLast || 0;
+    if (Date.now() - globalThis.__paStreamLast < 3000) {
+      try { res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: '操作太快，等 3 秒再试' })); } catch { }
+      return;
+    }
+    globalThis.__paStreamLast = Date.now();
+    try {
+      const cS = readCfgS();
+      if (!cS.screen) cS.screen = {};
+      cS.screen.lanStream = on;
+      writeFileSync(cfgPathS, JSON.stringify(cS, null, 2), 'utf8');
+    } catch (e) {
+      try { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end(JSON.stringify({ ok: false, error: '写配置失败' })); } catch { }
+      return;
+    }
+    // 提权跑 firewall 脚本（UAC）；不需要重启服务（Sunshine 本来就监听 0.0.0.0）
+    try {
+      const fwS = join(HERE, 'stream-firewall.ps1');
+      if (fileExists(fwS)) {
+        const psExeS = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+        const argS = "-NoProfile -ExecutionPolicy Bypass -File \"" + fwS + "\" -Action " + (on ? 'on' : 'off');
+        spawn(psExeS, ['-NoProfile', '-Command', "Start-Process -FilePath '" + psExeS + "' -ArgumentList '" + argS.replace(/'/g, "''") + "' -Verb RunAs -WindowStyle Hidden"],
+          { windowsHide: true, stdio: 'ignore' }).unref();
+      }
+    } catch { }
+    try {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, enabled: on, note: on ? '正在放行：请在电脑上点「是」（管理员授权）' : '正在关闭并恢复：请在电脑上点「是」' }));
+    } catch { }
+    return;
+  }  if (url.pathname === '/hotspot/on' || url.pathname === '/hotspot/off') {
     const on = url.pathname === '/hotspot/on';
     const body = await new Promise((resolve) => {
       let b = '';
@@ -5311,7 +5385,7 @@ async function handler(req, res) {
   if (url.pathname === '/lock') {
     if (req.method !== 'POST') { sendJson(405, { ok: false, error: 'POST only' }); return; }
     try {
-      spawn('rundll32.exe', ['user32.dll,LockWorkStation'], { windowsHide: true, stdio: 'ignore', detached: true }).unref();
+      spawn('rundll32.exe', ['user32.dll,LockWorkStation'], { windowsHide: true, stdio: 'ignore' }).unref();
       sendJson(200, { ok: true });
     } catch (e) { sendJson(500, { ok: false, error: String((e && e.message) || e) }); }
     return;
@@ -5329,18 +5403,22 @@ async function handler(req, res) {
       "self.addEventListener('install', (e) => {",
       "  self.skipWaiting();",
       "  e.waitUntil((async () => {",
+      "    // 2026-11-08：先把新外壳缓存成功，**再**删旧缓存。以前不管成功与否都删，",
+      "    // 更新那一刻正好断网时会把唯一能用的离线外壳删掉，手机「添加到主屏幕」后打开白屏。",
+      "    let ok = false;",
       "    try {",
       "      const c = await caches.open(CACHE);",
       "      await c.add(new Request('/', { cache: 'reload' }));",
+      "      ok = true;",
       "    } catch (x) {}",
-      "    try { const ks = await caches.keys(); await Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))); } catch (x) {}",
+      "    if (ok) {",
+      "      try { const ks = await caches.keys(); await Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))); } catch (x) {}",
+      "    }",
       "  })());",
       "});",
       "self.addEventListener('activate', (e) => {",
-      "  e.waitUntil((async () => {",
-      "    try { const ks = await caches.keys(); await Promise.all(ks.filter((k) => k !== CACHE).map((k) => caches.delete(k))); } catch (x) {}",
-      "    await self.clients.claim();",
-      "  })());",
+      "  // 只接管页面；清旧缓存放在 install 且仅在成功缓存新外壳后做（见上）。",
+      "  e.waitUntil((async () => { try { await self.clients.claim(); } catch (x) {} })());",
       "});",
       "self.addEventListener('fetch', (e) => {",
       "  const req = e.request;",

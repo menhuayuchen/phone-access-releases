@@ -115,6 +115,7 @@ $appFiles = @(
   # 离线模式：防火墙放行/恢复（局域网/热点/USB 直连）
   'offline-firewall.ps1',
   'lan-firewall.ps1',
+  'stream-firewall.ps1',
   # 离线模式：关闭入口（恢复只监听本机/Tailscale）
   'offline-mode-off.ps1',
   '关闭离线模式.cmd',

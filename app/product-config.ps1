@@ -144,6 +144,8 @@ function Get-ProductConfig {
       # 局域网直连（2026-11-07）：只多开 8662 的 HTTPS，8660 仍只给回环+Tailscale。
       # 白名单构造，缺了这一行 start-screen.ps1 就永远读不到 $cfg.screen.lan（踩过）。
       lan             = [bool](Get-ConfigValue $raw @('screen', 'lan') $false)
+      # 同一 Wi-Fi 串流（Sunshine 端口，独立开关，2026-11-08）
+      lanStream       = [bool](Get-ConfigValue $raw @('screen', 'lanStream') $false)
     }
     # 2026-11-07：自用版的"便利/安全"取舍。unlockOnWake=true 时关闭「唤醒时要求登录」
     # 并去掉屏保的安全锁定（唤醒后直接回桌面，手机不用输 Windows 密码）。

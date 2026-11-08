@@ -989,13 +989,25 @@ async function startRtc264() {
   // 以前会停在「WebRTC264 连接中」黑着不动。这里 8 秒还没第一帧就自动退回低频画面，
   // 用户至少能看到屏幕；下次切清晰模式会重新再试 WebRTC。
   clearTimeout(R.noVideoTimer);
+  const noVideoFallback = (why) => {
+    if (my !== rtc264Gen) return;
+    if (state.mode !== 'h264' || document.hidden) return;
+    if (R.firstVideo) return;
+    try { console.log('rtc264: ' + why + '，退回低频画面'); } catch (e) { }
+    R.noVideoTimer = 0;
+    rtc264Fallback(why);
+  };
   R.noVideoTimer = setTimeout(function () {
     if (my !== rtc264Gen) return;
     if (state.mode !== 'h264' || document.hidden) return;
     if (R.firstVideo) return;
-    try { console.log('rtc264: 8s 无画面，退回低频画面'); } catch (e) { }
-    R.noVideoTimer = 0;
-    rtc264Fallback('no-video-8s');
+    // ICE 已连上但还没首帧：多半是编码器/关键帧慢，再给 7 秒，避免在 4G/tailnet 上误判
+    const ice = R.pc ? R.pc.iceConnectionState : '';
+    if (ice === 'connected' || ice === 'completed') {
+      R.noVideoTimer = setTimeout(() => noVideoFallback('no-video-15s'), 7000);
+      return;
+    }
+    noVideoFallback('no-video-8s');
   }, 8000);
   try {
     const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER), { method: 'POST', cache: 'no-store' });
@@ -4050,6 +4062,29 @@ bindImg(img);
     const msgEl = box.querySelector('#ssMsg');
     const btn = box.querySelector('#ssRefresh');
     if (!bodyEl) return;
+    // 2026-11-08：同一 Wi-Fi 串流开关（只放行 Sunshine 自己的端口，不含 47990 管理后台）
+    const lsState = () => box.querySelector('#ssLanState');
+    const lsMsg = (txt, color) => { const el = lsState(); if (el) { el.textContent = txt; el.style.color = color || '#6b7078'; } };
+    const loadStream = async () => {
+      try {
+        const s = await fetch('/stream/status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+        if (!s || !s.ok) { lsMsg('读取失败'); return; }
+        lsMsg(s.enabled ? ('当前：已放行（' + (s.rules || 0) + ' 条规则），同一 Wi-Fi 可以连 Moonlight') : '当前：关闭（只允许 Tailscale）', s.enabled ? '#8CE58C' : '#6b7078');
+      } catch (e) { lsMsg('读取失败：' + ((e && e.message) || e)); }
+    };
+    const setStream = async (on) => {
+      lsMsg('正在' + (on ? '放行' : '关闭并恢复') + '：请在电脑上点「是」（管理员授权）…', '#ffb454');
+      try {
+        const r = await fetch('/stream/lan/' + (on ? 'on' : 'off'), { method: 'POST' }).then((x) => x.json());
+        lsMsg((r && (r.note || r.error)) || '已提交', (r && r.ok) ? '#ffb454' : '#ff6b6b');
+        setTimeout(loadStream, 6000);
+      } catch (e) { lsMsg('请求失败：' + ((e && e.message) || e), '#ff9d9d'); }
+    };
+    const lsOn = box.querySelector('#ssLanOn');
+    if (lsOn) lsOn.addEventListener('click', () => setStream(true));
+    const lsOff = box.querySelector('#ssLanOff');
+    if (lsOff) lsOff.addEventListener('click', () => setStream(false));
+    loadStream();
     let timer = 0;
     let selectedId = '';
     let lastSig = '';
@@ -4083,12 +4118,12 @@ bindImg(img);
       if (lan.length) h += scene('在家里 / 连同一个 Wi-Fi（推荐，最顺）', lan[0].ip, '#8CE58C');
       if (ts) {
         h += scene('在外面 / 用手机流量', ts.ip, '#8fb6ff');
-        h += '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。<br>如果连同一个 Wi-Fi 也连不上：① 到「设置」里打开一次「离线模式」（会自动放行 Sunshine 的 47984/47989 等端口，之前这些端口只放行了 Tailscale）；② 还是不行，多半是路由器禁止设备互访——用上面「在外面」这个地址，或者用电脑开热点给手机连。</div>';
+        h += '<div style="color:#6b7078;font-size:11.5px;margin-top:4px;line-height:1.7">在外面用的时候，手机也要装 Tailscale 并登录同一个账号，否则连不上（不装也能在家用）。<br>如果连同一个 Wi-Fi 也连不上：① 点上面的「允许同一 Wi-Fi 串流」（只放行 Sunshine 端口，弹一次管理员授权）；② 还是不行，多半是路由器禁止设备互访——用上面「在外面」这个地址，或者用电脑开热点给手机连。</div>';
       }
       if (!lan.length && !ts) h += '<div style="margin-top:8px;color:#ffb454;font-size:12px">暂时没取到地址，先连上网络再刷新一次。</div>';
       h += '<div style="margin-top:10px;padding-top:9px;border-top:1px solid #23252c;color:#6b7078;font-size:11.5px;line-height:1.8">'
         + '· 觉得画面有点卡：在 Moonlight 里把「分辨率」选 <b style="color:#c9ccd1">1080p</b>、「帧率」选 <b style="color:#c9ccd1">60</b><br>'
-        + '· 实在配不上的备用办法：用手机浏览器打开 <code style="color:#aeb3bb">https://' + escHtml(lan.length ? lan[0].ip : (ts ? ts.ip : '')) + ':' + port + '</code>，在后台里配对（一般不走到这一步）'
+        + '· 实在配不上的备用办法：手机先连上 Tailscale，再用浏览器打开 <code style="color:#aeb3bb">https://' + escHtml(ts ? ts.ip : '（需 Tailscale 地址）') + ':' + port + '</code> 在后台配对（47990 管理后台不对局域网开放，一般不走到这一步）'
         + '</div>';
       box.innerHTML = h;
       box.querySelectorAll('[data-copy]').forEach((btn) => btn.addEventListener('click', () => {
@@ -4369,7 +4404,20 @@ bindImg(img);
           if (!c || !c.ok) { if (msgEl) msgEl.textContent = '还没初始化账号（点上面的「一键初始化」）'; return; }
           try { await navigator.clipboard.writeText(c.password); } catch (e) { }
           if (msgEl) msgEl.textContent = '账号 ' + c.username + ' · 密码已复制到剪贴板';
-          window.open('https://' + location.hostname + ':47990/', '_blank', 'noopener');
+          // 2026-11-08 安全收紧：47990（Sunshine 管理后台）不对局域网放行，只走 Tailscale。
+          // 当前页面如果是局域网 IP，就用 tailnet 地址打开后台。
+          const onLanNow = /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(location.hostname || '');
+          const tsIpNow = (() => {
+            try {
+              const l = (lastStatus && lastStatus.lanIps) || [];
+              const x = l.filter((y) => /^100\./.test(String(y.ip || '')))[0];
+              return x ? x.ip : ((lastStatus && lastStatus.tailnetIp) || '');
+            } catch (e) { return ''; }
+          })();
+          const adminHost = onLanNow ? tsIpNow : location.hostname;
+          if (!adminHost) { if (msgEl) msgEl.textContent = '管理后台只走 Tailscale：请先在手机上连上 Tailscale 再打开'; return; }
+          if (onLanNow) { if (msgEl) msgEl.textContent = '管理后台不对局域网开放，已用 Tailscale 地址打开（账号 ' + c.username + ' · 密码已复制）'; }
+          window.open('https://' + adminHost + ':47990/', '_blank', 'noopener');
         } catch (e) {
           if (msgEl) msgEl.textContent = '打开失败：' + (e && e.message);
         }
@@ -5120,7 +5168,7 @@ bindImg(img);
         const m = bodyEl.querySelector('#lanCheckMsg');
         if (m) m.textContent = '正在修复：请在电脑上点「是」（管理员授权）…';
         try {
-          await fetch('/offline/on', { method: 'POST' });
+          await fetch('/offline/repair', { method: 'POST' });
           setTimeout(() => { try { refresh(); } catch (e) { } }, 6000);
         } catch (e) { if (m) m.textContent = '修复请求失败：' + ((e && e.message) || e); }
       }));
@@ -5617,6 +5665,16 @@ bindImg(img);
     body += setSection('串流玩游戏（Moonlight）',
       '<div id="secSunshine"></div>'
       + '<div id="ssBody" style="color:#868c96;font-size:12.5px;line-height:1.7">正在检测…</div>'
+      // 2026-11-08：同一 Wi-Fi 串流开关（独立于离线模式；只放行 Sunshine 端口，不含 47990）
+      + '<div id="ssLanBox" style="margin-top:12px;padding-top:10px;border-top:1px solid #23252c">'
+      + '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">同一 Wi-Fi 串流</div>'
+      + '<div id="ssLanState" style="color:#6b7078;font-size:11.5px;margin-top:4px">读取中…</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;margin-top:6px">'
+      + '<button id="ssLanOn" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">允许同一 Wi-Fi 串流</button>'
+      + '<button id="ssLanOff" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">关闭并恢复</button>'
+      + '</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:5px;line-height:1.6">只放行 Sunshine 自己的端口（程序限定、来源仅局域网私有网段、不含 47990 管理后台）；关掉时规则全部删除、恢复只允许 Tailscale。开/关都会弹一次管理员授权。</div>'
+      + '</div>'
       + '<div id="ssAddr" style="margin-top:10px"></div>'
       + '<div id="ssGames" style="margin-top:12px"></div>'
       + '<div style="display:flex;gap:8px;margin-top:10px;flex-wrap:wrap;align-items:center">'

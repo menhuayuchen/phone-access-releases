@@ -79,6 +79,49 @@ function Set-InactivityLimit {
     } catch { Add-Warn ('设置不活动锁屏策略失败（可能被策略锁定）：' + $_.Exception.Message) }
 }
 
+# 2026-11-08：关掉时要"恢复原样"，所以开的时候先把原始值记下来（只记第一次，避免来回切把 0 当成原值）。
+$stateFile = Join-Path (Split-Path -Parent $PSCommandPath) 'unlock-on-wake.state.json'
+function Save-OriginState {
+    if (Test-Path -LiteralPath $stateFile) { return }
+    $ssSecure = $null
+    $inact = $null
+    try {
+        $ssSecure = (Get-ItemProperty 'HKCU:\Control Panel\Desktop' -Name 'ScreenSaverIsSecure' -ErrorAction SilentlyContinue).ScreenSaverIsSecure
+    } catch { }
+    try {
+        $v = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System' -Name 'InactivityTimeoutSecs' -ErrorAction SilentlyContinue).InactivityTimeoutSecs
+        if ($null -ne $v) { $inact = [int]$v }
+    } catch { }
+    $doc = [pscustomobject]@{
+        screenSaverSecureHad = ($null -ne $ssSecure)
+        screenSaverSecure    = [string]$ssSecure
+        inactivityHad        = ($null -ne $inact)
+        inactivitySecs       = $(if ($null -ne $inact) { $inact } else { -1 })
+        at                   = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
+    }
+    try { [System.IO.File]::WriteAllText($stateFile, ($doc | ConvertTo-Json -Compress), (New-Object System.Text.UTF8Encoding($false))) } catch { Add-Warn '记录原始设置失败（关闭时可能无法完全恢复）' }
+}
+function Restore-OriginState {
+    if (-not (Test-Path -LiteralPath $stateFile)) { return }
+    try {
+        $st = Get-Content -LiteralPath $stateFile -Raw -Encoding UTF8 | ConvertFrom-Json
+        # 屏保安全锁定
+        try {
+            $k = 'HKCU:\Control Panel\Desktop'
+            if ($st.screenSaverSecureHad) { Set-ItemProperty -Path $k -Name 'ScreenSaverIsSecure' -Value ([string]$st.screenSaverSecure) -ErrorAction SilentlyContinue }
+            else { Remove-ItemProperty -Path $k -Name 'ScreenSaverIsSecure' -ErrorAction SilentlyContinue }
+        } catch { }
+        # 不活动锁屏策略
+        try {
+            $k2 = 'HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Policies\System'
+            if ($st.inactivityHad) { Set-ItemProperty -Path $k2 -Name 'InactivityTimeoutSecs' -Value ([int]$st.inactivitySecs) -Type DWord -ErrorAction SilentlyContinue }
+            else { Remove-ItemProperty -Path $k2 -Name 'InactivityTimeoutSecs' -ErrorAction SilentlyContinue }
+        } catch { }
+        Remove-Item -LiteralPath $stateFile -Force -ErrorAction SilentlyContinue
+        Say '已恢复原始锁屏相关设置'
+    } catch { Add-Warn ('恢复原始设置失败：' + $_.Exception.Message) }
+}
+
 $ac = Get-ConsoleLockIndex 'ac'
 $dc = Get-ConsoleLockIndex 'dc'
 Say ("CONSOLELOCK: ac=" + $ac + " dc=" + $dc + "  admin=" + $isAdmin)
@@ -88,6 +131,7 @@ switch ($Action) {
         if (-not $isAdmin) {
             Add-Err '需要管理员权限才能改「唤醒时要求登录」'
         } else {
+            Save-OriginState
             Set-ConsoleLockIndex 0
             Set-ScreenSaverSecure 0
             Set-InactivityLimit 0
@@ -102,7 +146,8 @@ switch ($Action) {
             Add-Err '需要管理员权限才能改「唤醒时要求登录」'
         } else {
             Set-ConsoleLockIndex 1
-            Set-ScreenSaverSecure 1
+            # 2026-11-08：恢复开启前的原始值（屏保安全锁定 / 不活动锁屏策略），没有记录就退回"安全默认"
+            if (Test-Path -LiteralPath $stateFile) { Restore-OriginState } else { Set-ScreenSaverSecure 1 }
             $ac = Get-ConsoleLockIndex 'ac'
             $dc = Get-ConsoleLockIndex 'dc'
             if ($ac -ne 1 -or $dc -ne 1) { Add-Err ('设置后读回仍不是 1（ac=' + $ac + ' dc=' + $dc + '）') }
