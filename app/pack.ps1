@@ -413,14 +413,7 @@ if ($DryRun) {
   $prodSize = 0L
   foreach ($rel in $prodFiles) { $prodSize += (Get-Item -LiteralPath (Join-Path $ProdDir $rel)).Length }
   if ($qrlibOk) { $qrlibSize = Get-UniqueTreeSize -Dir $qrlibDir -Seen @{}; $prodSize += $qrlibSize }
-  # 2026-11-08 隐私修复：pnpm 生成的 node_modules\**\.bin 垫片里写着构建机的绝对路径
-# （C:\Users\<构建机>\.pnpm\...，还带 dsh 的目录名）。产品不依赖这些垫片（直接 node 调模块），
-# 一并清掉；发布版构建里本来就有后处理删除，这里让自用版也干净。
-foreach ($bd in @(Get-ChildItem -LiteralPath (Join-Path $stage 'node_modules') -Recurse -Directory -Filter '.bin' -Force -ErrorAction SilentlyContinue)) {
-  Remove-Item -LiteralPath $bd.FullName -Recurse -Force -ErrorAction SilentlyContinue
-}
-
-if ($includeTailscale) { $prodSize += (Get-Item -LiteralPath $tailscaleSetup).Length }
+  if ($includeTailscale) { $prodSize += (Get-Item -LiteralPath $tailscaleSetup).Length }
   $nodeSize = (Get-Item -LiteralPath $nodeChosen).Length
   $est = $appSize + $prodSize + $nodeSize + $nmSize
   Write-InfoLine ('产品代码约：' + (Format-Mb $appSize))
@@ -694,6 +687,14 @@ if ($hasWrtc -and $hasSharp) {
 } else {
   Write-ErrLine ('原生模块缺失：wrtc=' + [string]$hasWrtc + ' sharp=' + [string]$hasSharp + '（流畅模式/图片会坏）')
   $selfCheckErrors++
+}
+
+# 2026-11-08 隐私修复（放这里是因为 node_modules 是后面才拷进来的）：
+#   pnpm 生成的 node_modules\**\.bin 垫片里写着构建机绝对路径
+#   （C:\Users\<构建机>\...\.pnpm\...，还带 dsh 的目录名）。产品不依赖这些垫片，清掉。
+foreach ($bd in @(Get-ChildItem -LiteralPath (Join-Path $stage 'node_modules') -Recurse -Directory -Filter '.bin' -Force -ErrorAction SilentlyContinue)) {
+  Remove-Item -LiteralPath $bd.FullName -Recurse -Force -ErrorAction SilentlyContinue
+  Write-OkLine ('已清掉 pnpm 垫片目录：' + $bd.FullName.Substring($stage.Length + 1))
 }
 
 # 6.3 禁止文件

@@ -5421,6 +5421,7 @@ bindImg(img);
       + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
       + '</div>'
       + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把方式改成「休眠」。</div>'
+      + ((st && st.wakeMissing) ? '<div style="color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 检测到「唤醒任务」缺失：今晚的定时休眠不会自动唤醒。请点下面的「保存并应用」重建（会弹一次管理员授权）。</div>' : '')
       + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7">' + (busy ? '<span style="color:#ffb454">正在应用，请稍候…</span>' : '') + '</div>'
       + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原界面）；完全关机后叫不醒。'
       + '<b style="color:#ffb454">保存带「唤醒」的规则时会弹一次管理员授权</b>：定时唤醒要用系统身份注册计划任务，普通用户身份注册的闹钟在部分机器上到点不醒（已实测）。'
@@ -6778,7 +6779,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-08.1';
+export const PAGE_VER = '2026-11-08.2';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

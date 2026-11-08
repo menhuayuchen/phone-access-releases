@@ -5252,19 +5252,33 @@ async function handler(req, res) {
           if (lastMs >= Number(globalThis.__paPowerAppliedAt) - 2000) { globalThis.__paPowerBusy = false; }
         } catch (e) { }
       }
-      const finish = (tasks) => {
+      // 2026-11-08：schtasks 在普通权限下**看不到 SYSTEM 身份的唤醒任务**（实测踩坑），
+  // 只查实时列表会让页面以为唤醒任务没了。这里把引擎上次的 tasks 结果补进来（同名的以实时为准）。
+  const mergeTasks = (live, eng) => {
+    const out = Array.isArray(live) ? live.slice() : [];
+    const src = Array.isArray(eng) ? eng : [];
+    for (const t of src) {
+      if (!t || !t.name) continue;
+      if (!out.some((x) => x && x.name === t.name)) out.push(t);
+    }
+    return out;
+  };
+  const finish = (tasks) => {
         try {
           sendJson(200, {
             ok: true,
             enabled: !!docS.enabled,
             rules: Array.isArray(docS.rules) ? docS.rules : [],
             updatedAt: docS.updatedAt || '',
-            tasks: tasks || [],
+            tasks: (globalThis.__paMergedTasks = mergeTasks(tasks, last && last.tasks)),
             busy: !!globalThis.__paPowerBusy,
             // 2026-11-07：自用版「唤醒后不要求登录」的开关状态（页面显示用）
             unlockOnWake: !!(readJson(join(HERE, 'product.config.json'), {}).security || {}).unlockOnWake,
   // 2026-11-08：页面按 profile 决定是否显示「唤醒后不要求登录」（发布版隐藏）
   profile: String((readJson(join(HERE, 'product.config.json'), {}).profile) || 'selfuse'),
+  // 2026-11-08 功能检测：规则里有唤醒时间、但系统里没有对应的唤醒任务 → 今晚不会自动醒。
+  // 实测踩过：唤醒任务会因非提权应用/清理而悄悄丢失，页面必须能提示重建（否则用户以为设好了）。
+  wakeMissing: !!(Array.isArray(docS.rules) ? docS.rules : []).some((r) => r && r.wakeTime) && !(globalThis.__paMergedTasks || []).some((t) => t && t.wake),
             last: last || null
           });
         } catch (e) { }
