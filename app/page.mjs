@@ -1059,7 +1059,13 @@ async function startRtc264() {
     R.media = new MediaStream();
     pc.ontrack = function (e) {
       try {
-        try { if (e.receiver) { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20; if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } } catch (err) { }
+        try {
+          if (e.receiver) {
+            RTC264.videoReceiver = e.receiver;
+            if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20 + loadAvSync();
+            if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
+          }
+        } catch (err) { }
         try { R.media.addTrack(e.track); } catch (err) { }
         vid.srcObject = R.media;
         vid.classList.add('show');
@@ -1233,6 +1239,121 @@ function rtc264AudioStop() {
 // 因此先做成开关，等真机弱网验证后再决定是否改默认。
 function rtc264AudioUsePcm() {
   try { return new URLSearchParams(location.search).get('audio') === 'pcm'; } catch (e) { return false; }
+}
+// 2026-11-08 音画同步：C 方案滑杆 + 一次性自动校准。
+// 声音/画面是两条独立链路；实测一次"白闪 vs 提示音"的到达时差，然后把画面按同一时钟往后挪。
+// 只挪画面（jitterBufferTarget 毫秒延迟），因为实测常见是"声音比画面晚"。
+function loadAvSync() {
+  try { const v = parseInt(localStorage.getItem('paAvSync') || '0', 10); return isFinite(v) ? Math.max(0, Math.min(400, v)) : 0; } catch (e) { return 0; }
+}
+function saveAvSync(ms) {
+  const m = Math.max(0, Math.min(400, Math.round(Number(ms) || 0)));
+  try { localStorage.setItem('paAvSync', String(m)); } catch (e) { }
+  return m;
+}
+function applyAvSync(ms) {
+  const m = saveAvSync(ms == null ? loadAvSync() : ms);
+  try {
+    const r = RTC264 && RTC264.videoReceiver;
+    if (r && ('jitterBufferTarget' in r)) r.jitterBufferTarget = 20 + m;
+  } catch (e) { }
+  const sl = document.querySelector('#avSync');
+  if (sl) sl.value = String(m);
+  const vl = document.querySelector('#avSyncVal');
+  if (vl) vl.textContent = m + ' ms';
+  return m;
+}
+async function avCalibrate() {
+  const msg = document.querySelector('#avMsg');
+  const btn = document.querySelector('#avCalib');
+  const say = (text, color) => { if (msg) { msg.textContent = text; msg.style.color = color || '#868c96'; } };
+  if (state.mode !== 'h264') { say('先切到「清晰」模式再校准', '#ffb454'); return; }
+  if (!state.audio) { say('先打开「声音」再校准', '#ffb454'); return; }
+  const track = (RTC264 && RTC264.audioTrack) || null;
+  const recv = RTC264 && RTC264.videoReceiver;
+  if (!track) { say('音频还没连上，等 2 秒再点一次', '#ffb454'); return; }
+  if (btn) { btn.disabled = true; btn.style.opacity = '.6'; }
+  say('正在准备校准…', '#868c96');
+  try { if (recv && ('jitterBufferTarget' in recv)) recv.jitterBufferTarget = 20; } catch (e) { }
+  const AC = window.AudioContext || window.webkitAudioContext;
+  if (!AC) { say('这个浏览器不支持自动校准，请用滑杆手动调', '#ffb454'); if (btn) { btn.disabled = false; btn.style.opacity = '1'; } return; }
+  const actx = new AC();
+  let analyser = null;
+  try {
+    const src = actx.createMediaStreamSource(new MediaStream([track]));
+    analyser = actx.createAnalyser();
+    analyser.fftSize = 1024;
+    src.connect(analyser);
+    await Promise.race([actx.resume(), new Promise((r) => setTimeout(r, 1500))]);
+    if (actx.state !== 'running') {
+      say('浏览器没让音频上下文启动：先点一下画面再点校准，或用下面的滑杆手动调', '#ffb454');
+      try { actx.close(); } catch (e) { }
+      if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+      return;
+    }
+  } catch (e) { say('读不到声音，请用滑杆手动调', '#ffb454'); if (btn) { btn.disabled = false; btn.style.opacity = '1'; } return; }
+  const buf = new Float32Array(analyser.fftSize);
+  const cv = document.createElement('canvas'); cv.width = 40; cv.height = 40;
+  const cx = cv.getContext('2d', { willReadFrequently: true });
+  const brightness = () => {
+    try { cx.drawImage(vid, 0, 0, 40, 40); const d = cx.getImageData(0, 0, 40, 40).data; let s = 0; for (let i = 0; i < d.length; i += 4) s += d[i] + d[i + 1] + d[i + 2]; return s / (d.length / 4) / 765; } catch (e) { return 0; }
+  };
+  const evV = [], evA = [];
+  let armedV = true, lastA = 0, running = true;
+  const t0 = performance.now();
+  const hardStop = setTimeout(() => {
+    if (!running) return;
+    running = false;
+    try { actx.close(); } catch (e) { }
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    say('校准超时：请用下面的滑杆手动调', '#ffb454');
+  }, 12000);
+  const audioTick = () => {
+    if (!running) return;
+    const t = performance.now();
+    try { analyser.getFloatTimeDomainData(buf); } catch (e) { }
+    let rms = 0;
+    for (let i = 0; i < buf.length; i++) rms += buf[i] * buf[i];
+    rms = Math.sqrt(rms / buf.length);
+    if (rms > 0.10 && t - lastA > 350) { evA.push(t); lastA = t; }
+    if (t - t0 < 6500) setTimeout(audioTick, 10);
+  };
+  audioTick();
+  const finish = () => {
+    running = false;
+    try { clearTimeout(hardStop); } catch (e) { }
+    try { actx.close(); } catch (e) { }
+    if (btn) { btn.disabled = false; btn.style.opacity = '1'; }
+    if (evV.length < 1) { say('没检测到白闪：确认手机显示的是电脑画面、没有暂停', '#ffb454'); return; }
+    if (evA.length < 1) { say('没听到提示音：确认「声音」开着、手机没静音', '#ffb454'); return; }
+    const diffs = [];
+    for (const tv of evV) {
+      let best = null;
+      for (const ta of evA) { if (best == null || Math.abs(ta - tv) < Math.abs(best - tv)) best = ta; }
+      if (best != null) { const d = best - tv; if (d > -600 && d < 900) diffs.push(d); }
+    }
+    if (!diffs.length) { say('测量失败，请用滑杆手动调', '#ffb454'); return; }
+    diffs.sort((a, b) => a - b);
+    const med = diffs[Math.floor(diffs.length / 2)];
+    const v = applyAvSync(Math.max(0, Math.min(400, Math.round(med / 10) * 10)));
+    if (med > 25) say('校准完成：声音比画面晚约 ' + Math.round(med) + ' ms，已把画面延迟调到 ' + v + ' ms', '#8CE58C');
+    else if (med < -25) say('校准完成：画面比声音晚约 ' + Math.abs(Math.round(med)) + ' ms，滑杆先归 0', '#ffb454');
+    else say('校准完成：本来就基本同步（差 ' + Math.round(med) + ' ms）', '#8CE58C');
+  };
+  const videoTick = () => {
+    if (!running) return;
+    const t = performance.now();
+    if (armedV && brightness() > 0.92) { evV.push(t); armedV = false; setTimeout(() => { armedV = true; }, 400); }
+    if (t - t0 < 6500) requestAnimationFrame(videoTick);
+    else finish();
+  };
+  requestAnimationFrame(videoTick);
+  try {
+    const r = await fetch('/calib', { method: 'POST' });
+    const j = await r.json().catch(() => null);
+    if (!j || !j.ok) say((j && j.note) || '校准启动失败', '#ffb454');
+    else say('正在校准：电脑会白闪 3 次并响 3 声，看着手机别动…', '#868c96');
+  } catch (e) { say('校准启动失败（网络？）', '#ffb454'); }
 }
 // 清晰模式的音频：走 /rtc?audio=1 的纯音频 WebRTC 连接（复用 rtc.mjs 的 Opus 编码），
 // 比原来 PCM over WebSocket 少一层缓冲，音画更同步。失败就静默退回无声（视频不受影响）。
@@ -3825,6 +3946,14 @@ bindImg(img);
         if (state.mode === 'h264') restartH264();
       });
     }
+    // 音画同步：滑杆 + 一键校准（2026-11-08）
+    const avSlider = box.querySelector('#avSync');
+    const avBtn = box.querySelector('#avCalib');
+    const avReset = box.querySelector('#avReset');
+    if (avSlider) avSlider.addEventListener('input', () => { applyAvSync(Number(avSlider.value)); const mm = box.querySelector('#avMsg'); if (mm) mm.textContent = ''; });
+    if (avBtn) avBtn.addEventListener('click', () => { avCalibrate(); });
+    if (avReset) avReset.addEventListener('click', () => { applyAvSync(0); const mm = box.querySelector('#avMsg'); if (mm) mm.textContent = '已重置为 0'; });
+    try { applyAvSync(loadAvSync()); } catch (e) { }
     const updateFlow = () => {
       const el = box.querySelector('#hqFlow');
       const k = AUTOQ.on ? AUTOQ.kbps : (Number(kSel.value) || 0);
@@ -5888,6 +6017,20 @@ bindImg(img);
       + '<input type="checkbox" id="hqWin"> 单窗口采集（实验：只传选中的窗口，被挡住也能抓；约 10–30fps）</label>'
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>'
   + '<div id="hqCap" style="font-size:11.5px;color:#6b7078;margin-top:6px;line-height:1.6"></div>');
+// 音画同步（2026-11-08）：滑杆 + 一次性自动校准
+body += setSection('音画同步（清晰模式）',
+  '<div style="color:#868c96;font-size:12px;margin-bottom:8px;line-height:1.75">'
+  + '声音和画面走的是两条链路，可能差几十到几百毫秒。声音比画面<b>晚</b>时把下面调大（延迟画面去追声音）。'
+  + '点「一次性自动校准」：电脑会白闪 3 次并响 3 声，手机会实测一次端到端差值并自动填好；网络变化大时可以再校准。'
+  + '（大厂做法是音视频共用同一时钟自动对齐；这里是更通用的折中方案。）</div>'
+  + '<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+  + '<input id="avSync" type="range" min="0" max="400" step="10" value="' + loadAvSync() + '" style="flex:1;min-width:150px">'
+  + '<span id="avSyncVal" style="color:#8CE58C;font-size:12.5px;min-width:70px">' + loadAvSync() + ' ms</span>'
+  + '</div>'
+  + '<div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap;align-items:center">'
+  + '<button id="avCalib" style="background:#2f6feb;color:#fff;border:0;border-radius:9px;padding:8px 14px;font-size:12.5px;cursor:pointer">一次性自动校准</button>'
+  + '<button id="avReset" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:8px 12px;font-size:12.5px;cursor:pointer">重置为 0</button>'
+  + '<span id="avMsg" style="font-size:12px;color:#868c96"></span></div>');
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
     body += setSection('外观（主题 / 光标）', p13nInner(lic));

@@ -104,6 +104,7 @@ $appFiles = @(
   'product.config.json',
   'product-config.ps1',
   'selfcheck.ps1',
+  'calibrate.ps1',
   '自检.cmd',
   # 手机入口工具：客户自己能看二维码、换密钥（换密钥已内置在 entry.ps1，所以不需要带 rotate-key.ps1，
   # 那个在下面的禁止清单里，属卖家侧运维脚本）
@@ -191,7 +192,7 @@ $prodFiles = @(
 
 # 打包后的必需文件（缺任何一个都算包坏）
 $requiredInStage = @(
-  'product.config.json', 'product-config.ps1', 'selfcheck.ps1', '自检.cmd',
+  'product.config.json', 'product-config.ps1', 'selfcheck.ps1', 'calibrate.ps1', '自检.cmd',
   'start-phone-access.ps1', 'start-phone-access.cmd', 'start-screen.ps1',
   'stop-phone-access.ps1', 'stop-phone-access.cmd',
   'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1',
