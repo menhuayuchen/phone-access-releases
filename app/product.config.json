@@ -44,7 +44,7 @@
                                                "port":  9801,
                                                "feedPort":  9900,
                                                "turnPort":  3478,
-                                               "audioSync":  true
+                                               "audioSync":  false
                                            },
                                 "wt":  {
                                            "enabled":  false,
