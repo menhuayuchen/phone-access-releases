@@ -196,6 +196,7 @@ var (
 
 	framesIn      atomic.Uint64
 	droppedFrames atomic.Uint64
+	idleFrames    atomic.Uint64 // 没有观众时收到的帧（不算丢帧，只是没人要）
 	lastFrameUnix atomic.Int64
 	startedAt     = time.Now()
 
@@ -483,7 +484,9 @@ func feedFrame(data []byte, key bool) {
 	ls := live
 	mu.Unlock()
 	if len(ls) == 0 {
-		droppedFrames.Add(1)
+		// 2026-11-08：没人看的时候每一帧都算"丢帧"会把这个计数器彻底污染
+		// （实测空闲几十分钟后 dropped 变成上万，报障时完全没法用）。单独记。
+		idleFrames.Add(1)
 		return
 	}
 	for _, s := range ls {

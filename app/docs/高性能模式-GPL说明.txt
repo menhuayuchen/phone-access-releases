@@ -31,5 +31,5 @@ GPL 合规说明
 --------
 - 高性能模式需要手机安装 Moonlight（第三方开源客户端）：Android 见
   https://github.com/moonlight-stream/moonlight-android/releases ；iOS 见 App Store。
-- 高性能模式只对已授权/试用中的客户开放（与产品的许可证规则一致）。
+- 高性能模式对所有用户开放（2026-11-08：产品完全免费，7 天试用规则已删除）（与产品的许可证规则一致）。
 - 不想用可以直接卸载（安装目录里的 2-停止并清理.cmd -UninstallSunshine），不影响网页模式。

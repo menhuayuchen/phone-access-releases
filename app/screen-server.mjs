@@ -554,9 +554,9 @@ function h264EncArgs() {
         // 代价：码率不再恒定（流量会波动），所以做成设置里的可选开关。
         ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '22',
            '-b:v', String(H264_KBPS) + 'K', '-maxrate', String(H264_KBPS) + 'K', '-bufsize', String(H264_KBPS * 2) + 'K',
-           '-g', String(Math.round(H264_FPS)), '-bf', '0', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : [])]
-        : ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS)), '-bf', '0'])
-      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', H264_QF ? '90' : '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.round(H264_FPS)), '-bf', '0']),
+           '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : [])]
+        : ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0'])
+      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', H264_QF ? '90' : '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0']),
     '-f', 'mp4',
     '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
     '-frag_duration', '5000', '-flush_packets', '1',
@@ -2644,22 +2644,18 @@ function readLicence() {
     // 展示用：购买/捐赠入口由 PowerShell 扫 branding 目录得出，与授权无关
     support: disp.support || null,
     branding: disp.branding || null,
-    // 7 天全功能试用（2026-10-30）：trial 块由 trial.ps1 算出、licence-state.ps1 写进状态文件。
-    // 试用期内按"全功能"对待（超清不限时 + 个性化解锁），到期自动回落免费档。
+    // 2026-11-08 删除 7 天试用：产品完全免费，状态里不再有到期块，effectiveUsable 恒为 true。
     // effectiveUsable 是页面/发帧/并发上限**统一**要读的那个字段；usable 仍然只表示"有正式许可证"。
-    trial: disp.trial || null,
-    effectiveUsable: !!(chk.ok || (disp.trial && disp.trial.active))
+    effectiveUsable: true
   };
   licenceCache = { stamp: stamp, data: data };
   return data;
 }
 
-// 便宜的全功能判断：许可证有效 或 试用期内。画面发帧、并发上限、页面解锁都用它。
+// 2026-11-08 删除 7 天试用：产品完全免费，谁都是全功能 —— 这个判断恒为 true。
+// 画面发帧、并发上限、页面解锁、高性能模式都还调它，但不再有任何分支会因为没许可证而收紧。
 function isFullFunction() {
-  try {
-    const l = readLicence();
-    return !!(l && l.effectiveUsable);
-  } catch { return false; }
+  return true;
 }
 
 // ---- 许可证验签（Node 侧）----------------------------------------------------
@@ -2810,9 +2806,10 @@ function parseLicenceText(text) {
 const ULTRA_LIMIT = 1920;   // 抓屏宽超过它 = 超清档
 const cfgFreemium = productConfig.freemium || {};
 const ULTRA_FREE_SEC = (Number(cfgFreemium.ultraFreeSecPerDay) > 0) ? Math.round(Number(cfgFreemium.ultraFreeSecPerDay)) : 3600;
-// 免费版并发观看上限（2026-10-30 用户拍板：最多 3 台设备同时看）。许可证/试用期内不限。
+// 并发观看上限（2026-10-30 用户拍板：最多 3 台设备同时看）。全功能不限。
 // 只限制"看画面"的连接数（清晰模式 /stream + 流畅模式 RTC），不影响同一台设备重连。
 // 2026-11-06 免费化：并发观看不再限制（填 0 或留空 = 不限台数）
+// 2026-11-08 删除 7 天试用：全功能恒为 true，这段上限判断已不再生效（保持"不限台数"）。
 const FREE_MAX_VIEWERS = (Number(cfgFreemium.freeMaxViewers) > 0) ? Math.round(Number(cfgFreemium.freeMaxViewers)) : 0;
 const ULTRA_USAGE_FILE = join(HERE, 'ultra-usage.json');
 let ultraUsage = { date: '', seconds: 0 };
@@ -2840,11 +2837,12 @@ function ultraFlush() {
 }
 setInterval(() => {
   ultraRollDay();
-  // 抓屏是超清档 + 未授权 + 最近 3 秒内真的按超清发过帧 → 计 1 秒
+  // 抓屏是超清档 + 最近 3 秒内真的按超清发过帧 → 计 1 秒
   if (CAP_W > ULTRA_LIMIT && Date.now() - ultraServeAt < 3000) {
     let lic = null;
     try { lic = readLicence(); } catch { lic = null; }
-    // 2026-10-30：试用期内算全功能，不扣每日免费额度
+    // 2026-11-08 删除 7 天试用：effectiveUsable 恒为 true（产品完全免费），
+    // 这里不再累计用量 —— 超清画质对任何人都不限时。
     if (!lic || !lic.effectiveUsable) { ultraUsage.seconds += 1; ultraDirty = true; }
   }
 }, 1000);
@@ -2854,7 +2852,7 @@ function ultraStatus() {
   ultraRollDay();
   let lic = null;
   try { lic = readLicence(); } catch { lic = null; }
-  // 2026-10-30：许可证 或 试用期内 = 全功能（超清不限时）
+  // 2026-11-08 删除 7 天试用：产品完全免费，谁都是全功能 → licensed 恒为 true（超清不限时）
   const licensed = !!(lic && lic.effectiveUsable);
   const ultra = CAP_W > ULTRA_LIMIT;
   const remaining = Math.max(0, ULTRA_FREE_SEC - ultraUsage.seconds);
@@ -2864,12 +2862,12 @@ function ultraStatus() {
     usedSec: ultraUsage.seconds, remainingSec: remaining,
     exhausted, clamped: exhausted,
     captureWidth: CAP_W, deliverWidth: exhausted ? Math.min(CAP_W, ULTRA_LIMIT) : CAP_W,
-    // 试用信息透给页面（设置面板显示"试用还剩 X 天"）
-    trial: (lic && lic.trial) || null,
+    // 2026-11-08 删除 7 天试用：不再往页面透剩余天数（产品完全免费，没有到期日）
     freeMaxViewers: FREE_MAX_VIEWERS
   };
 }
-// 实际允许发出去的帧宽上限：未授权 + 当日超清时长用完 → 压到 1920（高清档）
+// 实际允许发出去的帧宽上限：当日超清时长用完 → 压到 1920（高清档）
+// 2026-11-08 删除 7 天试用：exhausted 恒为 false，所以这里永远返回 CAP_W（不会降档）。
 function deliverCapW() {
   return CAP_W > ULTRA_LIMIT && ultraStatus().exhausted ? ULTRA_LIMIT : CAP_W;
 }
@@ -3075,17 +3073,17 @@ async function handler(req, res) {
     } catch { }
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify({
-      // usable = 全功能（许可证 或 7 天试用期内）——页面用它解锁超清/个性化，语义保持向后兼容
+      // 2026-11-08 删除 7 天试用：usable = 全功能，产品完全免费 → 恒为 true（页面用它解锁超清/个性化）。
       usable: !!lic.effectiveUsable,
-      // licensed = 真的装了许可证（不含试用）；页面用它区分"试用中"和"已购买"
+      // licensed = 真的装了许可证（可选）；页面只拿它显示徽章
       licensed: !!lic.usable,
-      trial: lic.trial || null,
+      // 2026-11-08 删除 7 天试用：返回给页面的 JSON 里不再有剩余天数字段
       state: lic.state || 'missing',
       machineCode: lic.machineCode || '',
       name: lic.name || '',
       expires: lic.expires || '',
-      // edition：许可证里写 'trial'（或 'month'）= 体验版（1 个月），其它视为专业版；
-      // 页面据此显示不同徽章（2026-10-31 加）
+      // edition：许可证里写的版本标记（体验版 1 个月 / 专业版），页面据此显示不同徽章（2026-10-31 加）
+      // 2026-11-08 删除 7 天试用：这里只是显示用，不再参与任何"是否全功能"的判断。
       edition: lic.edition || '',
       message: lic.message || '',
       support: support,
@@ -3591,8 +3589,9 @@ async function handler(req, res) {
 
   // ---- 高性能模式（Sunshine/Moonlight）--------------------------------------
   // GET  /sunshine-status    -> 安装/服务/凭据/授权/配置摘要
-  // GET  /sunshine-pairings  -> 等待 PIN 的 Moonlight 设备（需要许可证或试用中）
-  // POST /sunshine-pin       -> { pairing_id, pin, name } 提交 PIN（需要许可证或试用中）
+  // GET  /sunshine-pairings  -> 等待 PIN 的 Moonlight 设备
+  // POST /sunshine-pin       -> { pairing_id, pin, name } 提交 PIN
+  // 2026-11-08 删除 7 天试用：产品完全免费，以上接口不再要求许可证（原来的授权门槛已删）。
   if (url.pathname === '/sunshine-status') {
     (async () => {
       const installed = fileExists(SUNSHINE_EXE);
@@ -3620,6 +3619,7 @@ async function handler(req, res) {
           installed: installed,
           webUp: webUp,
           credentialsSet: creds,
+          // 2026-11-08 删除 7 天试用：产品完全免费 → 恒为 true（页面靠它显示"可用"，不再因没有许可证而隐藏）
           licensed: isFullFunction(),
           lanIps: privateIps(),
           tailnetIp: (() => { try { const ifs = os.networkInterfaces(); for (const n of Object.keys(ifs)) { if (!/tailscale/i.test(n)) continue; for (const it of (ifs[n] || [])) { if (it && it.family === 'IPv4' && /^100\.(6[4-9]|[7-9]\d|1[0-1]\d|12[0-7])\./.test(it.address)) return it.address; } } } catch (e) { } return ''; })(),
@@ -3661,9 +3661,7 @@ async function handler(req, res) {
         res.end(JSON.stringify(obj));
       } catch { }
     };
-    if (!isFullFunction()) {
-      return sreply(200, { ok: false, error: '高性能模式需要许可证或处于试用期内。可以先继续用网页模式。' });
-    }
+    // 2026-11-08 删除 7 天试用：产品完全免费，不再因为没许可证而拒绝配对。
     if (!readSunshineCreds()) {
       return sreply(200, { ok: false, error: '高性能模式还没初始化（缺凭据文件）。重启一次「轻屏」或重新运行安装包。' });
     }
@@ -3689,9 +3687,7 @@ async function handler(req, res) {
         res.end(JSON.stringify(obj));
       } catch { }
     };
-    if (!isFullFunction()) {
-      return sreply(200, { ok: false, error: '高性能模式需要许可证或处于试用期内。' });
-    }
+    // 2026-11-08 删除 7 天试用：产品完全免费，提交 PIN 不再需要许可证。
     let pbody = '';
     req.on('data', (c) => { pbody += c; if (pbody.length > 8192) req.destroy(); });
     req.on('end', () => {
@@ -3752,7 +3748,7 @@ async function handler(req, res) {
         res.end(JSON.stringify(obj));
       } catch { }
     };
-    if (!isFullFunction()) return sreply(200, { ok: false, message: '高性能模式需要许可证或处于试用期内。' });
+    // 2026-11-08 删除 7 天试用：产品完全免费，清空配对不再要求许可证。
     if (!readSunshineCreds()) return sreply(200, { ok: false, message: '高性能模式还没初始化（缺凭据文件）。' });
     (async () => {
       const r = await sunshineApi('POST', '/api/clients/unpair-all', null, 15000);
@@ -4650,49 +4646,8 @@ async function handler(req, res) {
     return;
   }
 
-  // 2026-11-08 P1c：手机端音画诊断上报（校准失败/成功、自动对齐状态）。
-  // 手机上的现象看不到，就让它自己把数字发回来，写进 avsync-diag.log，下次排障不用猜。
-  if (url.pathname === '/avdiag' && req.method === 'POST') {
-    let body = '';
-    req.on('data', (c) => { if (body.length < 65536) body += c; });
-    req.on('end', () => {
-      try {
-        const line = new Date().toISOString() + ' ' + (body || '{}').replace(/[\r\n]+/g, ' ').slice(0, 4000);
-        appendFileSync(join(HERE, 'avsync-diag.log'), line + '\n');
-        console.log('avdiag: ' + line.slice(24, 400));
-      } catch { }
-      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end('{"ok":true}'); } catch { }
-    });
-    return;
-  }
-
-  if (url.pathname === '/calib' && req.method === 'POST') {
-    // 2026-11-08 音画同步一次性校准：电脑全屏白闪 3 次 + 每次响 1kHz 提示音；
-    // 客户端自己分别记下"看到白闪"和"听到提示音"的时刻，算端到端差值。
-    const calibScript = join(HERE, 'calibrate.ps1');
-    if (!fileExists(calibScript)) {
-      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: false, note: '缺少校准脚本 calibrate.ps1' }));
-      return;
-    }
-    const now = Date.now();
-    if (now - (globalThis.__paCalibAt || 0) < 15000) {
-      res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: false, note: '刚校准过，15 秒后再试' }));
-      return;
-    }
-    globalThis.__paCalibAt = now;
-    const psExe = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-    try {
-      spawn(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', calibScript, '-Flashes', '3'], { windowsHide: true, stdio: 'ignore' });
-      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-      res.end(JSON.stringify({ ok: true, flashes: 3, flashMs: 180, gapMs: 800, totalMs: 4560 }));
-    } catch (e) {
-      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
-      res.end(JSON.stringify({ ok: false, note: String(e.message || e) }));
-    }
-    return;
-  }
+  // 2026-11-08 删除 7 天试用：音画同步一次性校准的残留端点已删（手机端诊断上报 + 触发校准脚本两个路由）。
+  // 现在音画同步由客户端自动对齐（audioSync），不再需要电脑端白闪+提示音的人工校准。
   if (url.pathname === '/offline/on' || url.pathname === '/offline/off') {
     const on = url.pathname === '/offline/on';
     // 防抖：3 秒内重复切换直接忽略（避免来回点把 UAC 和重启刷爆）
@@ -5790,15 +5745,8 @@ function wireServer(s) {
   rtc.attach(s, (req, url) => {
     if (!sourceAllowed(req)) return false;
     if (!authorized(req, url)) return false;
-    // 免费版并发上限同样管流畅模式（RTC）：超限返回一句状态行，页面会提示"设备数已满"。
-    if (!isFullFunction()) {
-      let peers = 0;
-      try { peers = rtc.stats().peers || 0; } catch { }
-      if (FREE_MAX_VIEWERS > 0 && streams + peers >= FREE_MAX_VIEWERS) {
-        console.log('rtc: 被并发上限拦下 viewers=' + (streams + peers) + ' limit=' + FREE_MAX_VIEWERS);
-        return '429 Too Many Viewers';
-      }
-    }
+    // 2026-11-08 删除 7 天试用：全功能恒为 true，原来的"免费版并发观看上限"判断整段删除
+    // （产品完全免费，流畅模式 RTC 也不再限制同时观看的台数）。
     return true;
   });
   start264();

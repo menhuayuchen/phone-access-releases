@@ -104,7 +104,6 @@ $appFiles = @(
   'product.config.json',
   'product-config.ps1',
   'selfcheck.ps1',
-  'calibrate.ps1',
   '自检.cmd',
   # 手机入口工具：客户自己能看二维码、换密钥（换密钥已内置在 entry.ps1，所以不需要带 rotate-key.ps1，
   # 那个在下面的禁止清单里，属卖家侧运维脚本）
@@ -131,8 +130,7 @@ $appFiles = @(
   'make-lan-cert.ps1',
   # 离线模式：本地 CA（手机装一次后 https 受信任、可安装成 App）
   'make-lan-ca.ps1',
-  # 7 天试用锚点（2026-10-30）：licence-state.ps1 会 dot-source 它，缺了会退回"试用不可用"。
-  'trial.ps1',
+  # 2026-11-08 删除 7 天试用：trial.ps1 已删除，不再随包分发（产品完全免费，没有到期锚点）。
   'https-setup.ps1',
   'start-phone-access.ps1',
   'start-phone-access.cmd',
@@ -192,7 +190,7 @@ $prodFiles = @(
 
 # 打包后的必需文件（缺任何一个都算包坏）
 $requiredInStage = @(
-  'product.config.json', 'product-config.ps1', 'selfcheck.ps1', 'calibrate.ps1', '自检.cmd',
+  'product.config.json', 'product-config.ps1', 'selfcheck.ps1', '自检.cmd',
   'start-phone-access.ps1', 'start-phone-access.cmd', 'start-screen.ps1',
   'stop-phone-access.ps1', 'stop-phone-access.cmd',
   'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1',

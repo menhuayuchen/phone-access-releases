@@ -37,17 +37,7 @@ try { $lic = Test-Licence -AppDir $AppDir -ForceMachine:$Force } catch {
     $lic = [pscustomobject]@{ State = 'error'; Usable = $false; MachineCode = ''; Name = ''; Issued = ''; Expires = ''; Edition = ''; Message = ('校验异常：' + $_.Exception.Message) }
 }
 
-# 7 天全功能试用（2026-10-30）：锚点存在安装目录之外，卸载重装不会刷新试用期。
-# 试用期内 effectiveUsable=true —— 页面按它解锁超清不限时 + 个性化，到期自动回落免费档。
-$trial = $null
-try {
-    if (-not (Get-Command Get-TrialState -ErrorAction SilentlyContinue)) {
-        . (Join-Path $here 'trial.ps1')
-    }
-    $trial = Get-TrialState -Dir $AppDir
-} catch {
-    $trial = [pscustomobject]@{ active = $false; state = 'error'; start = ''; ends = ''; daysLeft = 0; days = 7; machine = '' }
-}
+# 2026-11-08 删除 7 天试用：trial.ps1 已删除，这里不再 dot-source、也不再计算任何到期状态。
 
 # 读 support 配置（捐赠/购买入口），原样透传给页面
 $support = $null
@@ -81,9 +71,8 @@ try {
 
 $state = [pscustomobject]@{
     usable      = [bool]$lic.Usable
-    # effectiveUsable = 许可证有效 或 试用期内。画面服务/页面统一按这个判断"是否全功能"。
-    effectiveUsable = [bool]($lic.Usable -or ($trial -and $trial.active))
-    trial       = $trial
+    # 2026-11-08 删除 7 天试用：产品完全免费，effectiveUsable 恒为 $true（任何功能都不需要许可证）。
+    effectiveUsable = $true
     state       = [string]$lic.State
     machineCode = [string]$lic.MachineCode
     # 旧算法机械码（v1，2026-11-03 T2）：screen-server 验许可证时用它兼容老许可证。
@@ -111,8 +100,9 @@ if (-not $Quiet) {
     if ($lic.Usable) {
         Write-Host ('[i] 许可证：有效（' + $lic.Name + ' / ' + $(if ($lic.Expires -eq 'never' -or -not $lic.Expires) { '永久' } else { $lic.Expires }) + '）') -ForegroundColor Green
     } else {
-        Write-Host ('[!] 许可证：' + $lic.Message) -ForegroundColor Yellow
+        Write-Host ('[i] 许可证：' + $lic.Message) -ForegroundColor Cyan
         Write-Host ('    本机机器码：' + $lic.MachineCode)
-        Write-Host '    画面和操作会暂停，把机器码发给卖家换取许可证。' -ForegroundColor Yellow
+        # 2026-11-08 删除 7 天试用：产品完全免费，没有许可证也照样全功能，不再说"画面会暂停"。
+        Write-Host '    （产品完全免费：没有许可证也能正常使用，机器码只用于换电脑时找回设置）' -ForegroundColor Cyan
     }
 }

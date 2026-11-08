@@ -911,8 +911,8 @@ try {
     'stop-phone-access.ps1', 'stop-phone-access.cmd',
     'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1',
     # 许可证 + 手机入口 + HTTPS 支持：缺任何一个都会导致功能静默缺失，所以列入必需清单
-    # trial.ps1 由 licence-state.ps1 dot-source（7 天试用的锚点），缺了会让试用静默失效
-    'licence.ps1', 'licence-state.ps1', 'trial.ps1', 'https-setup.ps1',
+    # 2026-11-08 删除 7 天试用：trial.ps1 已删除，不再往安装目录复制，也不再做任何试用初始化
+    'licence.ps1', 'licence-state.ps1', 'https-setup.ps1',
     'entry.ps1', '手机入口.cmd',
     # 离线模式（局域网/电脑热点）：入口脚本 + 桌面快捷方式目标
     'offline-mode.ps1', '离线模式.cmd', 'make-lan-cert.ps1', 'make-lan-ca.ps1', 'hotspot-ctl.ps1', 'offline-firewall.ps1',
@@ -1376,7 +1376,7 @@ try {
           }
           if ($changed.Count -gt 0) {
             [System.IO.File]::WriteAllText($cfgDst, ($oldCfg | ConvertTo-Json -Depth 8), (New-Object System.Text.UTF8Encoding($false)))
-            Write-Ok ('已更新 product.config.json：' + ($changed -join '、') + '（版本号/更新源/套餐/试用规则来自新版本；端口和开关等客户设置未动）')
+            Write-Ok ('已更新 product.config.json：' + ($changed -join '、') + '（版本号/更新源/套餐来自新版本；端口和开关等客户设置未动）')
           }
         }
       } catch {
