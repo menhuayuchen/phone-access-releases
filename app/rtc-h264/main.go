@@ -223,6 +223,12 @@ var (
 	audioPeak      atomic.Int64
 	audioPeakAt    atomic.Int64
 	audioPcmBlocks atomic.Uint64
+	// 2026-11-08 音频编码诊断：最近一包字节数、最大包、编码错误数、时间戳回贴次数。
+	// 96kbps 立体声每包约 240 B；如果是几十字节，说明码率没设上（会被磨成"变形"）。
+	audioEncErr      atomic.Uint64
+	audioPayloadLast atomic.Int64
+	audioPayloadMax  atomic.Int64
+	audioTsSnaps     atomic.Uint64
 
 	logPath string
 
@@ -722,7 +728,11 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 			}
 			return time.Now().UnixMilli() - t
 		}(),
-		"audioBlocks": audioPcmBlocks.Load(),
+		"audioBlocks":  audioPcmBlocks.Load(),
+		"audioPayload": audioPayloadLast.Load(),
+		"audioPayloadMax": audioPayloadMax.Load(),
+		"audioEncErr":  audioEncErr.Load(),
+		"audioTsSnaps": audioTsSnaps.Load(),
 	})
 }
 

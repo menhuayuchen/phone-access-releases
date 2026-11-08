@@ -1086,6 +1086,7 @@ async function startRtc264() {
           R.audioSamePc = true;
           // P1b：P1 漏了这一步——校准/统计都靠 RTC264.audioTrack，null 时校准直接说"音频还没连上"
           try { RTC264.audioTrack = e.track; } catch (err) { }
+          try { RTC264.audioSamePcTrack = e.track; } catch (err) { }   // 2026-11-08：这条永不主动清空，关/开声音靠它恢复
           try { R.media.addTrack(e.track); } catch (err) { }
           try { vid.muted = !state.audio; } catch (err) { }
           return;
@@ -1253,8 +1254,13 @@ function rtc264AudioStop() {
   const A = RTC264;
   if (A.audioSig) { try { A.audioSig.onclose = null; A.audioSig.onmessage = null; A.audioSig.close(); } catch (e) { } A.audioSig = null; }
   if (A.audioPc) { try { A.audioPc.ontrack = null; A.audioPc.close(); } catch (e) { } A.audioPc = null; }
-  if (A.audioTrack && A.media) { try { A.media.removeTrack(A.audioTrack); } catch (e) { } }
-  A.audioTrack = null;
+  // 2026-11-08 修：**同一条 PC 送来的音频轨不归这里管**。它属于 RTC264.media 那条流，
+  // 原来这里无条件 removeTrack + 清空 audioTrack，导致"关声音→再开"时轨已经找不回来，
+  // 而 rtc264AudioStart() 又因为 audioSamePc 直接 return → 之后永久没声音。
+  if (!A.audioSamePc) {
+    if (A.audioTrack && A.media) { try { A.media.removeTrack(A.audioTrack); } catch (e) { } }
+    A.audioTrack = null;
+  }
 }
 // 2026-11-07：清晰模式音频 A/B 开关。
 // 默认仍走 /rtc?audio=1 的纯音频 WebRTC；带 ?audio=pcm 时改用页面已有的 PCM over WebSocket。
@@ -1318,12 +1324,17 @@ function applyRtc264Audio() {
   if (!RTC264.pc) return;
   vid.muted = !state.audio;
   if (state.audio) {
-    // P1：音频在同一条 PC 里。曾经"关声音→再开"会因为 rtc264AudioStart() 直接 return
-    // 而永远没声音（轨被 rtc264AudioStop 从 MediaStream 里摘掉了），这里补回去。
-    if (RTC264.audioSamePc && RTC264.audioTrack && RTC264.media) {
+    // 2026-11-08 修：音频在同一条 PC 里时，**只需要把 <video> 的静音关掉**。
+    // 轨道始终留在 RTC264.media 里；不要再走"建连接/摘轨"那套（老通道才需要）。
+    // 顺带兜底：万一轨被别的路径摘掉了，从这里补回去（audioSamePcTrack 不会被清空）。
+    if (RTC264.audioSamePc) {
+      const tr = RTC264.audioSamePcTrack || RTC264.audioTrack;
       try {
-        if (RTC264.media.getAudioTracks().indexOf(RTC264.audioTrack) < 0) RTC264.media.addTrack(RTC264.audioTrack);
+        if (RTC264.media && tr && RTC264.media.getAudioTracks().indexOf(tr) < 0) RTC264.media.addTrack(tr);
       } catch (e) { }
+      vid.muted = false;
+      try { if (typeof vid.play === 'function') vid.play().catch(function () { }); } catch (e) { }
+      return;
     }
     if (rtc264AudioUsePcm()) {
       try { rtc264AudioStop(); } catch (e) { }

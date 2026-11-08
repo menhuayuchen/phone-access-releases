@@ -47,12 +47,31 @@ func newOpusEncoder(dllPath string) (*opusEncoder, error) {
 		return nil, err
 	}
 	var encErr int32
-	// 48000Hz / 2ch / OPUS_APPLICATION_AUDIO=2048
-	h, _, _ := create.Call(48000, 2, 2048, uintptr(unsafe.Pointer(&encErr)))
+	// 2026-11-08 修：原来这里传的是 2048 = OPUS_APPLICATION_VOIP（语音通话模式），
+	// 桌面音频（音乐/视频/系统声音）用它会被 SILK 语音优化处理，听起来发闷、忽高忽低
+	// ——用户反馈的"声音到后面变形了"就是这个。改成 OPUS_APPLICATION_AUDIO=2049，
+	// 并显式设码率/复杂度/信号类型（opus_encode_ctl，全部是单 int 参数的控制项）。
+	h, _, _ := create.Call(48000, 2, 2049, uintptr(unsafe.Pointer(&encErr)))
 	if h == 0 || encErr != 0 {
 		return nil, fmt.Errorf("opus_encoder_create err=%d", encErr)
 	}
-	return &opusEncoder{dll: dll, enc: h, encode: encFn, out: make([]byte, 4000)}, nil
+	o := &opusEncoder{dll: dll, enc: h, encode: encFn, out: make([]byte, 4000)}
+	if ctl, err := dll.FindProc("opus_encoder_ctl"); err == nil {
+		set := func(name string, req, val int) {
+			if r, _, _ := ctl.Call(h, uintptr(req), uintptr(val)); int32(r) < 0 {
+				logf("opus ctl %s(%d)=%d 失败: %d", name, req, val, int32(r))
+			}
+		}
+		set("BITRATE", 4002, 96000)            // 96kbps 立体声，音乐够用（原来默认约 32k）
+		set("VBR", 4006, 1)                    // 变码率
+		set("COMPLEXITY", 4010, 8)             // 质量优先（0-10）
+		set("SIGNAL", 4024, 3002)              // OPUS_SIGNAL_MUSIC
+		set("DTX", 4016, 0)                    // 关不连续传输（DTX 会让静音段听起来"断"）
+		set("INBAND_FEC", 4012, 0)             // 关带内 FEC（会额外占带宽、偶发杂音）
+		set("PACKET_LOSS_PERC", 4014, 0)
+		logf("opus: 编码器已按桌面音频配置（AUDIO 模式 / 96kbps / 复杂度 8 / MUSIC）")
+	}
+	return o, nil
 }
 
 // encodePCM: pcm 是 s16le 交错立体声；返回 Opus 包
@@ -65,10 +84,17 @@ func (o *opusEncoder) encodePCM(pcm []byte) ([]byte, error) {
 	defer o.mu.Unlock()
 	n, _, _ := o.encode.Call(o.enc, uintptr(unsafe.Pointer(&pcm[0])), uintptr(samples), uintptr(unsafe.Pointer(&o.out[0])), uintptr(len(o.out)))
 	if int32(n) < 0 {
+		audioEncErr.Add(1)
 		return nil, fmt.Errorf("opus_encode err=%d", int32(n))
 	}
 	packet := make([]byte, int(n))
 	copy(packet, o.out[:int(n)])
+	// 2026-11-08 诊断：包里每包字节数能看出码率是否真的生效（96kbps 立体声约 240 B/20ms…）
+	audioEncErr.Store(0)
+	audioPayloadLast.Store(int64(len(packet)))
+	if int64(len(packet)) > audioPayloadMax.Load() {
+		audioPayloadMax.Store(int64(len(packet)))
+	}
 	return packet, nil
 }
 
@@ -279,9 +305,14 @@ func readAudioFeed(conn net.Conn, enc *opusEncoder) {
 		samplesPerCh := uint32(len(pcm) / 4) // 48k 立体声 16bit：每声道采样数
 		// 内容累计和真实到达时间差太多（音频管道断过/设备换过）就贴回 epoch，
 		// 否则音频时间轴会和视频越走越远。
+		// 2026-11-08 修：原来 ±100ms 就强行把时间戳贴回真实时间 —— 实测时钟漂移只有 ~24ppm，
+		// 这样每小时会跳一次 100ms，NetEq 每次都要补/丢一段（听起来就是"变形/忽快忽慢"）。
+		// 放到 2 秒：只兜真正的管道卡死，正常漂移交给接收端自适应。
 		drift := int64(tsAcc) - int64(epochTicks())
-		if drift > 4800 || drift < -4800 { // ±100ms
+		if drift > 96000 || drift < -96000 {
 			tsAcc = epochTicks()
+			audioTsSnaps.Add(1)
+			logf("音频时间戳贴回真实时间（漂移 %dms）", drift/48)
 		}
 		ts := tsAcc
 		tsAcc += samplesPerCh
