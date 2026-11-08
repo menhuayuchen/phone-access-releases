@@ -147,7 +147,7 @@ func startAudioPacer() {
 func audioPacer() {
 	tick := time.NewTicker(5 * time.Millisecond)
 	defer tick.Stop()
-	q := make([]audioPkt, 0, 256)
+	q := make([]audioPkt, 0, 40)
 	curMs := audioDelayLearned.Load() // 上一次会话学到的值（0 = 还没学到）
 	audioDelayCur.Store(curMs)
 	frozen := curMs > 0 // 有历史值就直接用，不再中途动
@@ -158,8 +158,8 @@ func audioPacer() {
 		for len(audioCh) > 0 {
 			q = append(q, <-audioCh)
 		}
-		if len(q) > 250 { // 超过 2.5 秒就丢最旧的，宁可断续也不让时间轴无限拖后
-			drop := len(q) - 250
+		if len(q) > 40 { // 超过 400ms 就丢最旧的：宁可断续，也不让音频延迟无限堆高
+			drop := len(q) - 40
 			q = q[drop:]
 			audioDropped.Add(uint64(drop))
 		}
@@ -285,12 +285,17 @@ func readAudioFeed(conn net.Conn, enc *opusEncoder) {
 		}
 		ts := tsAcc
 		tsAcc += samplesPerCh
-		// 2026-11-08 P1c：延迟为 0 时**直接写**，不经过队列——队列由 Windows 的
-		// 十几毫秒 ticker 驱动，会白给音频加一层 15ms 抖动（实测把 Chrome 的音频
-		// 抖动缓冲从 60ms 顶到 95~285ms）。只有真的要压后时才排队。
-		if audioDelayCur.Load() <= 0 && audioDelayMs <= 0 {
-			writeAudioAll(packet, ts)
-			continue
+		// 2026-11-08 P1d：**一律先入队，绝不在这条读连接里直接写 RTP**。
+		// 实测生产：WriteRTP 会阻塞（音频和 20Mbps 视频共用一条 UDP/TURN 通道，
+		// 网络拥塞时写不出去），读循环一停 TCP 里就堆了 430KB+ ≈ 2.2 秒音频，
+		// 表现是"声音比画面晚两秒"，而抖动缓冲看不出任何异常。
+		// 队列满了丢**最旧**的：宁可偶尔断一下，也不让音频永久落后。
+		if len(audioCh) >= cap(audioCh)-1 {
+			select {
+			case <-audioCh:
+				audioDropped.Add(1)
+			default:
+			}
 		}
 		select {
 		case audioCh <- audioPkt{at: time.Now(), payload: packet, ts: ts}:
@@ -299,7 +304,6 @@ func readAudioFeed(conn net.Conn, enc *opusEncoder) {
 		}
 	}
 }
-
 var (
 	audioMu = sync.Mutex{}
 )

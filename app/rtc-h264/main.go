@@ -213,7 +213,7 @@ var (
 	audioDelayCur    atomic.Int64 // 当前实际压后（毫秒）
 	skewEmaUs        atomic.Int64 // 视频到达时刻 − 音频内容时刻 的慢速均值（µs）
 	lastAudioWriteAt atomic.Int64 // 最近一次真正写出音频的墙钟（毫秒）
-	audioCh          = make(chan audioPkt, 512)
+	audioCh          = make(chan audioPkt, 40) // 40 包 ≈ 400ms：拥塞时靠"丢最旧"把音频延迟钉死，绝不让它堆到几秒
 	audioQueued      atomic.Int64
 	audioDelayLearned atomic.Int64
 	audioWrites      atomic.Uint64 // 累计写出的音频包数（自动对齐要等音频稳定后再决策） // 上一次会话学到的音频压后值（跨会话复用，避免每场都重新抖一次）

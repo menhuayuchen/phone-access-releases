@@ -253,6 +253,19 @@ internal sealed class AudioRing
         }
     }
 
+    // 2026-11-08：把积压裁到 maxBytes 以内（丢最旧的），保证延迟不会累积。
+    public void TrimTo(int maxBytes)
+    {
+        lock (_sync)
+        {
+            if (_count <= maxBytes) return;
+            int drop = _count - maxBytes;
+            _read = (_read + drop) % _buffer.Length;
+            _count -= drop;
+            _droppedBytes += drop;
+        }
+    }
+
     public int Read(byte[] dst, int offset, int length)
     {
         lock (_sync)
@@ -538,7 +551,11 @@ internal sealed class AudioRunner
     private const int PipeWriteTimeoutMs = 2000;
 
     private readonly string _pipeName;
-    private readonly AudioRing _ring = new AudioRing(TargetRate * TargetChannels * 2 * 2); // 2 s
+    // 2026-11-08：原来 2 秒。收发速率相等时，任何一次抖动都会把"深度"永久钉在最深处，
+    // 实测把音频内容压到 2.2 秒之前（手机听到的声音是 2 秒前的），而且越用越深。
+    // 现在只留 200ms 余量，并在发送前再裁到 120ms（见 SendLoop），延迟恒定不累积。
+    private readonly AudioRing _ring = new AudioRing(TargetRate * TargetChannels * 2 / 5); // 200 ms
+    private const int MaxRingBytes = TargetRate * TargetChannels * 2 * 12 / 100;           // 120 ms 上限
     private readonly AudioStats _stats = new AudioStats();
     private readonly long _chunkTicks = (long)(Stopwatch.Frequency * ChunkMilliseconds / 1000.0);
     private volatile bool _running = true;
@@ -732,6 +749,7 @@ internal sealed class AudioRunner
 
         while (_running && pipe.IsConnected)
         {
+            _ring.TrimTo(MaxRingBytes);   // 先裁掉积压，保证"听到的是刚刚的声音"
             int read = _ring.Read(packet, 4, ChunkBytes);
             if (read < ChunkBytes) Array.Clear(packet, 4 + read, ChunkBytes - read);
 
