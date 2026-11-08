@@ -22,6 +22,7 @@ param(
   [switch]$SkipSelfCheck,   # 跳过最后的客户自检（排查安装器自身时用）
   [switch]$SkipDefender,    # 不添加 Windows Defender 排除项
   [switch]$SkipHighPerformance, # 跳过「高性能模式」（Sunshine/Moonlight，可选组件）
+[switch]$HighPerformance,       # 显式选择安装高性能组件（Sunshine/Moonlight，可选；无网络自动跳过）
   [string]$SourceDir = '',  # 安装包所在目录（默认=本脚本所在目录；测试/打包校验时可指定）
   [string]$InstallTo = '',  # 安装到哪个目录（默认读 product.config.json 的 installDir）
   # 改动（独立审查 L5）：记录"发起安装的那个账号"，提权后拿来比对。
@@ -1808,51 +1809,80 @@ try {
   $hpMsiSrc = Join-Path $script:SourceDirFull 'Sunshine-Windows-AMD64-installer.msi'
   $hpScript = Join-Path $script:InstallRoot 'sunshine-integration.ps1'
   if (-not (Test-Path -LiteralPath $hpScript)) { $hpScript = Join-Path $script:SourceDirFull 'sunshine-integration.ps1' }
-  if ($SkipHighPerformance) {
-    Write-Note '按参数跳过高性能模式（网页模式照常可用）'
-    $script:HpState = '按参数跳过'
-  } elseif ((-not (Test-Path -LiteralPath $hpMsi)) -and (-not (Test-Path -LiteralPath $hpMsiSrc))) {
-    Write-Note '这个安装包没带高性能模式组件（没有 Sunshine 安装包），跳过；网页模式照常可用'
-    $script:HpState = '未包含（跳过）'
-  } elseif (-not (Test-Path -LiteralPath $hpScript)) {
-    Write-WarnLine '缺少 sunshine-integration.ps1，跳过高性能模式'
-    $script:HpState = '缺少脚本（跳过）'
-  } elseif ($script:DryRunMode) {
-    Write-Note '（干跑）会安装并预配置 Sunshine（只绑 tailnet、自动随机凭据、防火墙收紧、只广播 H.264）'
-    $script:HpState = '（干跑未执行）'
-  } else {
-    $hpMsiUse = $hpMsi
-    if (-not (Test-Path -LiteralPath $hpMsiUse)) { $hpMsiUse = $hpMsiSrc }
-    Write-Note '正在安装/预配置 Sunshine（约 1–2 分钟）。它是独立程序（GPL-3.0），只用来给 Moonlight 提供低延迟通道…'
-    $hpOk = $false
-    try {
-      $psExeHp = Get-PowerShellExe
-      # 2026-11-06 修正（用户实测）：机器上已经装过 Sunshine 时，这一步可能卡住整个安装。
-      # 这里再套一层总超时（420 秒）：超时就结束这一步、继续安装后面的收尾步骤，绝不让安装器卡死。
-      $hpArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $hpScript, '-Action', 'install',
-                  '-AppDir', $script:InstallRoot, '-MsiPath', $hpMsiUse, '-Quiet')
-      $hpProc = Start-Process -FilePath $psExeHp -ArgumentList $hpArgs -PassThru -WindowStyle Hidden
-      $hpTimedOut = $false
-      try { Wait-Process -Id $hpProc.Id -Timeout 420 -ErrorAction Stop } catch { $hpTimedOut = $true }
-      if ($hpTimedOut) {
-        try { Stop-Process -Id $hpProc.Id -Force -ErrorAction SilentlyContinue } catch { }
-        Write-WarnLine '高性能模式这一步 7 分钟没结束（多半是机器上已装过 Sunshine），已跳过，继续安装其他部分'
-      } else {
-        $hpOk = ($hpProc.ExitCode -eq 0)
-      }
-    } catch {
-      Write-WarnLine ('高性能模式安装没能完成：' + [string]$_.Exception.Message)
-    }
-    if ($hpOk) {
-      Write-Ok '高性能模式已就绪：手机装 Moonlight → 手机页「设置 → 高性能模式」输 PIN 配对'
-      $script:HpState = '已就绪（手机装 Moonlight 后配对）'
+  # 2026-11-08（用户虚拟机实测反馈）：高性能组件改成**可选、默认不装**。
+# 以前默认安装 Sunshine，虚拟机/无网络环境会卡住整个安装器。
+$hpWant = [bool]$HighPerformance
+if (-not $hpWant -and -not $SkipHighPerformance -and -not $script:DryRunMode -and -not $script:NoPauseMode) {
+  Write-Host ''
+  Write-Host '可选组件：高性能模式（Moonlight / Sunshine）' -ForegroundColor Cyan
+  Write-Host '  约 33 MB，需要网络；不装的话网页模式完全可用，以后也能在手机设置页补装。'
+  $choiceExe = Join-Path $env:SystemRoot 'System32\choice.exe'
+  $hpChoice = 2
+  try {
+    & $choiceExe /C YN /N /T 15 /D N /M '  现在安装吗？[Y=装 / N=跳过，15 秒后自动跳过] '
+    $hpChoice = [int]$LASTEXITCODE
+  } catch { $hpChoice = 2 }
+  $hpWant = ($hpChoice -eq 1)
+}
+$hpNetOk = $true
+try { $hpNetOk = [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable() } catch { $hpNetOk = $false }
+if ($SkipHighPerformance) {
+  Write-Note '按参数跳过高性能模式（网页模式照常可用）'
+  $script:HpState = '按参数跳过'
+} elseif ($script:DryRunMode) {
+  Write-Note '（干跑）会安装并预配置 Sunshine（只绑 tailnet、自动随机凭据、防火墙收紧、只广播 H.264）'
+  $script:HpState = '（干跑未执行）'
+} elseif (-not $hpWant) {
+  Write-Note '未选择高性能组件，跳过（网页模式完全可用；以后可在手机设置页补装）'
+  $script:HpState = '未选择（跳过）'
+} elseif (-not $hpNetOk) {
+  Write-WarnLine '当前没有网络：跳过高性能组件（网页模式照常可用）'
+  $script:HpState = '无网络（跳过）'
+} elseif ((-not (Test-Path -LiteralPath $hpMsi)) -and (-not (Test-Path -LiteralPath $hpMsiSrc))) {
+  Write-Note '这个安装包没带高性能模式组件（没有 Sunshine 安装包），跳过；网页模式照常可用'
+  $script:HpState = '未包含（跳过）'
+} elseif (-not (Test-Path -LiteralPath $hpScript)) {
+  Write-WarnLine '缺少 sunshine-integration.ps1，跳过高性能模式'
+  $script:HpState = '缺少脚本（跳过）'
+} else {
+  $hpMsiUse = $hpMsi
+  if (-not (Test-Path -LiteralPath $hpMsiUse)) { $hpMsiUse = $hpMsiSrc }
+  Write-Note '正在安装/预配置 Sunshine（约 1–2 分钟）。它是独立程序（GPL-3.0），只用来给 Moonlight 提供低延迟通道…'
+  $hpOk = $false
+  $hpMsiBefore = @(Get-Process msiexec -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+  try {
+    $psExeHp = Get-PowerShellExe
+    # 2026-11-06：机器上已装过 Sunshine 时这一步可能卡住；再套一层 5 分钟总超时。
+    # 2026-11-08：超时后连同它拉起的 msiexec 一起结束，避免安装器一直挂着。
+    $hpArgs = @('-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', $hpScript, '-Action', 'install',
+      '-AppDir', $script:InstallRoot, '-MsiPath', $hpMsiUse, '-Quiet')
+    $hpProc = Start-Process -FilePath $psExeHp -ArgumentList $hpArgs -PassThru -WindowStyle Hidden
+    $hpTimedOut = $false
+    try { Wait-Process -Id $hpProc.Id -Timeout 300 -ErrorAction Stop } catch { $hpTimedOut = $true }
+    if ($hpTimedOut) {
+      try { Stop-Process -Id $hpProc.Id -Force -ErrorAction SilentlyContinue } catch { }
+      try {
+        $hpMsiAfter = @(Get-Process msiexec -ErrorAction SilentlyContinue | ForEach-Object { $_.Id })
+        foreach ($mp in ($hpMsiAfter | Where-Object { $hpMsiBefore -notcontains $_ })) {
+          try { Stop-Process -Id $mp -Force -ErrorAction SilentlyContinue } catch { }
+        }
+      } catch { }
+      Write-WarnLine '高性能模式 5 分钟没结束，已强制结束这一步，继续安装其他部分（不影响网页模式）'
     } else {
-      Write-WarnLine '高性能模式没装成（不影响网页模式）；可重跑安装包或手动运行 sunshine-integration.ps1'
-      $script:HpState = '未完成（不影响网页模式）'
+      $hpOk = ($hpProc.ExitCode -eq 0)
     }
+  } catch {
+    Write-WarnLine ('高性能模式安装没能完成：' + [string]$_.Exception.Message)
   }
-
-  # =========================================================================
+  if ($hpOk) {
+    Write-Ok '高性能模式已就绪：手机装 Moonlight → 手机页「设置 → 高性能模式」输 PIN 配对'
+    $script:HpState = '已就绪（手机装 Moonlight 后配对）'
+  } else {
+    Write-WarnLine '高性能模式没装成（不影响网页模式）；可重跑安装包或手动运行 sunshine-integration.ps1'
+    $script:HpState = '未完成（不影响网页模式）'
+  }
+}
+# =========================================================================
   # 第 12 步：收尾（桌面图标 + 手机入口 + 讲清楚接下来做什么）
   # =========================================================================
   $script:CurrentStepNo = 12

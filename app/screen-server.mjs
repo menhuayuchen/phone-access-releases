@@ -212,6 +212,28 @@ if (H264_ENABLED && H264_ENCODER === 'nvenc') {
 H264_NATIVE = H264_ZEROCOPY && H264_W >= CAP_W && H264_W >= 2560;
 console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）') + ' 零拷贝=' + (H264_ZEROCOPY ? '可用' : '不可用（走过滤器）'));
 
+// 2026-11-08（虚拟机实测后修正）：**不要**用启动探测给清晰模式判死刑 ——
+// 锁屏、远程桌面、刚开机时 ddagrab 都会短暂失败，一探就禁用会误伤正常机器（本机 RTX 5070 复现过）。
+// 改成按真实运行结果判定：
+//   · ffmpeg 连续 2 次在 2 秒内退出 → 暂不可用（60 秒后自动重试），/h264-status 带原因
+//   · 解码到第一帧 → 可用，清掉原因
+let H264_CAPABLE = null;              // null=还没结论；true=可用；false=暂不可用
+let H264_REASON = '';
+let H264_DISABLED_UNTIL = 0;
+function h264MarkUnavailable(reason) {
+  H264_CAPABLE = false;
+  H264_REASON = reason || '清晰模式启动失败（虚拟机 / 远程桌面 / 锁屏时常见），60 秒后自动重试';
+  H264_DISABLED_UNTIL = Date.now() + 60 * 1000;
+  console.log('h264: 暂不可用 -> ' + H264_REASON);
+}
+function h264MarkAvailable() {
+  if (H264_CAPABLE === false) console.log('h264: 已恢复可用');
+  H264_CAPABLE = true;
+  H264_REASON = '';
+  H264_DISABLED_UNTIL = 0;
+}
+function h264TemporarilyUnavailable() { return H264_DISABLED_UNTIL > Date.now(); }
+
 const h264 = {
   proc: null,
   init: null,
@@ -428,6 +450,7 @@ function processH264Buffer() {
       if (h264.clients.size || rtc264Status.sessions > 0) notePush(h264.tsUs);
     }
     h264.frames += samples.length;
+    if (h264.frames > 0 && H264_CAPABLE !== true) h264MarkAvailable();
     h264.pending = h264.pending.subarray(mdat.end);
     continue;
   }
@@ -580,6 +603,10 @@ function h264AttachEncoder(proc) {
           h264.quickFails = 0;
           h264.lastError = 'zero-copy 连续秒退，已回退过滤器路径';
           console.log('h264: ' + h264.lastError);
+        } else if (h264.quickFails >= 2) {
+          // 非零拷贝路径也连续秒退：桌面复制/编码器不可用（虚拟机、远程桌面、锁屏）→ 暂不可用，60 秒后重试
+          h264MarkUnavailable('清晰模式启动失败：' + (h264.lastError || '桌面复制采集不可用'));
+          h264.quickFails = 0;
         }
       } else {
         h264.quickFails = 0;
@@ -599,6 +626,8 @@ function h264Start() {
   // 否则会同时跑多只编码器、共用一个解析缓冲（2026-11-05 晚就是这样卡死 node 的）。
   // h264.cap：单窗口采集端正在启动（还没起 ffmpeg），也不能重复 spawn。
   if (!H264_ENABLED || h264.proc || h264.killPending || h264.cap) return;
+  // 2026-11-08：桌面复制不可用（虚拟机等）时不要再起 ffmpeg，否则会无限秒退重试
+  if (h264TemporarilyUnavailable()) { h264.lastError = H264_REASON; return; }
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
   if (H264_WIN > 0) return h264StartWindow();
   // 2026-11-06 结论（记录一下，别再试错）：GPU 侧缩放这条路在这台机器上不通 ——
@@ -4658,7 +4687,7 @@ async function handler(req, res) {
       '',
       '== 编码/画面 ==',
       JSON.stringify({
-        enabled: H264_ENABLED, encoder: H264_ENCODER, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS,
+        enabled: H264_ENABLED, capable: H264_CAPABLE, reason: H264_REASON, encoder: H264_ENCODER, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS,
         viewers: h264.clients.size, lastError: h264.lastError, native: H264_NATIVE, rect: H264_RECT
       }),
       '',
@@ -4774,6 +4803,10 @@ async function handler(req, res) {
     res.end(JSON.stringify({
       ok: true,
       enabled: H264_ENABLED,
+      capable: H264_CAPABLE,
+      reason: H264_REASON,
+      retryInMs: Math.max(0, H264_DISABLED_UNTIL - Date.now()),
+      encoder: H264_ENCODER,
       width: H264_W,
       height: H264_H,
       fps: H264_FPS,

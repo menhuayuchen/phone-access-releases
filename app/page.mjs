@@ -440,6 +440,7 @@ let lastBlk = -1, blkAt = 0;
 const hint = document.getElementById('hint');
 const btnCrisp = document.getElementById('mCrisp');
 const btnSmooth = document.getElementById('mSmooth');
+
 const srcSel = document.getElementById('src');
 const srcBtn = document.getElementById('srcBtn');
 const srcSheet = document.getElementById('srcSheet');
@@ -788,8 +789,30 @@ function h264Supported() {
   h264.supported = !!(window.VideoDecoder && window.EncodedVideoChunk);
   return h264.supported;
 }
+// 2026-11-08：清晰模式可用性看门狗（常驻 interval，只在“清晰”灯亮着时检查）。
+// 背景：清晰模式在虚拟机/远程桌面/锁屏时可能起不来；原有兜底会先切到低频 mjpeg 但按钮还亮着，
+// 用户看到的仍是“清晰点了没反应”。这里一旦服务端报 capable=false 就自动切回流畅并说明原因。
+// 用常驻 interval 而不是 setTimeout 链：stopH264()/原有兜底会清掉一次性定时器。
+function startH264AvailabilityWatch() {
+  if (window.__paH264Watch) return;
+  let lastKick = 0;
+  window.__paH264Watch = setInterval(async () => {
+    try {
+      if (!btnCrisp.classList.contains('on')) return;        // 用户已在流畅：不用管
+      if (Date.now() - lastKick < 15000) return;             // 切过之后 15 秒内不重复操作
+      const hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+      if (hs && hs.capable === false) {
+        lastKick = Date.now();
+        const waitTxt = (hs.retryInMs > 0) ? ('（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）') : '';
+        setNote('清晰模式暂时不可用：' + (hs.reason || '桌面复制采集不可用') + waitTxt + '，已切回流畅模式', 15000);
+        try { btnSmooth.click(); } catch (e) { }
+      }
+    } catch (e) { }
+  }, 2500);
+}
 function stopH264() {
   h264.gen = (h264.gen || 0) + 1;
+  if (h264.availTimer) { clearTimeout(h264.availTimer); h264.availTimer = null; }
   if (h264.failTimer) { clearTimeout(h264.failTimer); h264.failTimer = null; }
   if (h264.jumpTimer) { clearInterval(h264.jumpTimer); h264.jumpTimer = null; }
   if (h264.ws) {
@@ -1356,6 +1379,14 @@ async function startH264() {
     }
   } catch (e) { }
   if (!st || !st.enabled) { startMjpeg(); return; }
+  if (st.capable === false) {
+    // 2026-11-08：服务端明确说清晰模式暂不可用（虚拟机 / 远程桌面 / 锁屏）：
+    // 不要在这里反复重试（否则会 清晰→低频→再清晰 来回跳），直接切回流畅并说明原因。
+    const waitTxt2 = (st.retryInMs > 0) ? ('（约 ' + Math.ceil(st.retryInMs / 1000) + ' 秒后自动重试）') : '';
+    setNote('清晰模式暂时不可用：' + (st.reason || '桌面复制采集不可用') + waitTxt2 + '，已切回流畅模式', 15000);
+    try { btnSmooth.click(); } catch (e) { }
+    return;
+  }
   // 2026-11-06：WebRTC264 的判断必须放在 WebCodecs 检查**前面**。
   // http 下没有 window.VideoDecoder（WebCodecs 是安全上下文专属），但 WebRTC 完全可用；
   // 原来先判 WebCodecs，导致 http 直接掉到 5fps 的低频画面。
@@ -1822,6 +1853,14 @@ async function startPcmAudio() {
 
 // ---- 顶栏 ------------------------------------------------------------------
 btnCrisp.addEventListener('click', async () => {
+  // 2026-11-08：先问服务端这台电脑能不能做清晰模式；桌面复制不可用（虚拟机等）时保持流畅并说明原因
+  try {
+    const hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+    if (hs && hs.capable === false && hs.retryInMs > 0) {
+      setNote('清晰模式暂时不可用：' + (hs.reason || '桌面复制采集不可用') + '（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）', 12000);
+      return;
+    }
+  } catch (e) { }
   // 2026-11-07 修复：这里以前**从不**更新按钮状态，只有 startH264 内部某些分支才加 .on，
   // 所以「流畅 → 清晰」时状态已是 h264、按钮却还亮着「流畅」（用户实测）。
   // 和 btnSmooth 一样，在入口先把模式和按钮同步掉。
@@ -1835,6 +1874,7 @@ btnCrisp.addEventListener('click', async () => {
   // 2026-11-06：同样交给 startH264 自己选通道（http 下 WebCodecs 不可用，但 WebRTC264 可用）
   stopLowBw();                          // 高清模式下不该再挂着 200ms 的低频轮询定时器
   startH264();
+  startH264AvailabilityWatch();   // 2026-11-08：常驻看门狗（虚拟机/锁屏时清晰不可用会自动切回流畅）
   setStat('高清模式（H.264）');
   if (state.lowBw && state.mode === 'mjpeg') startLowBw();
   if (state.audio) startPcmAudio();     // 声音统一走 PCM 通道（H.264 只传画面）
@@ -3017,7 +3057,7 @@ addEventListener('orientationchange', syncViewportHeight);
 if (window.visualViewport) window.visualViewport.addEventListener('resize', syncViewportHeight);
 function bindImg(el) {
   el.addEventListener('load', () => { imgOkAt = Date.now(); setStat(state.lowBw ? '低频画面（' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽）' : '直播中'); });
-  el.addEventListener('error', () => { if (!stopped) setTimeout(() => startMjpeg(), 1200); });
+  el.addEventListener('error', () => { if (!stopped && state.mode === 'mjpeg') setTimeout(() => startMjpeg(), 1200); });
 }
 bindImg(img);
 
@@ -3033,7 +3073,20 @@ bindImg(img);
   if (new URLSearchParams(location.search).get('mjpeg') === '1') {
     startMjpeg();
   } else {
-    startH264();
+    // 2026-11-08：先问服务端清晰模式能不能用（虚拟机/远程桌面/锁屏时会不可用）。
+    // 不可用就直接起流畅并说明原因，不再先黑屏 8 秒再兜底。
+    let hs0 = null;
+    try { hs0 = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { }
+    if (hs0 && (hs0.capable === false || hs0.enabled === false)) {
+      const why = hs0.reason || (hs0.enabled === false ? '这台电脑没有启用清晰模式' : '清晰模式不可用');
+      const waitTxt = (hs0.retryInMs > 0) ? ('（约 ' + Math.ceil(hs0.retryInMs / 1000) + ' 秒后自动重试）') : '';
+      // 延迟到 init 末尾的 setNote('') 之后再提示，否则会被清掉
+      setTimeout(function () { setNote('清晰模式暂时不可用：' + why + waitTxt + '，已先用流畅模式', 15000); }, 900);
+      try { btnSmooth.click(); } catch (e) { }
+    } else {
+      startH264();
+      startH264AvailabilityWatch();
+    }
   }
   pollStats();
   statsTimer = setInterval(pollStats, 2000);   // 顺带每 6 秒做一次 WebRTC 丢包自适应
@@ -3661,6 +3714,21 @@ bindImg(img);
     const msg = box.querySelector('#hqMsg');
     if (!wSel || !fpsSel || !kSel) return;
     const setMsg = (s, c) => { if (msg) { msg.textContent = s; msg.style.color = c || '#868c96'; } };
+  // 2026-11-08：显示清晰模式可用性（虚拟机/远程桌面不支持时说明原因，避免点了没反应）
+  (async () => {
+    try {
+      const hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+      const capEl = box.querySelector('#hqCap');
+      if (!capEl) return;
+      if (hs && hs.capable === false) {
+        capEl.textContent = '清晰模式：暂时不可用 —— ' + (hs.reason || '桌面复制采集不可用') + (hs.retryInMs > 0 ? ('（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）') : '');
+        capEl.style.color = '#ffb454';
+      } else if (hs && hs.capable === true) {
+        capEl.textContent = '清晰模式：可用' + (hs.encoder ? '（编码器 ' + hs.encoder + '）' : '');
+        capEl.style.color = '#8CE58C';
+      }
+    } catch (e) { }
+  })();
     const paintAuto = () => {
       if (autoBtn) {
         autoBtn.style.background = AUTOQ.on ? '#2f6f3f' : '#2a2d36';
@@ -3692,7 +3760,18 @@ bindImg(img);
       try {
         const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
         if (!j || !j.ok) return;
+        // 2026-11-08：服务端 width 可能不在选项里（虚拟机采集宽度未知/很小），
+        // 直接赋值会让下拉显示空白。这里选最接近的档位，并说明实际采集宽度。
         wSel.value = String(j.width);
+        if (wSel.selectedIndex < 0) {
+          const want = Number(j.width) || 1920;
+          let best = wSel.options[0];
+          for (const o of wSel.options) {
+            if (Math.abs(Number(o.value) - want) < Math.abs(Number(best.value) - want)) best = o;
+          }
+          wSel.value = best.value;
+          setMsg('当前采集宽度 ' + (j.width || '未知') + '，已按最接近的 ' + wSel.value + ' 显示', '#ffb454');
+        }
         fpsSel.value = String(j.fps);
         kSel.value = String(j.kbps);
         if (qfCb) qfCb.checked = !!j.qf;
@@ -5706,7 +5785,8 @@ bindImg(img);
       + '<input type="checkbox" id="hqQf"> 画质优先（文字更锐；延迟约 +1 帧，流量会波动）</label>'
       + '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
       + '<input type="checkbox" id="hqWin"> 单窗口采集（实验：只传选中的窗口，被挡住也能抓；约 10–30fps）</label>'
-      + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>');
+      + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>'
+  + '<div id="hqCap" style="font-size:11.5px;color:#6b7078;margin-top:6px;line-height:1.6"></div>');
 
     // 个性化（许可证功能；未授权显示锁定说明与购买入口）
     body += setSection('外观（主题 / 光标）', p13nInner(lic));
