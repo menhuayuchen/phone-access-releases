@@ -4144,6 +4144,40 @@ bindImg(img);
     // 2026-11-08：同一 Wi-Fi 串流开关（只放行 Sunshine 自己的端口，不含 47990 管理后台）
     const lsState = () => box.querySelector('#ssLanState');
     const lsMsg = (txt, color) => { const el = lsState(); if (el) { el.textContent = txt; el.style.color = color || '#6b7078'; } };
+    // 2026-11-08：手机侧探测局域网地址 + 等防火墙规则生效（打开「允许同一 Wi-Fi 串流」后自动验证）
+    const paProbeLan = (ip, timeoutMs) => new Promise((resolve) => {
+      const addr = String(ip || '').trim();
+      if (!/^\d+\.\d+\.\d+\.\d+$/.test(addr)) { resolve(false); return; }
+      let done = false;
+      const fin = (ok) => { if (!done) { done = true; resolve(ok); } };
+      let ctrl = null;
+      try { ctrl = new AbortController(); } catch (e) { }
+      const timer = setTimeout(() => { try { if (ctrl) ctrl.abort(); } catch (e) { } fin(false); }, Math.max(1200, Number(timeoutMs) || 2500));
+      try {
+        fetch('http://' + addr + ':47989/', { mode: 'no-cors', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
+          .then(() => { clearTimeout(timer); fin(true); })
+          .catch(() => { clearTimeout(timer); fin(false); });
+      } catch (e) { clearTimeout(timer); fin(false); }
+    });
+    const paLanIp = async () => {
+      try {
+        const j = await fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+        const list = Array.isArray(j && j.lanIps) ? j.lanIps : [];
+        const lan = list.filter((x) => /^(10\.|192\.168\.|172\.(1[6-9]|2\d|3[01])\.)/.test(String((x && x.ip) || '')));
+        return lan.length ? String(lan[0].ip) : '';
+      } catch (e) { return ''; }
+    };
+    const paWaitRules = async (deadlineMs) => {
+      const end = Date.now() + Math.max(3000, Number(deadlineMs) || 20000);
+      while (Date.now() < end) {
+        try {
+          const s = await fetch('/stream/status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+          if (s && s.ok && Number(s.rules) > 0) return true;
+        } catch (e) { }
+        await new Promise((r) => setTimeout(r, 1500));
+      }
+      return false;
+    };
     const loadStream = async () => {
       try {
         const s = await fetch('/stream/status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
@@ -4155,8 +4189,26 @@ bindImg(img);
       lsMsg('正在' + (on ? '放行' : '关闭并恢复') + '：请在电脑上点「是」（管理员授权）…', '#ffb454');
       try {
         const r = await fetch('/stream/lan/' + (on ? 'on' : 'off'), { method: 'POST' }).then((x) => x.json());
-        lsMsg((r && (r.note || r.error)) || '已提交', (r && r.ok) ? '#ffb454' : '#ff6b6b');
-        setTimeout(loadStream, 6000);
+        if (!r || !r.ok) { lsMsg((r && (r.error || r.note)) || '操作被拒绝', '#ff6b6b'); return; }
+        if (!on) { lsMsg((r.note || '已关闭'), '#ffb454'); setTimeout(loadStream, 6000); return; }
+        // 打开：等规则建好（UAC 要用户点「是」），再从手机这边实际验证能不能连
+        lsMsg('已提交，请在电脑上点「是」…马上自动验证', '#ffb454');
+        const rulesOk = await paWaitRules(25000);
+        if (!rulesOk) { lsMsg('规则还没建成：可能没点「是」或被安全软件拦了，请再点一次', '#ffb454'); return; }
+        loadStream();
+        const ip = await paLanIp();
+        if (!ip) { lsMsg('已放行，但没取到局域网地址', '#ffb454'); return; }
+        const ok = await paProbeLan(ip, 3000);
+        if (ok) {
+          lsMsg('✓ 已放行，且手机这边能连到 ' + ip + '（Moonlight 可以直接用这个地址）', '#8CE58C');
+        } else {
+          lsMsg('已放行，但手机这边连不上 ' + ip + '：多半是网络隔离/不同网段，请用 Tailscale 地址', '#ffb454');
+        }
+        // 顺手刷新地址卡片，让「手机这边能连到…」那行同步更新
+        try {
+          const j = await fetch('/sunshine-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json());
+          renderAddr(j);
+        } catch (e) { }
       } catch (e) { lsMsg('请求失败：' + ((e && e.message) || e), '#ff9d9d'); }
     };
     const lsOn = box.querySelector('#ssLanOn');
@@ -4216,19 +4268,7 @@ bindImg(img);
         if (location.protocol !== 'http:') { el.textContent = ''; return; }   // https 页面会拦 http 探测
         const firstLan = (lan && lan[0] && lan[0].ip) ? String(lan[0].ip) : '';
         if (!firstLan) { el.textContent = ''; return; }
-        const probe = (ip) => new Promise((resolve) => {
-          let done = false;
-          const fin = (ok) => { if (!done) { done = true; resolve(ok); } };
-          let ctrl = null;
-          try { ctrl = new AbortController(); } catch (e) { }
-          const timer = setTimeout(() => { try { if (ctrl) ctrl.abort(); } catch (e) { } fin(false); }, 2500);
-          try {
-            fetch('http://' + ip + ':47989/', { mode: 'no-cors', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
-              .then(() => { clearTimeout(timer); fin(true); })
-              .catch(() => { clearTimeout(timer); fin(false); });
-          } catch (e) { clearTimeout(timer); fin(false); }
-        });
-        const ok = await probe(firstLan);
+        const ok = await paProbeLan(firstLan, 2500);
         if (!el) return;
         if (ok) {
           el.textContent = '✓ 手机这边能连到 ' + firstLan + '（同一个 Wi-Fi 可以用）';
@@ -6898,7 +6938,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-08.2';
+export const PAGE_VER = '2026-11-08.3';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
