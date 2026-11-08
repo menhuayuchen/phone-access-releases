@@ -75,14 +75,16 @@ $tsIp = $tsState.Ip
 # 离线模式（没有互联网/没有 Tailscale）：允许只靠局域网/电脑热点启动。
 # 开关在 product.config.json → screen.offline，由页面「离线模式」里的开关写入。
 $offlineMode = [bool]($cfg.screen -and $cfg.screen.offline)
+# 2026-11-08：开机时 Tailscale 常常还没就绪（实测这次要 90 秒）。原来这里直接 exit 1，
+# 导致这段时间 8660 完全不监听，用户以为"服务没自启"，只能手动去点。
+# 现在先只绑 127.0.0.1 启动：tailscale serve 的转发目标就是 127.0.0.1，Tailscale 一就绪手机 HTTPS 立刻可用；
+# 守护进程探测到 tailnet 地址后会自动重启本脚本补上 tailnet 监听。
+# 安全姿态不变：仍然不提供绕过 Tailscale 的局域网入口（8660 只绑回环 + tailnet）。
 if (-not $tsIp) {
   if ($offlineMode) {
     Write-Host "[!] Tailscale 没有连上（$($tsState.Note)）：按离线模式继续，只用局域网/热点访问。" -ForegroundColor Yellow
   } else {
-    Write-Host "[x] Tailscale 没有连上（$($tsState.Note)）。"
-    Write-Host "    出于安全考虑，不提供绕过 Tailscale 的局域网入口；请先登录 Tailscale，再重新启动。"
-    if (-not $Quiet) { Read-Host '按回车退出' }
-    exit 1
+    Write-Host "[!] Tailscale 还没就绪（$($tsState.Note)）：先只监听 127.0.0.1；守护进程会在拿到 tailnet 地址后自动重启绑定。" -ForegroundColor Yellow
   }
 }
 # 改动（PWA/HTTPS）：额外绑 127.0.0.1。

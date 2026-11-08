@@ -1573,6 +1573,19 @@ try {
         -Trigger @($triggerLogon, $triggerRepeat) -Settings $settings -ErrorAction Stop `
         -Description '轻屏控制：登录时自动启动，并每 2 分钟自检恢复'
       Write-Ok '开机自启和自动恢复已经注册（重启后不用你手动点任何东西）'
+# 2026-11-08：清理重复自启任务（历史版本装过 PhoneAccess Autostart 等别名，和 DSH Phone Access
+# 都指向 run-autostart.vbs；两个任务各每 2 分钟跑一次 → 每分钟左右重复启动一次）。
+try {
+  $dupes = @(Get-ScheduledTask -ErrorAction SilentlyContinue | Where-Object {
+    $_.TaskName -ne $taskName -and ($_.Actions | Where-Object { $_.Arguments -match 'run-autostart\.vbs' })
+  })
+  foreach ($d in $dupes) {
+    try {
+      Unregister-ScheduledTask -TaskName $d.TaskName -TaskPath $d.TaskPath -Confirm:$false -ErrorAction Stop
+      Write-Note ('已移除重复自启任务：' + $d.TaskName)
+    } catch { }
+  }
+} catch { }
 
       # 已知限制（PACKAGING.md §6.2）：autostart.ps1 只等 WLAN|Wi-Fi 网卡别名拿地址。
       # 纯有线上网的机器重启后可能不会被拉起来。先告诉客户，别让他以为是安装坏了。

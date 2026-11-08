@@ -250,6 +250,28 @@ function Get-TailscaleWellKnownDirs {
 # Tailscale 状态：IP 优先用 `tailscale ip -4`（P0-1 指定的做法，不依赖 MagicDNS 也不依赖 JSON 结构），
 # 再用 `status --json` 补 DNSName / Running，并在 ip -4 失败时从 JSON 里补 IP。
 # 任何一步失败都不抛异常，返回 Ip='' 由调用方决定退回 127.0.0.1 或跳过 tailnet 功能。
+# 2026-11-08：开机时 tailscale.exe 的 ip/status 调用会阻塞几十秒（实测 47 秒），
+# 守护进程的探测循环被它卡住 → 画面服务迟迟不重启。这里统一加超时，超时就当"还没就绪"。
+function Invoke-ExeCapture {
+  param([string]$Exe, [string[]]$Arguments, [int]$TimeoutSec = 5)
+  if (-not $Exe) { return '' }
+  $tmpOut = [System.IO.Path]::GetTempFileName()
+  $tmpErr = [System.IO.Path]::GetTempFileName()
+  try {
+    $p = Start-Process -FilePath $Exe -ArgumentList $Arguments -NoNewWindow -PassThru `
+      -RedirectStandardOutput $tmpOut -RedirectStandardError $tmpErr -ErrorAction Stop
+    $done = $p.WaitForExit([Math]::Max(1, $TimeoutSec) * 1000)
+    if (-not $done) {
+      try { $p.Kill() } catch { }
+      return ''
+    }
+    return (Get-Content -LiteralPath $tmpOut -Raw -ErrorAction SilentlyContinue)
+  } catch {
+    return ''
+  } finally {
+    Remove-Item -LiteralPath $tmpOut, $tmpErr -Force -ErrorAction SilentlyContinue
+  }
+}
 function Get-TailscaleInfo {
   param([string]$TailscaleExe)
 
@@ -260,7 +282,7 @@ function Get-TailscaleInfo {
   }
 
   try {
-    $lines = @(& $TailscaleExe ip -4 2>$null)
+    $lines = @((Invoke-ExeCapture -Exe $TailscaleExe -Arguments @('ip','-4') -TimeoutSec 5) -split "`r?`n")
     foreach ($l in $lines) {
       $s = ([string]$l).Trim()
       if ($s -match '^(\d{1,3}\.){3}\d{1,3}$') { $info.Ip = $s; break }
@@ -268,7 +290,7 @@ function Get-TailscaleInfo {
   } catch { }
 
   try {
-    $raw = (& $TailscaleExe status --json 2>$null | Out-String)
+    $raw = Invoke-ExeCapture -Exe $TailscaleExe -Arguments @('status','--json') -TimeoutSec 5
     if ($raw -and $raw.Trim()) {
       $st = $raw | ConvertFrom-Json
       if ($st.BackendState -eq 'Running') { $info.Running = $true }

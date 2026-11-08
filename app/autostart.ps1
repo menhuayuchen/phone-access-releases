@@ -7,6 +7,18 @@ function Log($message) {
     Out-File -FilePath $log -Append -Encoding utf8
 }
 
+# 2026-11-08：历史遗留了两个自启任务（DSH Phone Access + PhoneAccess Autostart），
+# 每个都每 2 分钟跑一次 → 互相错开时约每分钟重复启动一次。这里做去重：
+# 上一次运行在 70 秒内就直接退出。
+$stamp = Join-Path $here 'autostart.stamp'
+try {
+  if (Test-Path -LiteralPath $stamp) {
+    $age = ((Get-Date) - (Get-Item -LiteralPath $stamp).LastWriteTime).TotalSeconds
+    if ($age -lt 70) { exit 0 }
+  }
+  Set-Content -LiteralPath $stamp -Value (Get-Date -Format o) -Encoding ascii -ErrorAction SilentlyContinue
+} catch { }
+
 Log '--- autostart begin ---'
 
 # 2026-10-31：自启仍然由计划任务「DSH Phone Access」负责（登录时触发 + 每 2 分钟兜底重试）。
