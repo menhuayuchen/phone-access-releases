@@ -5428,11 +5428,11 @@ bindImg(img);
       + '能自己回来就说明支持；回不来就要进 BIOS（开机按 F2）找 <b>Power / Automatic Power On / Wake on RTC / Wake up on Time</b> 打开它，'
       + '或者只能把「关机」时间当纯定时休眠用、手动开机。</div>'
       + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #202228;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-      + '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#c9ccd1;cursor:pointer"><input type="checkbox" id="pwUnlock"' + (st && st.unlockOnWake ? ' checked' : '') + ' style="width:15px;height:15px"> 唤醒后不要求登录（自用便利模式）</label>'
+      + ((st && st.profile === 'release') ? '' : '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#c9ccd1;cursor:pointer"><input type="checkbox" id="pwUnlock"' + (st && st.unlockOnWake ? ' checked' : '') + ' style="width:15px;height:15px"> 唤醒后不要求登录（自用便利模式）</label>')
       + '<span style="flex:1"></span>'
       + '<button id="pwLockNow" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">立即锁屏</button>'
       + '</div>'
-      + '<div style="color:#6b7078;font-size:11px;margin-top:4px;line-height:1.6">勾选后：唤醒/开机直接回桌面，手机不用输 Windows 密码（发布版强制关闭）。代价是走到电脑前的人也能直接用 —— 用完可以点「立即锁屏」。改完会弹一次管理员授权。</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:4px;line-height:1.6">' + ((st && st.profile === 'release') ? '唤醒后不要求登录：仅自用版提供，发布版不提供该选项。' : '勾选后：唤醒/开机直接回桌面，手机不用输 Windows 密码。代价是走到电脑前的人也能直接用 —— 用完可以点「立即锁屏」。改完会弹一次管理员授权。') + '</div>'
       + '</div>';
     return h;
   }
@@ -6778,7 +6778,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-07.3';
+export const PAGE_VER = '2026-11-08.1';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

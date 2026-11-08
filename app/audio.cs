@@ -7,7 +7,7 @@
 //
 // Usage:
 //   audio.exe <pipeName> <logFile>
-//   default pipeName = dsh-audio, default logFile = <exeDir>\audio.log
+//   default pipeName = pa-audio, default logFile = <exeDir>\audio.log
 //
 // Capture:
 //   NAudio WasapiLoopbackCapture on the default render endpoint (system audio,
@@ -569,7 +569,7 @@ internal sealed class AudioRunner
 
     public static int Run(string[] args)
     {
-        string pipeName = (args.Length > 0 && args[0].Length > 0) ? args[0] : "dsh-audio";
+        string pipeName = (args.Length > 0 && args[0].Length > 0) ? args[0] : "pa-audio";
         string exeDir = Path.GetDirectoryName(Assembly.GetExecutingAssembly().Location);
         string logFile = (args.Length > 1 && args[1].Length > 0)
             ? args[1]

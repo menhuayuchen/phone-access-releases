@@ -1,4 +1,4 @@
-﻿﻿using System;
+﻿using System;
 using System.Collections.Generic;
 using System.IO;
 using System.IO.Pipes;
@@ -729,8 +729,8 @@ static class Program
     static void Main(string[] args)
     {
         EnableDpiAwareness();
-        string pipeName = args.Length > 0 ? args[0] : "dsh-input";
-        logFile = args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "dsh-input.log");
+        string pipeName = args.Length > 0 ? args[0] : "pa-input";
+        logFile = args.Length > 1 ? args[1] : Path.Combine(Path.GetTempPath(), "pa-input.log");
         Log("input service start pipe=" + pipeName + " integrity=" + IntegrityLevel());
         Serve(pipeName);
     }

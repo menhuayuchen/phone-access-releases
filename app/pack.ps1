@@ -413,7 +413,14 @@ if ($DryRun) {
   $prodSize = 0L
   foreach ($rel in $prodFiles) { $prodSize += (Get-Item -LiteralPath (Join-Path $ProdDir $rel)).Length }
   if ($qrlibOk) { $qrlibSize = Get-UniqueTreeSize -Dir $qrlibDir -Seen @{}; $prodSize += $qrlibSize }
-  if ($includeTailscale) { $prodSize += (Get-Item -LiteralPath $tailscaleSetup).Length }
+  # 2026-11-08 隐私修复：pnpm 生成的 node_modules\**\.bin 垫片里写着构建机的绝对路径
+# （C:\Users\<构建机>\.pnpm\...，还带 dsh 的目录名）。产品不依赖这些垫片（直接 node 调模块），
+# 一并清掉；发布版构建里本来就有后处理删除，这里让自用版也干净。
+foreach ($bd in @(Get-ChildItem -LiteralPath (Join-Path $stage 'node_modules') -Recurse -Directory -Filter '.bin' -Force -ErrorAction SilentlyContinue)) {
+  Remove-Item -LiteralPath $bd.FullName -Recurse -Force -ErrorAction SilentlyContinue
+}
+
+if ($includeTailscale) { $prodSize += (Get-Item -LiteralPath $tailscaleSetup).Length }
   $nodeSize = (Get-Item -LiteralPath $nodeChosen).Length
   $est = $appSize + $prodSize + $nodeSize + $nmSize
   Write-InfoLine ('产品代码约：' + (Format-Mb $appSize))
@@ -468,6 +475,24 @@ Write-OkLine ('二进制与素材：' + [string]$prodFiles.Count + ' 个文件')
 if ($qrlibOk) {
   Copy-Item -LiteralPath $qrlibDir -Destination (Join-Path $stage 'qrlib') -Recurse -Force
   Write-OkLine 'qrlib 已复制'
+
+  # 2026-11-08 隐私修复：qrlib 里的构建产物**不能进包**
+  #   · bin\qr.exe          —— 内嵌构建机的 python 绝对路径（含用户名和 .dsh 运行时路径）
+  #   · __pycache__\*.pyc   —— Python 字节码里带源码绝对路径（同样泄露构建机路径）
+  # 产品用 make-qr.py + 系统 python 生成二维码，不需要 qr.exe 和预编译字节码。
+  $qrStage = Join-Path $stage 'qrlib'
+  $pruned = 0
+  $qrExeStage = Join-Path $qrStage 'bin\qr.exe'
+  if (Test-Path -LiteralPath $qrExeStage) { Remove-Item -LiteralPath $qrExeStage -Force; $pruned++ }
+  foreach ($d in @(Get-ChildItem -LiteralPath $qrStage -Recurse -Directory -Filter '__pycache__' -Force -ErrorAction SilentlyContinue)) {
+    Remove-Item -LiteralPath $d.FullName -Recurse -Force; $pruned++
+  }
+  foreach ($pf in @(Get-ChildItem -LiteralPath $qrStage -Recurse -File -Force -ErrorAction SilentlyContinue | Where-Object { $_.Extension -in '.pyc', '.pyo' })) {
+    Remove-Item -LiteralPath $pf.FullName -Force; $pruned++
+  }
+  $qrLeft = @(Get-ChildItem -LiteralPath $qrStage -Recurse -File -Force -ErrorAction SilentlyContinue).Count
+  if ($qrLeft -lt 50) { Write-ErrLine ('qrlib 清理后只剩 ' + [string]$qrLeft + ' 个文件（应在 60+），二维码会坏 —— 检查清理规则'); $selfCheckErrors++ }
+  if ($pruned -gt 0) { Write-OkLine ('qrlib 已清掉 ' + [string]$pruned + ' 个构建产物（qr.exe / __pycache__ / .pyc）') }
 }
 
 if ($includeTailscale) {
@@ -680,6 +705,7 @@ $allStageFiles = @(Get-ChildItem -LiteralPath $stage -Recurse -File -Force -Erro
 foreach ($f in $allStageFiles) {
   $name = $f.Name
   if ($f.Extension -in '.log', '.err', '.out') { [void]$forbiddenHits.Add($f.FullName); continue }
+  if ($f.Extension -in '.pyc', '.pyo') { [void]$forbiddenHits.Add($f.FullName); continue }
   if ($name -like '*.bak*' -and $name -ne 'capture.exe.bak') { [void]$forbiddenHits.Add($f.FullName); continue }
   if ($name -like 'phone-qr*' -or $name -like 'screen-qr*' -or $name -eq 'qr-login.png' -or $name -eq 'qr-tailip.png' -or $name -eq 'tailnet-qr.png') {
     [void]$forbiddenHits.Add($f.FullName)

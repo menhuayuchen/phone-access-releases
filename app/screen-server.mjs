@@ -5263,6 +5263,8 @@ async function handler(req, res) {
             busy: !!globalThis.__paPowerBusy,
             // 2026-11-07：自用版「唤醒后不要求登录」的开关状态（页面显示用）
             unlockOnWake: !!(readJson(join(HERE, 'product.config.json'), {}).security || {}).unlockOnWake,
+  // 2026-11-08：页面按 profile 决定是否显示「唤醒后不要求登录」（发布版隐藏）
+  profile: String((readJson(join(HERE, 'product.config.json'), {}).profile) || 'selfuse'),
             last: last || null
           });
         } catch (e) { }
@@ -5319,7 +5321,9 @@ async function handler(req, res) {
           const cfgPath = join(HERE, 'product.config.json');
           const cfg = JSON.parse(readFileSync(cfgPath, 'utf8').replace(/^\uFEFF/, ''));
           cfg.security = cfg.security || {};
-          cfg.security.unlockOnWake = !!m.unlockOnWake;
+          // 2026-11-08：发布版禁止开启「唤醒后不要求登录」——自用便利模式会让走到电脑前的人直接用。
+          const profNow = String(cfg.profile || 'selfuse');
+          cfg.security.unlockOnWake = (profNow === 'release') ? false : !!m.unlockOnWake;
           writeFileSync(cfgPath, JSON.stringify(cfg, null, 2), 'utf8');
         } catch (eCfg) { }
       }
