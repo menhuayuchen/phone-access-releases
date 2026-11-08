@@ -1942,7 +1942,20 @@ if ($SkipHighPerformance) {
       '-AppDir', $script:InstallRoot, '-MsiPath', $hpMsiUse, '-Quiet')
     $hpProc = Start-Process -FilePath $psExeHp -ArgumentList $hpArgs -PassThru -WindowStyle Hidden
     $hpTimedOut = $false
-    try { Wait-Process -Id $hpProc.Id -Timeout 300 -ErrorAction Stop } catch { $hpTimedOut = $true }
+    # 2026-11-08（用户要求）：Sunshine 安装/下载阶段给进度条，不再干等 5 分钟。
+    $hpStart = Get-Date
+    $hpMaxSec = 300
+    while ($hpProc -and -not $hpProc.HasExited) {
+      $hpElapsed = [int]((Get-Date) - $hpStart).TotalSeconds
+      if ($hpElapsed -ge $hpMaxSec) { $hpTimedOut = $true; break }
+      $hpPct = [int][Math]::Min(95, [Math]::Round($hpElapsed * 100.0 / $hpMaxSec))
+      $barLen = 22
+      $filled = [int][Math]::Round($hpPct * $barLen / 100.0)
+      $bar = '[' + ('#' * $filled) + ('-' * ($barLen - $filled)) + ']'
+      try { Write-Host ("`r    安装进度 " + $bar + ' ' + [string]$hpPct + '%  已用 ' + [string]$hpElapsed + 's / 最多 ' + [string]$hpMaxSec + 's ') -NoNewline -ForegroundColor Cyan } catch { }
+      Start-Sleep -Seconds 2
+    }
+    try { Write-Host '' } catch { }
     if ($hpTimedOut) {
       try { Stop-Process -Id $hpProc.Id -Force -ErrorAction SilentlyContinue } catch { }
       try {

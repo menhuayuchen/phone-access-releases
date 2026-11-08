@@ -3612,6 +3612,14 @@ bindImg(img);
           + '<button id="tsHttpsCopy" data-url="' + escHtml(s.httpsUrl) + '" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">复制这个地址</button>'
           + '<a href="' + escHtml(s.httpsUrl) + '" target="_blank" rel="noreferrer" style="background:#2f6feb;color:#fff;border-radius:8px;padding:5px 11px;font-size:11.5px;text-decoration:none">用它打开</a>'
           + '<span id="tsHttpsMsg" style="font-size:11.5px;color:#868c96"></span></div>');
+  // 2026-11-08（用户要求）：把 Tailscale 后台地址直接挂在设置里，并写清楚点哪里
+  rows.push('<div style="margin-top:8px;padding:8px 10px;border:1px solid #26405a;background:#101b26;border-radius:8px;color:#aeb3bb;font-size:11.5px;line-height:1.75">'
+    + '<b style="color:#8fb6ff">后台地址</b>（复制到浏览器打开，手机/电脑都行）：<br>'
+    + '<code id="tsAdminUrl" style="color:#8fb6ff;user-select:all;font-size:11.5px">https://login.tailscale.com/admin/dns</code> '
+    + '<button id="tsAdminCopy" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer">复制</button><br>'
+    + '打开后：用<b>和电脑同一个 Tailscale 账号</b>登录 → <b>DNS</b> → <b>HTTPS Certificates</b> → 点 <b>Enable HTTPS</b>；'
+    + '再回到本页点「一键开启远程 HTTPS」。这一步每个账号只做一次，证书由 Tailscale 自动签发，手机不用装证书。'
+    + '</div>');
         rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.6">这个地址是 https 的，证书由 Tailscale 自动签发（手机不用装任何证书）。加到手机主屏当 App 用最方便。</div>');
       } else {
         rows.push(setKv('远程 HTTPS', '<span style="color:#ffb454">未开启</span>'));
@@ -3619,6 +3627,14 @@ bindImg(img);
           + '<button id="tsHttpsBtn" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:6px 12px;font-size:12px;cursor:pointer">一键开启远程 HTTPS</button>'
           + '<a href="https://login.tailscale.com/admin/dns" target="_blank" rel="noreferrer" style="color:#8fb6ff;font-size:11.5px;text-decoration:none">去 Tailscale 后台启用 HTTPS →</a>'
           + '<span id="tsHttpsMsg" style="font-size:11.5px;color:#868c96"></span></div>');
+  // 2026-11-08（用户要求）：把 Tailscale 后台地址直接挂在设置里，并写清楚点哪里
+  rows.push('<div style="margin-top:8px;padding:8px 10px;border:1px solid #26405a;background:#101b26;border-radius:8px;color:#aeb3bb;font-size:11.5px;line-height:1.75">'
+    + '<b style="color:#8fb6ff">后台地址</b>（复制到浏览器打开，手机/电脑都行）：<br>'
+    + '<code id="tsAdminUrl" style="color:#8fb6ff;user-select:all;font-size:11.5px">https://login.tailscale.com/admin/dns</code> '
+    + '<button id="tsAdminCopy" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:11px;cursor:pointer">复制</button><br>'
+    + '打开后：用<b>和电脑同一个 Tailscale 账号</b>登录 → <b>DNS</b> → <b>HTTPS Certificates</b> → 点 <b>Enable HTTPS</b>；'
+    + '再回到本页点「一键开启远程 HTTPS」。这一步每个账号只做一次，证书由 Tailscale 自动签发，手机不用装证书。'
+    + '</div>');
         // 三步傻瓜化：① 后台一次性启用 ② 回来点按钮 ③ 用新地址打开
         rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.75">'
           + '<b style="color:#aeb3bb">怎么开（一次性）</b>：① 打开上面那个后台链接 → 登录 → <b>DNS</b> → <b>HTTPS Certificates</b> → 点 <b>Enable HTTPS</b>；'
@@ -3667,7 +3683,13 @@ bindImg(img);
       try { s = await fetch('/tailscale-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { s = null; }
       if (!s) { bodyEl.innerHTML = '<span style="color:#ff6b6b">检测失败：读不到 Tailscale 状态。</span>'; return; }
       bodyEl.innerHTML = tsRowsHtml(s);
-      const httpsCopy = bodyEl.querySelector('#tsHttpsCopy');
+      const adminCopy = bodyEl.querySelector('#tsAdminCopy');
+  if (adminCopy) adminCopy.addEventListener('click', () => {
+    const u = 'https://login.tailscale.com/admin/dns';
+    if (copyText(u)) { adminCopy.textContent = '已复制'; setTimeout(() => { adminCopy.textContent = '复制'; }, 1500); }
+    else { setMsg('复制不了，长按上面的地址手动复制', '#ffb454'); }
+  });
+  const httpsCopy = bodyEl.querySelector('#tsHttpsCopy');
       if (httpsCopy) httpsCopy.addEventListener('click', () => {
         const u = httpsCopy.getAttribute('data-url') || '';
         if (copyText(u)) { httpsCopy.textContent = '已复制'; setTimeout(() => { httpsCopy.textContent = '复制这个地址'; }, 1500); }

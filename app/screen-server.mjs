@@ -228,6 +228,7 @@ function h264MarkUnavailable(reason) {
 }
 function h264MarkAvailable() {
   if (H264_CAPABLE === false) console.log('h264: 已恢复可用');
+  h264.lastError = '';   // 2026-11-08：恢复后清掉旧错误，否则界面会一直显示上一次的失败
   H264_CAPABLE = true;
   H264_REASON = '';
   H264_DISABLED_UNTIL = 0;
