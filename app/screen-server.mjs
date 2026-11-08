@@ -2800,7 +2800,25 @@ function updatePublicState() {
   };
 }
 
+// 2026-11-08 安全加固：统一响应头
+//   · referrer-policy：页面第一次用 ?k=密钥 打开，禁止浏览器把带密钥的地址当 Referer 发出去
+//   · x-frame-options + CSP frame-ancestors：禁止被第三方页面嵌套（防"点一下鼠标"式诱导操作）
+//   · nosniff：防 MIME 嗅探把响应当脚本执行
+//   · CSP：只允许本源资源；页面本身用内联脚本/样式，所以 script/style 需 'unsafe-inline'
+//   · 页面无 eval / new Function / blob worker（实测确认），CSP 可以开得比较紧
+function applyHardeningHeaders(res) {
+  try {
+    res.setHeader('x-content-type-options', 'nosniff');
+    res.setHeader('x-frame-options', 'DENY');
+    res.setHeader('referrer-policy', 'no-referrer');
+    res.setHeader('content-security-policy',
+      "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
+      + "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
+      + "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'");
+  } catch (e) { }
+}
 async function handler(req, res) {
+  applyHardeningHeaders(res);
   const url = new URL(req.url, 'http://localhost');
 
   // ---- 统一鉴权（2026-10-31 重写：默认必须密钥 + 显式公开白名单）--------------
