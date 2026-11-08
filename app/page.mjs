@@ -1066,6 +1066,14 @@ async function startRtc264() {
             if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
           }
         } catch (err) { }
+        if (e.track.kind === 'audio') {
+          // 2026-11-08 P1：同一条 PC 送来的音频，直接用（Chrome 会自动对齐音画）
+          R.audioSamePc = true;
+          try { if (e.receiver) { if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20; if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0; } } catch (err) { }
+          try { R.media.addTrack(e.track); } catch (err) { }
+          try { vid.muted = !state.audio; } catch (err) { }
+          return;
+        }
         try { R.media.addTrack(e.track); } catch (err) { }
         vid.srcObject = R.media;
         vid.classList.add('show');
@@ -1360,6 +1368,7 @@ async function avCalibrate() {
 async function rtc264AudioStart() {
   const A = RTC264;
   if (rtc264AudioUsePcm()) return;   // A/B：强制 PCM 时不要建这条纯音频连接
+  if (A.audioSamePc) return;         // P1：音频已由同一条 PC 送来
   if (!A.pc || A.audioPc || !state.audio) return;
   try {
     const proto = location.protocol === 'https:' ? 'wss:' : 'ws:';

@@ -555,6 +555,7 @@ if (Test-Path -LiteralPath $rtcExe) {
   $rtcDst = Join-Path $stage 'rtc-h264'
   if (-not (Test-Path -LiteralPath $rtcDst)) { $null = New-Item -ItemType Directory -Path $rtcDst -Force }
   Copy-Item -LiteralPath $rtcExe -Destination (Join-Path $rtcDst 'rtc-h264.exe') -Force
+  if (Test-Path (Join-Path $AppDir 'rtc-h264\opus.dll')) { Copy-Item (Join-Path $AppDir 'rtc-h264\opus.dll') -Destination (Join-Path $rtcDst 'opus.dll') -Force }
   Write-OkLine ('B 方案侧车已带上（rtc-h264.exe，' + (Format-Mb (Get-Item -LiteralPath $rtcExe).Length) + '）')
 } else {
   Write-WarnLine '没有 B 方案侧车（未找到 app\rtc-h264\rtc-h264.exe）：rtc264 通道不可用，网页模式照常'

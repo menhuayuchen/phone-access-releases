@@ -839,6 +839,8 @@ function feed264(key, data) {
 // 留下一个"旧版本、旧 TURN 凭据"的侧车在服侍新页面。现在先请残留进程自己退出，再拉起。
 const RTC264_PORT = Number(CFG264.port) || 9800;
 const RTC264_FEED_PORT = Number(CFG264.feedPort) || 9900;
+const RTC264_AUDIO_PORT = RTC264_FEED_PORT + 2;   // 2026-11-08 P1：音频帧输入（带 µs 时间戳）
+let conn264Audio = null;
 const RTC264_EXE = join(HERE, 'rtc-h264', 'rtc-h264.exe');
 const RTC264_TURN_PORT = CFG264.turn === false ? 0 : (Number(CFG264.turnPort) || 3478);
 let rtc264Spawning = false;
@@ -886,6 +888,7 @@ function start264() {
     rtc264Spawning = false;
     if (side264) return;
     const args = ['-port', String(RTC264_PORT), '-tcp', '127.0.0.1:' + RTC264_FEED_PORT];
+    if (CFG264.audioSync) args.push('-audio', '127.0.0.1:' + RTC264_AUDIO_PORT, '-opus-dll', join(HERE, 'rtc-h264', 'opus.dll'));
     if (RTC264_TURN_PORT > 0) args.push('-turn-port', String(RTC264_TURN_PORT));
     const logPath = join(HERE, 'rtc-h264', 'sidecar.log');
     try { if (statSync(logPath).size > 1024 * 1024) renameSync(logPath, logPath + '.1'); } catch { }
@@ -909,7 +912,29 @@ function start264() {
       if (CFG264.enabled) setTimeout(start264, 2000);
     });
     connect264Feed();
+    if (CFG264.audioSync) connect264Audio();
   });
+}
+
+function connect264Audio() {
+  if (!side264 || conn264Audio) return;
+  const c = net.connect(RTC264_AUDIO_PORT, '127.0.0.1');
+  conn264Audio = c;
+  try { c.setNoDelay(true); } catch { }
+  c.on('connect', () => console.log('rtc264: 音频帧输入已连接'));
+  c.on('error', () => { });
+  c.on('close', () => { if (conn264Audio === c) conn264Audio = null; });
+}
+function send264Audio(pcm) {
+  if (!CFG264.audioSync || !conn264Audio || !pcm || !pcm.length) return;
+  try {
+    const hdr = Buffer.allocUnsafe(16);
+    hdr.write('PAAU', 0, 'ascii');
+    hdr.writeBigUInt64LE(BigInt(Math.round(Number(process.hrtime.bigint() / 1000n))), 4);
+    hdr.writeUInt32LE(pcm.length, 12);
+    conn264Audio.write(hdr);
+    conn264Audio.write(pcm);
+  } catch (e) { }
 }
 
 function connect264Feed() {
@@ -1548,7 +1573,7 @@ function attachAudioWs(server, key) {  server.on('upgrade', (req, socket, head) 
 // system sound (WASAPI loopback) -> WebRTC audio track + 清晰模式的 PCM WebSocket
 startAudio({
   pipeName: 'dsh-audio',
-  onChunk: (pcm) => { rtc.audio(pcm); audioPush(pcm); },
+  onChunk: (pcm) => { rtc.audio(pcm); audioPush(pcm); send264Audio(pcm); },
   log: (m) => console.log('audio: ' + m),
 });
 
@@ -4604,6 +4629,34 @@ async function handler(req, res) {
   if (url.pathname === '/restart-service' && req.method === 'POST') {
     try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end('{"ok":true,"restarting":true}'); } catch (e) { }
     setTimeout(() => { try { process.exit(0); } catch (e) { } }, 300);
+    return;
+  }
+
+  if (url.pathname === '/calib' && req.method === 'POST') {
+    // 2026-11-08 音画同步一次性校准：电脑全屏白闪 3 次 + 每次响 1kHz 提示音；
+    // 客户端自己分别记下"看到白闪"和"听到提示音"的时刻，算端到端差值。
+    const calibScript = join(HERE, 'calibrate.ps1');
+    if (!fileExists(calibScript)) {
+      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, note: '缺少校准脚本 calibrate.ps1' }));
+      return;
+    }
+    const now = Date.now();
+    if (now - (globalThis.__paCalibAt || 0) < 15000) {
+      res.writeHead(429, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, note: '刚校准过，15 秒后再试' }));
+      return;
+    }
+    globalThis.__paCalibAt = now;
+    const psExe = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+    try {
+      spawn(psExe, ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', calibScript, '-Flashes', '3'], { windowsHide: true, stdio: 'ignore' });
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, flashes: 3, flashMs: 180, gapMs: 800, totalMs: 4560 }));
+    } catch (e) {
+      res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' });
+      res.end(JSON.stringify({ ok: false, note: String(e.message || e) }));
+    }
     return;
   }
   if (url.pathname === '/offline/on' || url.pathname === '/offline/off') {

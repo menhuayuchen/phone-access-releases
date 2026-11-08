@@ -47,6 +47,9 @@ type session struct {
 	id       string
 	pc       *webrtc.PeerConnection
 	track    *webrtc.TrackLocalStaticSample
+	aTrack   *webrtc.TrackLocalStaticRTP
+	aSeq     uint16
+	aSent    atomic.Uint64
 	ch       chan frame
 	done     chan struct{}
 	created  time.Time
@@ -102,6 +105,7 @@ func (s *session) feed(f frame) {
 // ---------------------------------------------------------------- 全局状态
 
 var (
+	audioEnabled bool
 	api       *webrtc.API
 	sampleDur = time.Second / 60
 
@@ -294,10 +298,23 @@ func newSession() (*session, error) {
 		pc.Close()
 		return nil, err
 	}
+	var aTrack *webrtc.TrackLocalStaticRTP
+	if audioEnabled {
+		aTrack, err = webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{MimeType: webrtc.MimeTypeOpus, ClockRate: 48000, Channels: 2}, "audio", "pa-"+id)
+		if err != nil {
+			pc.Close()
+			return nil, err
+		}
+		if _, err = pc.AddTrack(aTrack); err != nil {
+			pc.Close()
+			return nil, err
+		}
+	}
 	s := &session{
 		id:      id,
 		pc:      pc,
 		track:   track,
+		aTrack:  aTrack,
 		ch:      make(chan frame, 3),
 		done:    make(chan struct{}),
 		created: time.Now(),
@@ -627,6 +644,8 @@ func main() {
 	fps := flag.Int("fps", 60, "帧率（Sample 时长的分母）")
 	loop := flag.Bool("loop", false, "回放 stdin 收到的帧（测试模式）")
 	tcpAddr := flag.String("tcp", "", "监听 TCP 接收帧：addr:port")
+	audioAddr := flag.String("audio", "", "监听 TCP 接收音频帧：addr:port")
+	opusDLL := flag.String("opus-dll", "", "opus.dll 路径")
 	turnPort := flag.Int("turn-port", 3478, "内置 TURN 的 UDP 端口，0 表示关闭")
 	turnIP := flag.String("turn-ip", "", "覆盖 TURN 中继/监听地址（默认取第一个 tailnet IP）")
 	logFile := flag.String("log", "", "日志文件（可选）")
@@ -674,7 +693,19 @@ func main() {
 	go func() {
 		addr := net.JoinHostPort(*host, strconv.Itoa(*port))
 		logf("HTTP 信令监听 %s（版本 %s）", addr, sidecarVersion)
-		if err := http.ListenAndServe(addr, nil); err != nil {
+		if *audioAddr != "" {
+		dll := *opusDLL
+		if dll == "" { dll = "opus.dll" }
+		enc, err := newOpusEncoder(dll)
+		if err != nil {
+			logf("opus init failed: %v", err)
+		} else {
+			audioEnabled = true
+			startAudioFeed(*audioAddr, enc)
+			logf("audio track enabled (dll=%s)", dll)
+		}
+	}
+	if err := http.ListenAndServe(addr, nil); err != nil {
 			logf("HTTP 退出：%v", err)
 		}
 	}()
