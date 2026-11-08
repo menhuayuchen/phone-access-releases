@@ -40,3 +40,6 @@ app/exp/ocr/srv.out
 app/exp/ocr/srv.err
 app/exp/**/__pycache__/
 app/exp/**/*.pyc
+
+# 版本快照（本地物理备份，体积大）
+.backups/
