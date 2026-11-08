@@ -4194,6 +4194,10 @@ bindImg(img);
           + '<div style="color:#aeb3bb;font-size:12px;margin-top:6px">② 在 Moonlight 里点这台电脑 → 它会显示 4 位数字 → <b style="color:#c9ccd1">回到本页下面，在「4 位 PIN」里输入 → 点「完成配对」</b></div>';
       };
       let h = '<div style="color:#7d838d;font-size:11.5px;font-weight:700;letter-spacing:.06em">怎么连（两步，PIN 就在本页填）</div>';
+      // 2026-11-08：同 Wi-Fi 地址不一定能用（校园网/公共 Wi-Fi 常禁止设备互访）。
+      // 由手机这边实际去连一次（http://<局域网IP>:47989，Sunshine 的 HTTP 端口，0.0.0.0 监听），
+      // 连不上就在下面直接给出原因和替代方案，避免用户拿一个死地址反复试。
+      h += '<div id="lanProbe" style="margin-top:6px;font-size:12px;color:#868c96">正在从手机这边测试局域网地址能不能连…</div>';
       if (lan.length) h += scene('在家里 / 连同一个 Wi-Fi（推荐，最顺）', lan[0].ip, '#8CE58C');
       if (ts) {
         h += scene('在外面 / 用手机流量', ts.ip, '#8fb6ff');
@@ -4205,6 +4209,39 @@ bindImg(img);
         + '· 实在配不上的备用办法：手机先连上 Tailscale，再用浏览器打开 <code style="color:#aeb3bb">https://' + escHtml(ts ? ts.ip : '（需 Tailscale 地址）') + ':' + port + '</code> 在后台配对（47990 管理后台不对局域网开放，一般不走到这一步）'
         + '</div>';
       box.innerHTML = h;
+      // 2026-11-08：手机侧可达性探测（不依赖服务端；失败不代表地址错，而是网络隔离/不同网段）
+      (async () => {
+        const el = box.querySelector('#lanProbe');
+        if (!el) return;
+        if (location.protocol !== 'http:') { el.textContent = ''; return; }   // https 页面会拦 http 探测
+        const firstLan = (lan && lan[0] && lan[0].ip) ? String(lan[0].ip) : '';
+        if (!firstLan) { el.textContent = ''; return; }
+        const probe = (ip) => new Promise((resolve) => {
+          let done = false;
+          const fin = (ok) => { if (!done) { done = true; resolve(ok); } };
+          let ctrl = null;
+          try { ctrl = new AbortController(); } catch (e) { }
+          const timer = setTimeout(() => { try { if (ctrl) ctrl.abort(); } catch (e) { } fin(false); }, 2500);
+          try {
+            fetch('http://' + ip + ':47989/', { mode: 'no-cors', cache: 'no-store', signal: ctrl ? ctrl.signal : undefined })
+              .then(() => { clearTimeout(timer); fin(true); })
+              .catch(() => { clearTimeout(timer); fin(false); });
+          } catch (e) { clearTimeout(timer); fin(false); }
+        });
+        const ok = await probe(firstLan);
+        if (!el) return;
+        if (ok) {
+          el.textContent = '✓ 手机这边能连到 ' + firstLan + '（同一个 Wi-Fi 可以用）';
+          el.style.color = '#8CE58C';
+        } else {
+          el.innerHTML = '<div style="background:#2a1d10;border:1px solid #5a3a12;border-radius:9px;padding:9px 10px;line-height:1.75">'
+            + '<b style="color:#ffb454">手机这边连不上 ' + escHtml(firstLan) + '</b><br>'
+            + '常见原因：校园网 / 公共 Wi-Fi / 公司网<b>禁止设备互访</b>（设备隔离），或者手机没连同一个 Wi-Fi、不在同一网段。<br>'
+            + '解决办法：用下面「在外面 / 用手机流量」那个 <b>Tailscale 地址</b>（已可用）；或者让电脑开热点，手机连电脑的热点。'
+            + '</div>';
+          el.style.color = '#ffb454';
+        }
+      })();
       box.querySelectorAll('[data-copy]').forEach((btn) => btn.addEventListener('click', () => {
         const t = btn.getAttribute('data-copy') || '';
         const done = () => { btn.textContent = '已复制'; setTimeout(() => { btn.textContent = '复制'; }, 1500); };

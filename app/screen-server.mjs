@@ -2869,10 +2869,32 @@ function applyHardeningHeaders(res) {
     res.setHeader('x-content-type-options', 'nosniff');
     res.setHeader('x-frame-options', 'DENY');
     res.setHeader('referrer-policy', 'no-referrer');
+    // 2026-11-08：手机端要探测「同 Wi-Fi 地址」能不能连（fetch http://<LAN IP>:47989）。
+    // CSP 默认 connect-src 只有自身 + ws，会把这个探测拦成 "Failed to fetch"，用户会误以为地址坏了。
+    // 这里只把本机当前局域网 IP 的 47989 端口加进白名单，不放开任意 http 源。
+    const connectSrc = ["'self'", 'ws:', 'wss:'];
+    // 用同步枚举兜底：服务刚启动时 lanIpsNow() 的缓存还是空的，异步刷新赶不上这一次请求。
+    const lanSet = new Set();
+    try { for (const ip of lanIpsNow()) lanSet.add(String(ip)); } catch { }
+    try {
+      const ifs = os.networkInterfaces();
+      for (const name of Object.keys(ifs)) {
+        if (/vmware|virtualbox|vEthernet|vbox|hyper-v|loopback|tailscale|wsl|docker|bluetooth|tap|tun/i.test(name)) continue;
+        for (const a of (ifs[name] || [])) {
+          if (!a || a.family !== 'IPv4' || a.internal) continue;
+          if (/^169\.254\./.test(a.address) || /^100\./.test(a.address)) continue;
+          if (/^(10\.|192\.168\.|172\.(1[6-9]|2[0-9]|3[0-1])\.)/.test(a.address)) lanSet.add(a.address);
+        }
+      }
+    } catch { }
+    for (const ip of lanSet) {
+      const s = String(ip || '').trim();
+      if (/^\d+\.\d+\.\d+\.\d+$/.test(s)) connectSrc.push('http://' + s + ':47989');
+    }
     res.setHeader('content-security-policy',
       "default-src 'self'; img-src 'self' data: blob:; media-src 'self' blob:; "
       + "style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; "
-      + "connect-src 'self' ws: wss:; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'");
+      + 'connect-src ' + connectSrc.join(' ') + "; frame-ancestors 'none'; base-uri 'none'; object-src 'none'; form-action 'self'");
   } catch (e) { }
 }
 async function handler(req, res) {
