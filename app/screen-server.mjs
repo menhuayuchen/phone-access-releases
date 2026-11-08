@@ -4860,6 +4860,9 @@ async function handler(req, res) {
     return;
   }
   if (url.pathname === '/h264-status') {
+    // 2026-11-08 修：冷却期结束后必须允许重试。原来 capable=false 会一直挂着，
+    // 页面看到 false 就永远不启动清晰模式（死锁：只有出帧才会变 true）。
+    if (H264_CAPABLE === false && !h264TemporarilyUnavailable()) { H264_CAPABLE = null; H264_REASON = ''; }
     // 页面用它决定「清晰模式走 H.264 还是回落 MJPEG」
     res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
     res.end(JSON.stringify({

@@ -801,11 +801,11 @@ function startH264AvailabilityWatch() {
       if (!btnCrisp.classList.contains('on')) return;        // 用户已在流畅：不用管
       if (Date.now() - lastKick < 15000) return;             // 切过之后 15 秒内不重复操作
       const hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
-      if (hs && hs.capable === false) {
+      if (hs && hs.capable === false && Number(hs.retryInMs) > 0) {
         lastKick = Date.now();
         const waitTxt = (hs.retryInMs > 0) ? ('（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）') : '';
-        setNote('清晰模式暂时不可用：' + (hs.reason || '桌面复制采集不可用') + waitTxt + '，已切回流畅模式', 15000);
         try { btnSmooth.click(); } catch (e) { }
+        setTimeout(function () { setNote('清晰模式暂时不可用：' + (hs.reason || '桌面复制采集不可用') + waitTxt + '，已切回流畅模式', 15000); }, 900);
       }
     } catch (e) { }
   }, 2500);
@@ -1379,12 +1379,12 @@ async function startH264() {
     }
   } catch (e) { }
   if (!st || !st.enabled) { startMjpeg(); return; }
-  if (st.capable === false) {
+  if (st.capable === false && Number(st.retryInMs) > 0) {
     // 2026-11-08：服务端明确说清晰模式暂不可用（虚拟机 / 远程桌面 / 锁屏）：
     // 不要在这里反复重试（否则会 清晰→低频→再清晰 来回跳），直接切回流畅并说明原因。
     const waitTxt2 = (st.retryInMs > 0) ? ('（约 ' + Math.ceil(st.retryInMs / 1000) + ' 秒后自动重试）') : '';
-    setNote('清晰模式暂时不可用：' + (st.reason || '桌面复制采集不可用') + waitTxt2 + '，已切回流畅模式', 15000);
     try { btnSmooth.click(); } catch (e) { }
+    setTimeout(function () { setNote('清晰模式暂时不可用：' + (st.reason || '桌面复制采集不可用') + waitTxt2 + '，已切回流畅模式', 15000); }, 900);
     return;
   }
   // 2026-11-06：WebRTC264 的判断必须放在 WebCodecs 检查**前面**。
@@ -3077,7 +3077,7 @@ bindImg(img);
     // 不可用就直接起流畅并说明原因，不再先黑屏 8 秒再兜底。
     let hs0 = null;
     try { hs0 = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { }
-    if (hs0 && (hs0.capable === false || hs0.enabled === false)) {
+    if (hs0 && ((hs0.capable === false && Number(hs0.retryInMs) > 0) || hs0.enabled === false)) {
       const why = hs0.reason || (hs0.enabled === false ? '这台电脑没有启用清晰模式' : '清晰模式不可用');
       const waitTxt = (hs0.retryInMs > 0) ? ('（约 ' + Math.ceil(hs0.retryInMs / 1000) + ' 秒后自动重试）') : '';
       // 延迟到 init 末尾的 setNote('') 之后再提示，否则会被清掉
@@ -3720,7 +3720,7 @@ bindImg(img);
       const hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
       const capEl = box.querySelector('#hqCap');
       if (!capEl) return;
-      if (hs && hs.capable === false) {
+      if (hs && hs.capable === false && Number(hs.retryInMs) > 0) {
         capEl.textContent = '清晰模式：暂时不可用 —— ' + (hs.reason || '桌面复制采集不可用') + (hs.retryInMs > 0 ? ('（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）') : '');
         capEl.style.color = '#ffb454';
       } else if (hs && hs.capable === true) {
