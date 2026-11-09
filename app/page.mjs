@@ -1453,6 +1453,10 @@ function rtc264Mode() {
   try { return new URLSearchParams(location.search).get('rtc264') === 'relay' ? 'relay' : 'all'; } catch (e) { return 'all'; }
 }
 function stopRtc264() {
+  // 2026-11-10：重连必须把 WebCodecs 接收端一起停掉、并摘掉 transform。
+  // 否则 WC264.on 一直是 true，重连后 start() 直接 return，新 PC 挂不上 transform，
+  // 表现：画面停在最后一帧、「缓」一路涨到几万毫秒（实测 21886ms）。
+  try { WC264.stop(); } catch (e) { }
   const R = RTC264;
   rtc264Gen++;
   if (R.statsTimer) { clearInterval(R.statsTimer); R.statsTimer = null; }
@@ -1736,6 +1740,18 @@ async function rtc264Stats() {
     try {
       if (window.__wc264 && window.__wc264.on && window.__wc264.lastFrameAt) {
         _wcBufOverride = Math.max(0, Date.now() - window.__wc264.lastFrameAt);
+        // 2026-11-10 看门狗：解码器偶发卡在 "A key frame is required" 后不再出帧，
+        // 画面停在最后一帧、(WC) 数字涨到几万毫秒。超 3 秒没新帧就重建（摘 transform ->
+        // 浏览器接管 -> 重新挂 -> 重新解码），20 秒冷却避免持续故障时反复重建。
+        try {
+          const _stall = Date.now() - window.__wc264.lastFrameAt;
+          if (_stall > 3000 && Date.now() - (window.__wc264.lastHeal || 0) > 20000) {
+            window.__wc264.lastHeal = Date.now();
+            try { console.log("wc264: 卡了 " + _stall + "ms，重建"); } catch (e0) { }
+            try { window.__wc264.stop(); } catch (e1) { }
+            try { if (window.__rtc264 && window.__rtc264.pc) tryStartWC264(window.__rtc264.pc); } catch (e2) { }
+          }
+        } catch (e) { }
       }
     } catch (e) { }
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
