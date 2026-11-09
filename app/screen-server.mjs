@@ -165,8 +165,14 @@ let rtcActiveAt = 0;   // 最近一次有 RTC 观众/刚开启的时间（用于
 const cfgH264 = cfgScreen.h264 || {};
 const FFMPEG_EXE = join(HERE, 'bin', 'ffmpeg.exe');
 const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
-let H264_FPS = Math.max(10, Math.min(60, Number(cfgH264.fps) || 30));
-let H264_KBPS = Math.max(2000, Math.min(40000, Number(cfgH264.kbps) || 12000));
+// 2026-11-09 自用实验版：解除帧率/码率上限。实测本机 ddagrab 能抓 210fps、NVENC 理论 1000+fps。
+// 安全：只认 h264.experiment.enabled===true；发布版由 mark-release.ps1 强制关掉，客户拿不到这条路径。
+const expCfg = (cfgH264 && cfgH264.experiment && typeof cfgH264.experiment === 'object') ? cfgH264.experiment : {};
+const expOn = expCfg.enabled === true;
+const fpsCap = expOn ? Math.min(240, Math.max(10, Number(expCfg.fps) || 240)) : 60;
+const kbpsCap = expOn ? Math.min(200000, Math.max(2000, Number(expCfg.kbps) || 100000)) : 40000;
+let H264_FPS = Math.max(10, Math.min(fpsCap, Number(cfgH264.fps) || 30));
+let H264_KBPS = Math.max(2000, Math.min(kbpsCap, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
 // 画质优先（可选，默认关）：p4+hq、VBR+CQ，静态更清晰，流量会波动
 let H264_QF = cfgH264.qualityFirst === true;
@@ -646,6 +652,10 @@ function h264Start() {
     '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0:output_idx=${H264_MON}`,
     ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
     '-pix_fmt', 'nv12',
+    // 2026-11-10：强制恒定帧率（CFR）。ddagrab 是 VFR（桌面变才出帧），
+    // 不补帧的话帧间隔忽长忽短，浏览器判定为抖动 → jitter buffer 自动膨胀 → 「缓」一路涨到 300ms。
+    // 实测 iPhone 17 Pro 也一样涨，说明问题在发送端不是设备解码。
+    '-r', String(H264_FPS),
     ...h264EncArgs()
   ];
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
@@ -694,6 +704,10 @@ function h264StartWindow() {
       // 2026-11-06：format=nv12 去掉，改成 -pix_fmt nv12，让 swscale 一次 pass 完成缩放+转换
       '-vf', 'scale=min(iw\\,1920):-2:flags=lanczos+accurate_rnd',
       '-pix_fmt', 'nv12',
+    // 2026-11-10：强制恒定帧率（CFR）。ddagrab 是 VFR（桌面变才出帧），
+    // 不补帧的话帧间隔忽长忽短，浏览器判定为抖动 → jitter buffer 自动膨胀 → 「缓」一路涨到 300ms。
+    // 实测 iPhone 17 Pro 也一样涨，说明问题在发送端不是设备解码。
+    '-r', String(H264_FPS),
       ...h264EncArgs()
     ];
     let ff = null;
@@ -4999,8 +5013,9 @@ async function handler(req, res) {
         else H264_RECT = rr;
       } else if (m.rect === null) H264_RECT = null;
       if (typeof m.qf === 'boolean' && m.qf !== H264_QF) { H264_QF = m.qf; saveH264QualityFirst(H264_QF); }
-      if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(60, Math.round(f)));
-      if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(40000, Math.round(k)));
+      // 2026-11-09：这里也走实验模式的上下限（否则页面调 240fps/100Mbps 会被静默压回 60/40000）。
+      if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(fpsCap, Math.round(f)));
+      if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(kbpsCap, Math.round(k)));
       if (Number.isFinite(w) && w >= 640) {
         H264_W = evenDown(Math.min(CAP_W, Math.round(w)));
         H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
@@ -5008,7 +5023,8 @@ async function handler(req, res) {
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       // （按**即将生效的**宽度判断原生路径，否则从 1920 调到 2560 会被误降成 30fps）
       const willNative = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0 && !H264_RECT;
-      if (!willNative && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
+      // 实验模式跳过"宽屏自动降 30fps"（那是对客户机解码能力的保护，自用版不需要）。
+      if (!expOn && !willNative && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
       H264_NATIVE = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0;    // 原生路径只对主屏生效
       if (H264_RECT) H264_NATIVE = false;   // 选了窗口/局部区域时必须走裁剪滤镜
       // 重启编码器让新参数生效。RTC264 会话没有 WS 观众，也必须重启，
@@ -5501,7 +5517,7 @@ async function handler(req, res) {
         const n = i + 1;
         let id = String((r && r.id) || ('r' + n)).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || ('r' + n);
         const mode = (r && r.mode) === 'shutdown' ? 'shutdown' : 'hibernate';
-        const repeat = (r && (r.repeat === 'weekdays' || r.repeat === 'once')) ? r.repeat : 'daily';
+        const repeat = (r && (r.repeat === 'weekdays' || r.repeat === 'weekend' || r.repeat === 'once')) ? r.repeat : 'daily';
         const offTime = String((r && r.offTime) || '').slice(0, 5);
         const wakeTime = String((r && r.wakeTime) || '').slice(0, 5);
         const date = String((r && r.date) || '').replace(/[^0-9-]/g, '').slice(0, 10);
@@ -5519,7 +5535,9 @@ async function handler(req, res) {
           bad.push('第 ' + n + ' 条：唤醒时间和关机时间一样');
           return;
         }
-        out.push({ id, mode, repeat, date: repeat === 'once' ? date : '', offTime, wakeTime });
+        // 2026-11-09：enabled 必须原样存回来，否则页面一重绘就默认勾上（用户点了取消又弹回来）
+        const ruleOn = (r && r.enabled === false) ? false : true;
+        out.push({ id, mode, repeat, date: repeat === 'once' ? date : '', offTime, wakeTime, enabled: ruleOn });
       });
       return out;
     };
@@ -5548,7 +5566,9 @@ async function handler(req, res) {
           sendJson(200, {
             ok: true,
             enabled: !!docS.enabled,
-            rules: Array.isArray(docS.rules) ? docS.rules : [],
+            // 2026-11-09：旧数据里没有 enabled 字段（历史规则），按"启用"补默认值。
+            // 不补的话，页面拿到 undefined 会按"启用"显示，但保存一遍后又变了，行为不一致。
+            rules: (Array.isArray(docS.rules) ? docS.rules : []).map((r) => Object.assign({}, r, { enabled: !(r && r.enabled === false) })),
             updatedAt: docS.updatedAt || '',
             tasks: (globalThis.__paMergedTasks = mergeTasks(tasks, last && last.tasks)),
             busy: !!globalThis.__paPowerBusy,

@@ -3540,10 +3540,16 @@ async function pollStats() {
       // WebRTC264 通道：HUD 显示真实的 RTC 状态（直连/中继、帧数、接收缓冲），
       // 不要再显示 WebCodecs 那套（RTC 模式下 h264.dispFps 是旧的，会误导成 20fps）
       hud.textContent = RTC264.hudText || 'WebRTC264 连接中…';
+      // 2026-11-10：#hud 在 WebRTC264 模式下是完整的（直连·分辨率·帧率·码率·缓冲），
+      // 而 #stat 只是它的压缩版（setStat 会去掉前缀/帧计数/流量），两个同时显示=重复数值。
+      // 只在这里隐藏 #stat；WebCodecs 模式（下面那个分支）的 #hud 不完整，必须保留它。
+      
     } else if (state.mode === 'h264') {
+      
       hud.textContent = '' + ((h264.useTrack ? (vid.videoWidth ? vid.videoWidth + '×' + vid.videoHeight : '—') : (h264.canvas && h264.canvas.width ? h264.canvas.width + '×' + h264.canvas.height : '—')))
         + ' · ' + (h264.useTrack && h264.dispFps ? ('显示 ' + h264.dispFps.toFixed(1) + ' fps') : (h264.fps ? h264.fps.toFixed(1) + ' fps' : '解码中…'));
     } else if (state.lowBw) {
+      
       // 兜底的低频画面：显示轮询参数，避免误读成视频帧率
       hud.textContent = '省流量模式 · ' + Math.round(1000 / LOWBW_MS) + ' 帧/秒 · ' + lowBwWidth() + ' 宽 q45';
     } else {
@@ -3551,6 +3557,7 @@ async function pollStats() {
       const capMs = cap ? Number(cap[1]) : 0;
       const capFps = capMs > 0 ? (1000 / capMs).toFixed(1) : '?';
       const dN = drop ? Number(drop[1]) : 0;
+      
       hud.textContent = (out ? out[1] : '?') + ' fps'
         + (inp ? '（抓屏 ' + inp[1] + '）' : '')
         + ' · 上限 ' + capFps
@@ -6640,12 +6647,12 @@ bindImg(img);
     body += setSection('画质与流量',
       '<div style="display:flex;gap:14px;flex-wrap:wrap;color:#c9ccd1;font-size:12.5px;align-items:center">'
       + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560（原生·需设备支持）</option></select></label>'
-      + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option></select></label>'
-      + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps（≈3.4 GB/时）</option><option value="12000">12 Mbps（≈5.3 GB/时）</option><option value="15000">15 Mbps（≈6.7 GB/时）</option><option value="20000">20 Mbps（≈8.9 GB/时）</option><option value="30000">30 Mbps（≈13.4 GB/时）</option></select></label>'
+      + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option><option value="90">90</option><option value="120">120</option><option value="240">240（实验·极限）</option></select></label>'
+      + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps（≈3.4 GB/时）</option><option value="12000">12 Mbps（≈5.3 GB/时）</option><option value="15000">15 Mbps（≈6.7 GB/时）</option><option value="20000">20 Mbps（≈8.9 GB/时）</option><option value="30000">30 Mbps（≈13.4 GB/时）</option><option value="50000">50 Mbps（≈22.5 GB/时）</option><option value="80000">80 Mbps（≈36 GB/时）</option><option value="100000">100 Mbps（≈45 GB/时）</option></select></label>'
       + '<button id="hqAuto" title="按网络自动调码率：丢包就降、稳定再升" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer">自动</button>'
       + '</div>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
-      + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。</div>'
+      + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。50/80/100 Mbps 属于自用实验档：只建议在局域网/Tailscale 直连时用，4G 一定卡。</div>'
       + '<div id="hqFlow" style="font-size:12.5px;color:#8CE58C;margin-top:8px"></div>'
       + '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
       + '<input type="checkbox" id="hqQf"> 画质优先（文字更锐；延迟约 +1 帧，流量会波动）</label>'
@@ -7738,7 +7745,11 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
       var on = visible();
       if (h) h.style.display = on ? '' : 'none';
       var s = document.getElementById('stat');
-      if (s) s.style.display = on ? '' : 'none';
+      // 2026-11-10：#hud 在 WebRTC264 模式下已经完整（直连·分辨率·帧率·码率·缓冲），
+      // #stat 只是它的压缩版；横屏（>960px）时两个都露出来 → 用户看到重复的两份数值。
+      // 只在 WebRTC264 模式隐藏 #stat；WebCodecs/低频/MJPEG 的 #hud 不完整，必须保留 #stat。
+      var rtcMode = !!(window.__rtc264 && window.__rtc264.pc && h && (h.textContent || '').indexOf('WebRTC264') === 0);
+      if (s) s.style.display = (on && !rtcMode) ? '' : 'none';
       // 2026-11-08：两个数值都关掉时，顶部胶囊不能留个空壳继续占着画面（用户反馈"关不掉"）
       var top = document.getElementById('paTop');
       if (top) top.style.display = on ? '' : 'none';

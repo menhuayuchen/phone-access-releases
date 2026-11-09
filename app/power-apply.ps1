@@ -93,7 +93,8 @@ function Normalize-Rules($raw) {
         $mode = [string]$r.mode
         if ($mode -ne 'shutdown' -and $mode -ne 'hibernate') { Add-Err ('第 ' + $i + ' 条：方式只能是「休眠」或「关机」'); continue }
         $repeat = [string]$r.repeat
-        if ($repeat -ne 'daily' -and $repeat -ne 'weekdays' -and $repeat -ne 'once') { $repeat = 'daily' }
+        # 2026-11-09：加 weekend（周末），原来只认 daily/weekdays/once，周末规则会被降级成每天
+        if ($repeat -ne 'daily' -and $repeat -ne 'weekdays' -and $repeat -ne 'weekend' -and $repeat -ne 'once') { $repeat = 'daily' }
 
         $off = Parse-HHmm ([string]$r.offTime)
         if (-not $off) { Add-Err ('第 ' + $i + ' 条：关机/休眠时间格式不对（应为 HH:mm）'); continue }
@@ -115,8 +116,11 @@ function Normalize-Rules($raw) {
             }
         }
 
+        # 2026-11-09：enabled 必须带出来，主循环才会跳过停用的规则（并把它的遗留任务删掉）
+        $ruleOn = $true
+        if ($null -ne $r.enabled) { $ruleOn = ($r.enabled -ne $false) }
         $out += [pscustomobject]@{
-            id = $id; mode = $mode; repeat = $repeat
+            id = $id; mode = $mode; repeat = $repeat; enabled = $ruleOn
             date = if ($date) { $date.ToString('yyyy-MM-dd') } else { '' }
             offTime = $off.ToString('HH:mm'); wakeTime = if ($wake) { $wake.ToString('HH:mm') } else { '' }
         }
@@ -133,6 +137,7 @@ function New-OffTrigger($rule) {
     $at = Get-Date -Hour $off.Hour -Minute $off.Minute -Second 0
     if ($at -le (Get-Date)) { $at = $at.AddDays(1) }
     if ($rule.repeat -eq 'weekdays') { return New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $at }
+    if ($rule.repeat -eq 'weekend') { return New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday, Sunday -At $at }
     return New-ScheduledTaskTrigger -Daily -At $at
 }
 
@@ -161,6 +166,8 @@ function New-WakeTrigger($rule) {
         $t = $at.AddMinutes($off)
         if ($rule.repeat -eq 'weekdays') {
             $list += New-ScheduledTaskTrigger -Weekly -DaysOfWeek Monday, Tuesday, Wednesday, Thursday, Friday -At $t
+        } elseif ($rule.repeat -eq 'weekend') {
+            $list += New-ScheduledTaskTrigger -Weekly -DaysOfWeek Saturday, Sunday -At $t
         } else {
             $list += New-ScheduledTaskTrigger -Daily -At $t
         }
@@ -216,6 +223,8 @@ if (-not $StatusOnly) {
   # 启用且有规则才建任务；**删除多余任务必须始终执行**（否则暂停后到点照样休眠）
   if ($doc.enabled -and $rules.Count -gt 0) {
     foreach ($r in $rules) {
+        # 2026-11-09：停用的规则不建任务、也不加进 $want —— 后面"删多余任务"那步会把它遗留的任务清掉
+        if ($r.enabled -eq $false) { [void]$skipped.Add($r.id); continue }
         if ($r.mode -eq 'hibernate' -and -not $hibernateOk) {
             Add-Err ('规则 ' + $r.id + '：这台电脑不支持休眠（或休眠被关掉了），请把方式改成「关机」或先开启休眠')
             [void]$skipped.Add($r.id)

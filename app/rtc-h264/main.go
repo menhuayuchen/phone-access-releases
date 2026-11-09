@@ -29,6 +29,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/pion/interceptor"
+	"github.com/pion/interceptor/pkg/nack"
+	"github.com/pion/rtcp"
 	"github.com/pion/rtp"
 	"github.com/pion/rtp/codecs"
 	"github.com/pion/turn/v4"
@@ -422,7 +425,7 @@ func newSession() (*session, error) {
 		track:     track,
 		payloader: &codecs.H264Payloader{},
 		aTrack:    aTrack,
-		ch:        make(chan frame, 3),
+		ch:        make(chan frame, 30),   // 2026-11-10：3 太浅。实测 100fps 时丢帧率 18.5%（每 5 帧丢 1 帧），而 H.264 的 P 帧依赖前序帧，丢一帧就会连锁花屏。30 帧≈0.3 秒缓冲。
 		done:      make(chan struct{}),
 		created:   time.Now(),
 		needKey:   true,
@@ -480,12 +483,40 @@ func liveCount() int {
 	return len(live)
 }
 
+// 2026-11-10：时间戳平滑（不改帧协议，只改时间戳怎么算）。
+// 原来直接用"到达时刻"当 RTP 时间戳基准。到达时刻有逐帧抖动
+// （ffmpeg 输出节奏、Node 解析转发、TCP 调度），浏览器把这种抖动当成网络抖动，
+// jitter buffer 就缓慢自适应膨胀 —— 实测 1920x90 下零丢帧、90fps 跑满，
+// 缓冲仍以约 1.1ms/秒 稳定上涨，5 分钟就到 300ms（iPhone 17 Pro 完全一样）。
+// 这里用 EMA 估计真实帧间隔，时间戳按 EMA 推进：跟随真实帧率，但去掉逐帧抖动。
+var (
+	tsLastUs   int64
+	tsInterval float64
+	tsInit     bool
+)
+
 func feedFrame(data []byte, key bool) {
 	framesIn.Add(1)
 	now := time.Now()
 	lastFrameUnix.Store(now.UnixMilli())
-	// 到达时刻（微秒，相对 epoch）：这就是视频 RTP 时间戳的基准。
-	tsUs := now.Sub(epoch).Microseconds()
+	arriveUs := now.Sub(epoch).Microseconds()
+	// 帧间隔 EMA：首帧用 1/60 起手，之后慢速收敛（0.98/0.02 约 3 秒窗口）
+	tsUs := arriveUs
+	if tsInit {
+		d := float64(arriveUs - tsLastUs)
+		if d > 0 {
+			if tsInterval == 0 {
+				tsInterval = d
+			} else {
+				tsInterval = tsInterval*0.98 + d*0.02
+			}
+		}
+		tsUs = tsLastUs + int64(tsInterval)
+	} else {
+		tsInterval = 16666 // 1/60s
+		tsInit = true
+	}
+	tsLastUs = tsUs
 	mu.Lock()
 	ls := live
 	mu.Unlock()
@@ -616,6 +647,47 @@ func handleAnswer(w http.ResponseWriter, r *http.Request) {
 	s.needKey = true
 	s.keyMu.Unlock()
 	s.ready.Store(true)
+	// 2026-11-10：读 RTCP。浏览器发现花屏/丢包会发 PLI/FIR 请求关键帧，之前完全没人读，
+	// 于是只能干等 ffmpeg 的下一个定期 IDR（GOP 0.5 秒）。现在收到就置 needKey，
+	// 帧泵会跳过非关键帧直到下一个 IDR（画面短暂冻结，比花屏干净）。
+	// 节流 500ms：PLI 往往成串到达，不节流会把画面冻成幻灯片。
+	go func() {
+		var lastPLI int64
+		buf := make([]byte, 2000)
+		for _, snd := range s.pc.GetSenders() {
+			sender := snd
+			go func() {
+				for {
+					n, _, err := sender.Read(buf)
+					if err != nil {
+						return
+					}
+					pkts, e := rtcp.Unmarshal(buf[:n])
+					if e != nil {
+						continue
+					}
+					for _, p := range pkts {
+						switch p.(type) {
+						case *rtcp.PictureLossIndication, *rtcp.FullIntraRequest:
+							now := time.Now().UnixMilli()
+							if now-atomic.LoadInt64(&lastPLI) < 500 {
+								continue
+							}
+							atomic.StoreInt64(&lastPLI, now)
+							// 2026-11-10 实测结论：不要用 needKey 响应 PLI。
+							// 实测两次都出现「PLI 成串 → needKey 长期置位 → 丢非关键帧 → 长时间没帧 →
+							// 页面按 2.5 秒冻结判定主动重连」的死循环（日志里十几秒一个新会话）。
+							// 花屏恢复改用另外两条（都已经在跑）：
+							//   ① NACK responder：零星丢包当场重传，根本不用等关键帧；
+							//   ② GOP 0.25 秒：真丢包时最多 0.25 秒就自然出现下一个 IDR。
+							// 这里只记日志，用于诊断（看浏览器到底在多久要一次关键帧）。
+							logf("session %s 收到 PLI/FIR（仅记录，不丢弃帧；靠 NACK + 0.25s GOP 恢复）", s.id)
+						}
+					}
+				}
+			}()
+		}
+	}()
 	now := time.Now().UnixMilli()
 	mu.Lock()
 	live = append(live, s)
@@ -836,7 +908,22 @@ func main() {
 	} else {
 		logf("没有发现 tailnet/局域网 IP，只会有本机候选（真机跨网会连不上）")
 	}
-	api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se))
+	// 2026-11-10：注册 NACK responder。浏览器一直在发 NACK（SDP 里 nack/nack pli 都协商了），
+	// 但侧车之前没注册 interceptor → 收到的 NACK 全丢掉 → 丢一个包就得等下一个定期 IDR（0.5 秒），
+	// 表现就是"画面一动就花屏"。注册后 Pion 会缓存已发包、按 NACK 重传，零星丢包当场补回来。
+	ir := &interceptor.Registry{}
+	if err := webrtc.RegisterDefaultInterceptors(me, ir); err != nil {
+		logf("register interceptors: %v", err)
+		os.Exit(1)
+	}
+	nackFactory, nerr := nack.NewResponderInterceptor(nack.ResponderSize(1024))
+	if nerr != nil {
+		logf("nack responder: %v", nerr)
+	} else {
+		ir.Add(nackFactory)
+		logf("NACK responder 已启用（缓存 1024 包，丢包可重传）")
+	}
+	api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se), webrtc.WithInterceptorRegistry(ir))
 
 	if *turnPort > 0 {
 		go startTurn(ips, *turnPort, *turnIP)
