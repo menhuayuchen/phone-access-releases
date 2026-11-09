@@ -189,6 +189,8 @@ $inputHungRounds = 0
 $notListeningRounds = 0
 $probeFailRounds = 0
 $screenProbeFails = 0
+# 2026-11-09：音频「进程在但管道僵死」的连续计数（见下面 helperDown 那段）
+$audioStaleRounds = 0
 $maintenanceLogged = $false
 $lastBeat = Get-Date
 # 2026-11-07：tailnet 地址重新发现的限速时间戳（见循环开头那段）
@@ -369,6 +371,37 @@ while ($true) {
     # 声音采集 / 输入注入器是独立进程，任何一个掉线都重新走一次 start-screen.ps1 补齐
     $helperDown = -not (Get-Process audio -ErrorAction SilentlyContinue) -or -not (Get-Process input -ErrorAction SilentlyContinue)
 
+    # 2026-11-09：进程在 != 音频正常。实测 audio.exe 跑久了它的命名管道服务端会僵死：
+    # 进程还在、rms 还在写、chunks 还在涨，但不再接受新客户端连接，screen-server 一直
+    # "audio: disconnected (ETIMEDOUT)"，用户表现是"莫名其妙没声音，怎么操作都不会好"。
+    # 已发生三次，每次只能手动重启 audio.exe。以前 $helperDown 只看进程是否存在，抓不到这个。
+    # 判据：有观众 + 已经有音频数据 + audioAge 超过 3 秒，连续 2 轮才动手（避免抖一下误杀）。
+    $audioHung = $false
+    if (-not $helperDown -and $healthText0) {
+      $mView = [regex]::Match($healthText0, 'viewers=(\d+)')
+      $mChunks = [regex]::Match($healthText0, '"audioChunks"\s*:\s*(\d+)')
+      $mAge = [regex]::Match($healthText0, '"audioAge"\s*:\s*(-?[\d.]+)')
+      $hasAudioData = $mChunks.Success -and ([int]$mChunks.Groups[1].Value -gt 0)
+      $viewerNow = $mView.Success -and ([int]$mView.Groups[1].Value -gt 0)
+      if ($viewerNow -and $hasAudioData -and $mAge.Success) {
+        $ageNow = [double]$mAge.Groups[1].Value
+        if ($ageNow -gt 3.0) {
+          $audioStaleRounds++
+          Log ("audio 陈旧：audioAge={0}s（连续 {1} 轮），audio.exe 进程在但可能管道僵死" -f $ageNow, $audioStaleRounds)
+          if ($audioStaleRounds -ge 2) {
+            $audioHung = $true
+            Log "audio 连续 2 轮陈旧：按「管道僵死」处理，重启 screen viewer（会重建 audio 管道）"
+          }
+        } else {
+          if ($audioStaleRounds -gt 0) { Log 'audio 已恢复新鲜，重置陈旧计数' }
+          $audioStaleRounds = 0
+        }
+      } else {
+        # 没人看、或用户没开声音（audioChunks=0）时不做判断，避免误杀
+        $audioStaleRounds = 0
+      }
+    }
+
     # 注入器若以管理员权限运行（计划任务 DSH Input Injector 指向 %ProgramFiles%\PhoneAccessInput），
     # 普通权限的 supervisor 既 Stop-Process 不掉它、也读不到它的细节：只能靠 /health 的
     # input.connected 判断它是否活着。进程在、但管道连不上超过 2 轮 → 重启计划任务。
@@ -435,7 +468,7 @@ while ($true) {
       Start-Sleep -Seconds 4
     }
 
-    if (-not $captureOk -or -not $screenOk -or $capFat -or $frameStale -or $helperDown) {
+    if (-not $captureOk -or -not $screenOk -or $capFat -or $frameStale -or $helperDown -or $audioHung) {
       if ($capFat -and $capProc) {
         Log ("capture.exe memory high ({0}MB); restarting it" -f [math]::Round($capProc.WorkingSet64 / 1MB))
         Stop-Process -Id $capProc.Id -Force -ErrorAction SilentlyContinue

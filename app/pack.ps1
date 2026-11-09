@@ -165,7 +165,10 @@ $appFiles = @(
   'restart.ps1',
   'restart.cmd',
   'power-apply.ps1',
-  'unlock-on-wake.ps1'
+  'unlock-on-wake.ps1',
+  # 2026-11-09：audio 看门狗（诊断工具）+ 安装完成后的「手机入口」单页生成器
+  'audio-watchdog.ps1',
+  'make-entry-html.ps1'
   # 2026-11-06 免费化：不再随包发收款码 / 联系方式（/branding/ 路由保留，卖家自己放图片即可）
 )
 if ($IncludeInternalDocs) {
@@ -182,6 +185,12 @@ $prodFiles = @(
   'lib\NAudio.Core.dll',
   'lib\NAudio.Wasapi.dll',
   'lib\NAudio.WinMM.dll',
+  # 2026-11-09：capture.exe 改成 DXGI 抓屏后依赖 SharpDX（4 个 DLL 必须随包发，
+  # 否则新机器上 capture.exe 一启动就找不到程序集，直接没有画面）
+  'SharpDX.dll',
+  'SharpDX.DXGI.dll',
+  'SharpDX.Direct3D11.dll',
+  'SharpDX.Mathematics.dll',
   # 图标不再从这里取 —— 它是产品自有素材，在 app\icon-src.svg 生成，见 $appFiles
   'make-qr.py',
   'decode-qr.py',
@@ -193,12 +202,14 @@ $requiredInStage = @(
   'product.config.json', 'product-config.ps1', 'selfcheck.ps1', '自检.cmd',
   'start-phone-access.ps1', 'start-phone-access.cmd', 'start-screen.ps1',
   'stop-phone-access.ps1', 'stop-phone-access.cmd',
-  'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1',
+  'supervise.ps1', 'autostart.ps1', 'run-autostart.vbs', 'install-elevated-input.ps1', 'audio-watchdog.ps1', 'make-entry-html.ps1',
   'install.ps1', 'install.cmd',
   'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs', 'sunshine-integration.ps1',
   'package.json', 'pnpm-lock.yaml',
   'capture.exe', 'capture.exe.bak', 'input.exe', 'audio.exe', 'sources.exe',
   'lib\NAudio.Core.dll', 'lib\NAudio.Wasapi.dll', 'lib\NAudio.WinMM.dll',
+  # 2026-11-09：DXGI 抓屏所需的 SharpDX 依赖，缺一个 capture.exe 就起不来
+  'SharpDX.dll', 'SharpDX.DXGI.dll', 'SharpDX.Direct3D11.dll', 'SharpDX.Mathematics.dll',
   'icon-192.png', 'icon-512.png',
   'runtime\node.exe',
   'node_modules\ws\package.json',

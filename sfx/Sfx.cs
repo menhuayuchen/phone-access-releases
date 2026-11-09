@@ -67,6 +67,9 @@ static class Sfx
 
     static int Main(string[] args)
     {
+        // 2026-11-09：控制台按 UTF-8 输出。Sfx.cs 是 UTF-8 with BOM 且用 /codepage:65001 编译，
+        // 不设这一行时中文会按控制台默认代码页（GBK/437）解释，客户看到的是"瑙ｅ帇涓?"这种乱码。
+        try { Console.OutputEncoding = new UTF8Encoding(false); } catch { }
         try
         {
             return Run(args);
@@ -147,13 +150,19 @@ static class Sfx
         Directory.CreateDirectory(dest);
 
         string tempZip = Path.Combine(Path.GetTempPath(), "PhoneAccessSetup_" + Guid.NewGuid().ToString("N") + ".zip");
-        Console.WriteLine("[i] 正在解压安装文件…");
+
+        // 2026-11-09：实测在虚拟机上解压 92MB（展开 182MB）要好几分钟。
+        // 原来只打一行"正在解压…"然后长时间没动静，用户以为死机了（用户实测反馈"卡在这了"）。
+        // 现在复制和解压两个阶段都打百分比，控制台一直在动，用户能看到进度。
+        Console.WriteLine("[i] 正在准备安装文件（共 " + (zipLength / 1048576) + " MB）…");
         using (FileStream src = new FileStream(self, FileMode.Open, FileAccess.Read, FileShare.Read))
         using (FileStream dst = new FileStream(tempZip, FileMode.Create, FileAccess.Write))
         {
             src.Seek(zipOffset, SeekOrigin.Begin);
             byte[] buf = new byte[1024 * 256];
             long left = zipLength;
+            long done = 0;
+            int lastPct = -1;
             while (left > 0)
             {
                 int want = (int)Math.Min(buf.Length, left);
@@ -161,10 +170,38 @@ static class Sfx
                 if (got <= 0) break;
                 dst.Write(buf, 0, got);
                 left -= got;
+                done += got;
+                int pct = zipLength > 0 ? (int)(done * 100 / zipLength) : 0;
+                if (pct != lastPct) { lastPct = pct; Console.Write("\r[i] 准备中 " + pct + "%   "); }
             }
+            Console.WriteLine();
         }
 
-        ZipFile.ExtractToDirectory(tempZip, dest);
+        Console.WriteLine("[i] 正在解压安装文件（文件比较多，慢盘上要几分钟，请稍候）…");
+        using (ZipArchive archive = ZipFile.OpenRead(tempZip))
+        {
+            int total = archive.Entries.Count;
+            int n = 0;
+            int lastPct = -1;
+            foreach (ZipArchiveEntry entry in archive.Entries)
+            {
+                string target = Path.Combine(dest, entry.FullName);
+                if (string.IsNullOrEmpty(entry.Name))
+                {
+                    Directory.CreateDirectory(target);
+                }
+                else
+                {
+                    string dir = Path.GetDirectoryName(target);
+                    if (!string.IsNullOrEmpty(dir)) Directory.CreateDirectory(dir);
+                    entry.ExtractToFile(target, true);
+                }
+                n++;
+                int pct = total > 0 ? (n * 100 / total) : 0;
+                if (pct != lastPct) { lastPct = pct; Console.Write("\r[i] 解压中 " + pct + "%   (" + n + "/" + total + ")   "); }
+            }
+            Console.WriteLine();
+        }
         try { File.Delete(tempZip); } catch { }
 
         // 包结构是 PhoneAccess-xxx\ 一层目录，把它提上来
@@ -183,26 +220,40 @@ static class Sfx
             return 0;
         }
 
-        string installer = Path.Combine(root, "install.cmd");
-        if (!File.Exists(installer))
+        // 2026-11-09：不再经过 install.cmd（那会多弹一个 cmd 黑窗口）。
+        // 直接调 install.ps1 并带 -NonInteractive；因为本 exe 已声明 requireAdministrator，
+        // install.ps1 进来就是管理员，它内部的提权分支会被跳过，不会再弹第二次 UAC。
+        string installerPs1 = Path.Combine(root, "install.ps1");
+        string installerCmd = Path.Combine(root, "install.cmd");
+        if (!File.Exists(installerPs1) && !File.Exists(installerCmd))
         {
-            Console.Error.WriteLine("[x] 解压后的目录里找不到 install.cmd，安装包可能损坏。");
+            Console.Error.WriteLine("[x] 解压后的目录里找不到 install.ps1 / install.cmd，安装包可能损坏。");
             Console.Error.WriteLine("    目录: " + root);
             Pause();
             return 1;
         }
 
-        Console.WriteLine("[i] 正在启动安装程序（会弹一次管理员授权，请点「是」）…");
+        Console.WriteLine("[i] 正在启动安装程序…");
         Console.WriteLine();
         ProcessStartInfo psi = new ProcessStartInfo();
-        psi.FileName = installer;
+        if (File.Exists(installerPs1))
+        {
+            psi.FileName = Path.Combine(Environment.GetFolderPath(Environment.SpecialFolder.System), "WindowsPowerShell\\v1.0\\powershell.exe");
+            if (!File.Exists(psi.FileName)) psi.FileName = "powershell.exe";
+            psi.Arguments = "-NoProfile -ExecutionPolicy Bypass -File \"" + installerPs1 + "\" -NonInteractive";
+        }
+        else
+        {
+            // 回退：极老的包只有 install.cmd
+            psi.FileName = installerCmd;
+        }
         psi.WorkingDirectory = root;
         psi.UseShellExecute = true;
         Process p = Process.Start(psi);
         if (p != null) { try { p.WaitForExit(); } catch { } }
 
         Console.WriteLine();
-        Console.WriteLine("[i] 安装窗口已结束。如果刚才没看到安装界面，请再双击一次本文件。");
+        Console.WriteLine("[i] 安装程序已结束。");
         Pause();
         return 0;
     }

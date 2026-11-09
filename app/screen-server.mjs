@@ -184,7 +184,7 @@ let side264 = null, conn264 = null, conn264Retry = 0;
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 // 原生分辨率：ddagrab 直喂 NVENC（零拷贝，不经过滤器）。2026-11-07 实测踩坑：
-// 这台机器（RTX 5070 + 当前 ffmpeg）做不了 d3d11→nv12 的自动转换，零拷贝路径直接
+// 这台机器（当前显卡 + 当前 ffmpeg）做不了 d3d11→nv12 的自动转换，零拷贝路径直接
 // `-40 Function not implemented`，ffmpeg 秒退重试，画面全黑（2560 宽时必现，1920 走过滤器所以正常）。
 // 所以这里不再按宽度猜，改成**启动时探测**：探测失败就永远走 hwdownload+scale 的过滤器路径。
 let H264_NATIVE = false;
@@ -196,7 +196,10 @@ let H264_ZEROCOPY = false;
 let H264_ENCODER = 'mf';
 try {
   if (H264_ENABLED) {
-    execFileSync(FFMPEG_EXE, ['-hide_banner','-loglevel','error','-f','lavfi','-i','color=black:s=640x480:r=1','-t','0.2','-c:v','h264_nvenc','-f','null','-'], { timeout: 8000, stdio: 'ignore' });
+    // windowsHide 必须写：服务若在“没有控制台”的形态下运行（隔离测试实例就是
+    // detached+windowsHide 起的，没有自己的控制台），子进程会拿到一个新的控制台窗口，
+    // 而本机默认终端是 Windows Terminal → 每跑一次探测/枚举就弹一个终端窗口。
+    execFileSync(FFMPEG_EXE, ['-hide_banner','-loglevel','error','-f','lavfi','-i','color=black:s=640x480:r=1','-t','0.2','-c:v','h264_nvenc','-f','null','-'], { timeout: 8000, stdio: 'ignore', windowsHide: true });
     H264_ENCODER = 'nvenc';
   }
 } catch { H264_ENCODER = 'mf'; }
@@ -205,7 +208,7 @@ if (H264_ENABLED && H264_ENCODER === 'nvenc') {
   try {
     execFileSync(FFMPEG_EXE, ['-hide_banner','-loglevel','error','-nostdin',
       '-f','lavfi','-i','ddagrab=framerate=30:draw_mouse=0:output_idx=0',
-      '-frames:v','1','-pix_fmt','nv12','-c:v','h264_nvenc','-f','null','-'], { timeout: 10000, stdio: 'ignore' });
+      '-frames:v','1','-pix_fmt','nv12','-c:v','h264_nvenc','-f','null','-'], { timeout: 10000, stdio: 'ignore', windowsHide: true });
     H264_ZEROCOPY = true;
   } catch (e) { H264_ZEROCOPY = false; }
 }
@@ -213,7 +216,7 @@ H264_NATIVE = H264_ZEROCOPY && H264_W >= CAP_W && H264_W >= 2560;
 console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）') + ' 零拷贝=' + (H264_ZEROCOPY ? '可用' : '不可用（走过滤器）'));
 
 // 2026-11-08（虚拟机实测后修正）：**不要**用启动探测给清晰模式判死刑 ——
-// 锁屏、远程桌面、刚开机时 ddagrab 都会短暂失败，一探就禁用会误伤正常机器（本机 RTX 5070 复现过）。
+// 锁屏、远程桌面、刚开机时 ddagrab 都会短暂失败，一探就禁用会误伤正常机器（本机复现过）。
 // 改成按真实运行结果判定：
 //   · ffmpeg 连续 2 次在 2 秒内退出 → 暂不可用（60 秒后自动重试），/h264-status 带原因
 //   · 解码到第一帧 → 可用，清掉原因
@@ -633,7 +636,7 @@ function h264Start() {
   if (H264_WIN > 0) return h264StartWindow();
   // 2026-11-06 结论（记录一下，别再试错）：GPU 侧缩放这条路在这台机器上不通 ——
   //   · ddagrab 的 video_size 是「裁剪采集区域」不是缩放，用它会让手机只看到画面左上角；
-  //   · scale_d3d11 在这块 RTX 5070 + 驱动 32.0.15.9201 上创建 NV12 纹理直接 E_INVALIDARG。
+  //   · scale_d3d11 在某些显卡 + 驱动组合上创建 NV12 纹理直接 E_INVALIDARG。
   // 所以全屏缩小仍走 CPU（hwdownload → swscale lanczos），但把「缩放 + 转 NV12」合成一次 pass：
   // 由编码器声明 -pix_fmt nv12，filter 里不再接 format=nv12（实测少约 25% CPU，输出保持一致）。
   const args = [
@@ -5204,7 +5207,10 @@ async function handler(req, res) {
       // 页面每 2 秒轮询一次，这里缓存 600ms，避免每次都真的去枚举一遍窗口
       const nowTs = Date.now();
       if (!sourcesCache.out || nowTs - sourcesCache.at > 600) {
-        sourcesCache.out = execFileSync(join(HERE, 'sources.exe'), { encoding: 'utf8', timeout: 8000 });
+        // windowsHide 必须写：本机默认终端是 Windows Terminal，服务在没有控制台的
+        // 形态下运行时（隔离测试实例），每轮询一次就在这里弹一个终端窗口
+        // —— 页面 2 秒轮一次、缓存只有 600ms，等于 2 秒闪一次，还抢前台。
+        sourcesCache.out = execFileSync(join(HERE, 'sources.exe'), { encoding: 'utf8', timeout: 8000, windowsHide: true });
         sourcesCache.at = nowTs;
       }
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
@@ -5596,7 +5602,20 @@ async function handler(req, res) {
     readBody(req, 64 * 1024).then((body) => {
       let m = {};
       try { m = JSON.parse(String(body || '{}')); } catch { sendJson(400, { ok: false, error: '请求格式不对' }); return; }
+      // 2026-11-09 诊断：把每次 apply 的原始请求记下来。
+      // 排查"页面显示加了规则、保存后却变少"——需要确认到底是请求里就少，还是被 normRules 丢弃了。
+      try {
+        const dbg = join(HERE, 'power-apply-requests.log');
+        appendFileSync(dbg, '[' + new Date().toISOString() + '] 收到 ' + (Array.isArray(m.rules) ? m.rules.length : '?') + ' 条: '
+          + JSON.stringify((m.rules || []).map((r) => ({ id: r && r.id, off: r && r.offTime, wake: r && r.wakeTime, repeat: r && r.repeat, enabled: r && r.enabled })))
+          + '\n', 'utf8');
+      } catch (eDbg) { }
       const rules = normRules(m.rules);
+      try {
+        const dbg = join(HERE, 'power-apply-requests.log');
+        if (bad.length) appendFileSync(dbg, '  -> 校验失败 ' + bad.length + ' 条: ' + bad.join(' | ') + '\n', 'utf8');
+        else appendFileSync(dbg, '  -> 通过 ' + rules.length + ' 条\n', 'utf8');
+      } catch (eDbg2) { }
       if (bad.length) { sendJson(400, { ok: false, error: bad[0], errors: bad }); return; }
       if (globalThis.__paPowerBusy) { sendJson(429, { ok: false, busy: true, error: '上一次应用还没完成，请等几秒再试' }); return; }
       const doc = { enabled: m.enabled !== false, rules, updatedAt: new Date().toISOString() };

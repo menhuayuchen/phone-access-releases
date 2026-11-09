@@ -6,23 +6,42 @@ const PAGE_HTML = String.raw`<!doctype html>
      Chrome 默认 strict-origin-when-cross-origin 只发 origin，但老浏览器/WebView 不一定，
      这里显式声明，配合外链上的 rel="noreferrer" 双保险。 -->
 <meta name="referrer" content="strict-origin-when-cross-origin">
+<!-- 2026-11-08：别把页面里的数字/邮箱自动识别成电话号码链接——iOS 上长按这类链接会弹系统菜单，抢掉我们的右键手势 -->
+<meta name="format-detection" content="telephone=no,email=no,address=no">
 <title>电脑画面</title>
 <!-- 改动（第二轮 P0-1 / H1-r1）：清单地址由服务端渲染时现签注入（占位符见下行 href）。
      为什么不能写死 /manifest.json：浏览器取清单时**不带 cookie**（实测 Chrome 156），
      所以清单必须靠页面里签出来的短时 token 过鉴权；裸 GET /manifest.json 仍然是 401。
      原来的 ?v=2 作用不变：把手机上缓存过的旧清单（带过密钥、max-age=86400）换成新 URL。 -->
 <link rel="manifest" href="__MANIFEST_HREF__">
-<meta name="theme-color" content="#15161a">
+<meta name="theme-color" content="#0A0B0D">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <link rel="apple-touch-icon" href="/icon-192.png">
 <style>
-:root { color-scheme: dark; }
+:root { color-scheme: dark;
+        /* 2026-11-08 UI 改版第 1 批：安全区变量。iOS 独立模式给真实值（顶部 59 / 底部 34），
+           安卓 WebView 经常返回 0，所以文件末尾 @media (display-mode: standalone) 里还有保底值。 */
+        --sa-t: env(safe-area-inset-top, 0px);
+        --sa-b: env(safe-area-inset-bottom, 0px);
+        --sa-l: env(safe-area-inset-left, 0px);
+        --sa-r: env(safe-area-inset-right, 0px); }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+/* 2026-11-08 UI 改版第 1 批：iOS 上「长按 = 右键」会被系统抢走 —— Safari 先在长按处弹
+   「拷贝 / 全选 / 共享」并把文字选中（用户 iPhone 17 真机实测到了）。根因是
+   -webkit-touch-callout 与 user-select，跟 contextmenu 事件没关系，所以必须在这一层压死。
+   输入区在紧跟着的一行里单独放行，否则键盘栏 / 命令行里连字都选不了、光标也点不准。 */
+html, body { -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; -webkit-user-drag:none; }
+#stage, #overlay, #vid, #img, #loadOv, #note, #blk, #hud, #stat, #hint, header,
+.ripple, .cursorDot { -webkit-touch-callout:none; -webkit-user-select:none; user-select:none; -webkit-user-drag:none; }
+img, #img, #vid { -webkit-user-drag:none; user-drag:none; }
+input, textarea, select, [contenteditable="true"], #kbtext, #cmdtext, #cmdout {
+  -webkit-user-select:text; user-select:text; -webkit-touch-callout:default; }
 body { margin:0; background:#0b0b0d; color:#c9ccd1; font:14px/1.4 system-ui,-apple-system,"Segoe UI",sans-serif;
        display:flex; flex-direction:column; height:100dvh; overflow:hidden; overscroll-behavior:none; }
-header { display:flex; gap:6px; align-items:center; padding:6px 8px; background:#15161a; flex-wrap:wrap;
-         border-bottom:1px solid #24262b; }
+header { display:flex; gap:6px; align-items:center; background:#15161a; flex-wrap:wrap;
+         border-bottom:1px solid #24262b;
+         padding: calc(6px + var(--sa-t)) calc(8px + var(--sa-r)) 6px calc(8px + var(--sa-l)); }
 #zoomPop { position:fixed; right:8px; z-index:40; display:none; width:min(330px,calc(100vw - 16px));
            background:#1b1d23; border:1px solid #3a3e4a; border-radius:12px; padding:10px;
            box-shadow:0 10px 30px rgba(0,0,0,.55); }
@@ -40,7 +59,7 @@ button.on { background:#2f6f3f; border-color:#3f8f53; color:#e8ffe9; }
 button:active { transform:scale(0.97); }
 select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-radius:8px; padding:6px; font:inherit;
          max-width:34vw; }
-#spacer { flex:1 }
+/* 2026-11-08：#spacer 元素随旧顶栏一起删掉了，这条 flex 占位规则一起清理 */
 #stat { color:#7d838c; font-size:12px }
 #hud { color:#7d838c; font-variant-numeric:tabular-nums; font-size:12px }
 #blk { position:absolute; left:50%; top:10px; transform:translateX(-50%); display:none;
@@ -50,17 +69,7 @@ select { background:#24262b; color:#c9ccd1; border:1px solid #33363d; border-rad
 #blk button { margin-left:8px; background:#ffe9e9; color:#7a1f1f; border:0; border-radius:7px;
               padding:5px 9px; font:inherit; font-weight:600; }
 #stage { flex:1; position:relative; overflow:hidden; background:#000; touch-action:none; }
-/* 全屏按钮：贴在左边缘垂直居中，平时半透明，按住/悬停变亮（不挡画面又能找到） */
-#fsBtn { position:fixed; left:0; top:50%; transform:translateY(-50%); z-index:10001; width:24px; height:60px;
-         border:1px solid rgba(255,255,255,.14); border-left:0; border-radius:0 12px 12px 0;
-         background:rgba(24,24,28,.22); color:rgba(255,255,255,.85);
-         font-size:14px; padding:0; cursor:pointer; opacity:.38; transition:opacity .2s, background .2s;
-         backdrop-filter:blur(3px); -webkit-backdrop-filter:blur(3px); }
-#fsBtn:hover, #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
-body.fs #fsBtn { opacity:.30; background:rgba(10,10,12,.20); }
-body.fs #fsBtn:hover, body.fs #fsBtn:active { opacity:.9; background:rgba(40,40,46,.55); }
-body.fs header, body.fs #hint, body.fs #hud, body.fs #stat { display:none !important; }
-body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-index:9996; }
+/* 2026-11-08：原「左边缘全屏按钮 #fsBtn」的整套定位 + body.fs 全屏模式样式已删除（功能已下线）。 */
 #img, #vid { position:absolute; inset:0; width:100%; height:100%; object-fit:contain; display:none; background:#000; }
 #img.show, #vid.show { display:block; }
 #overlay { position:absolute; inset:0; z-index:5; touch-action:none; }
@@ -75,6 +84,13 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
           border:2px solid #6ee7a0; opacity:0.9; pointer-events:none; z-index:7;
           animation: rip 420ms ease-out forwards; }
 @keyframes rip { to { transform:scale(1.9); opacity:0; } }
+/* 长按进度环（2026-11-09）：按住时转满 550ms，转满变绿。rAF 驱动，见 startLongRing */
+.paRing { position:absolute; width:40px; height:40px; margin:-20px 0 0 -20px;
+          pointer-events:none; z-index:8; }
+.paRing svg { width:100%; height:100%; display:block; }
+.paRing.ok .paRingArc { stroke:#6EE7A0; }
+.paRing.ok { animation: paRingOk .3s ease-out forwards; }
+@keyframes paRingOk { to { transform:scale(1.6); opacity:0; } }
 .cursorDot { position:absolute; width:10px; height:10px; margin:-5px 0 0 -5px; border-radius:50%;
              background:#ffd166; box-shadow:0 0 6px #000; pointer-events:none; z-index:7; display:none; }
 #hint { padding:5px 10px; color:#6b7079; font-size:12px; background:#101114; }
@@ -110,37 +126,26 @@ body.fs #stage { position:fixed; left:0; top:0; width:100vw; height:100vh; z-ind
 body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mouse-real canvas { cursor: none !important; }
 @media (max-width: 960px) {
   #hint { display: none !important; }
-  #bar, .bar, header { font-size: 12px !important; }
   #hud { font-size: 11px !important; }
   #stage { border-radius: 0 !important; }
 }
 @media (max-width: 960px) {
   #hint { display: none !important; }
   #hud { font-size: 11px !important; }
-  #bar, .bar, header { font-size: 12px !important; padding: 2px 6px !important; }
 }
 @media (max-width: 960px) {
-  #bar, .bar, header { flex-wrap: wrap !important; padding: 2px 6px !important; }
-  #bar button, #bar .btn, .bar button, header button { padding: 5px 8px !important; font-size: 12px !important; }
   #hud { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 }
-#mobSheet button{padding:8px 12px;border-radius:9px;background:#2a2e35;color:#e6e8eb;border:0;font-size:13px;}@media (max-width: 960px) {
+@media (max-width: 960px) {
   /* 2026-11-05 修：原来是 flex-wrap:nowrap + overflow:visible，窄屏（手机竖屏）时
      顶栏按钮会一路挤出屏幕右侧、点不到（用户实测截图）。改成允许换行，
      同时把占位的 spacer 隐藏（#stat 已隐藏、#hud 已 fixed），避免多余空行。 */
-  #bar, .bar, header { display: flex; align-items: center; flex-wrap: wrap !important; gap: 6px; padding: 4px 6px !important; overflow: visible !important; }
-  #bar button, .bar button, header button { flex: 0 0 auto; white-space: nowrap; padding: 6px 10px !important; font-size: 13px !important; }
-  #bar select, .bar select { flex: 1 1 auto; min-width: 0; }
-  #spacer { display: none !important; }
   #stat { display: none !important; }
   #hint { display: none !important; }
   #hud { position: fixed; left: 8px; bottom: 8px; z-index: 9998; max-width: 92vw; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 10px !important; background: rgba(0,0,0,.55); padding: 3px 6px; border-radius: 6px; }
 }
 @media (max-width: 480px) {
   /* 更窄的竖屏手机：按钮和间距再收一点，保证两行内放得下 */
-  #bar, .bar, header { gap: 4px !important; }
-  #bar button, .bar button, header button { padding: 5px 8px !important; font-size: 12.5px !important; }
-  #bar select, .bar select { font-size: 12.5px !important; padding: 4px 6px !important; }
 }
 /* 设置里的折叠窗：标题可点，内容收起；更紧凑的卡片外观 */
 .setSec { margin-top:12px; background:#1a1c22; border:1px solid #292c35; border-radius:12px; overflow:hidden; }
@@ -151,6 +156,316 @@ body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mou
 .setSec.closed .secChev { transform:rotate(-90deg); }
 .setSec.closed .secBody { display:none; }
 .secBody { padding:2px 14px 13px; border-top:1px solid #22242b; }
+
+/* ===== 2026-11-08 UI 改版第 2 批：视觉皮肤（A 案 · 近黑 + 冷青）=====
+   这一批只换外观：颜色 / 圆角 / 描边 / 交互色。**不动任何元素的尺寸和位置**，
+   所以触控坐标换算（toScreen / toPage / contentBox / videoSourceSize）完全不受影响。
+   玻璃拟态（backdrop-filter）这批先不加：顶栏现在还在布局流里、不压在画面上，
+   加了看不出效果，反而给低端安卓白搭一层合成开销。等第 3 批工具条浮起来再加。 */
+:root {
+  --bg:#0A0B0D; --s1:#12141A; --s2:#181B22; --s3:#212530;
+  --stroke:rgba(255,255,255,.09); --stroke-2:rgba(255,255,255,.055);
+  --tx:#E8EAEE; --tx2:#9AA1AB; --tx3:#697079;
+  --accent:#35D6C4; --accent-rgb:53,214,196; --accent-soft:rgba(var(--accent-rgb),.15); --accent-line:rgba(var(--accent-rgb),.40);
+}
+body { background: var(--bg); color: var(--tx); }
+header { background: #101217; border-bottom: 1px solid var(--stroke-2); }
+button {
+  background: var(--s3); color: #C6CCD4; border: 1px solid var(--stroke); border-radius: 11px;
+}
+/* 这里故意不写 transition：给 button 加 color/background 过渡后，页面启动时
+   JS 补上 .on 的那一瞬间，Chrome 的过渡会「卡在起点」不前进（实测：等 10 秒
+   仍然是未激活底色，getAnimations() 里 6 条 CSSTransition 一直 running，
+   把 transition 临时设成 none 才立刻跳到正确颜色）。手机上本来也没有 hover，
+   过渡没有收益，去掉最稳。 */
+@media (hover: hover) { button:hover { background: #262B38; } }
+button.on {
+  background: rgba(var(--accent-rgb),.22); border-color: rgba(var(--accent-rgb),.62); color: #8CF6E9;
+  box-shadow: 0 0 14px rgba(var(--accent-rgb),.14), inset 0 0 0 1px rgba(var(--accent-rgb),.10);
+}
+select { background: var(--s3); color:#C6CCD4; border:1px solid var(--stroke); border-radius:11px; }
+#stat { color: var(--tx2); }
+#hud { color: #7D848E; }
+#hint { color: var(--tx3); background: #0F1115; }
+#note { color: #8B9099; }
+.ripple { border-color: var(--accent); }
+#blk { border-radius: 12px; }
+
+/* 2026-11-08：左边缘全屏把手的皮肤已随全屏功能一起删除 */
+/* 恢复画面大小 */
+#viewReset { background: rgba(20,22,28,.94); border: 1px solid var(--stroke); color: var(--tx); }
+
+/* 键盘栏 / 命令行栏 */
+#kbbar, #cmdbar { background: #101217; border-top: 1px solid var(--stroke-2); }
+#kbtext, #cmdtext { background: #1A1D25; border: 1px solid var(--stroke); border-radius: 12px; color: var(--tx); }
+#keysrow .kbtn { border-radius: 12px; }
+#keysrow .kbtn.down { background: rgba(var(--accent-rgb),.18); border-color: var(--accent-line); color: #86F5E7; }
+#keysrow .kundo { background: #2A2530; border-color: #4A3F58; color: #E4CDF2; }
+#keynote, #cmdhint { color: var(--tx3); }
+#cmdout { background: #0B0D11; border: 1px solid var(--stroke-2); color: #C9D1D9; }
+
+/* 缩放方式面板 */
+#zoomPop { background: rgba(20,22,28,.98); border: 1px solid var(--stroke); border-radius: 18px;
+           box-shadow: 0 24px 64px rgba(0,0,0,.68); }
+#zoomPop .zpTitle { color: #F0F2F5; }
+#zoomPop .zpOpt { background: #1C2029; border: 1px solid var(--stroke); border-radius: 12px; color: #C6CCD4; }
+#zoomPop .zpOpt.on { background: var(--accent-soft); border-color: var(--accent-line); color: #86F5E7; }
+#zoomPop .zpOpt small, #zoomPop .zpNote { color: var(--tx3); }
+
+/* 画面来源面板 */
+#srcPanel { background: #12141A; border: 1px solid var(--stroke); border-radius: 20px 20px 0 0; }
+#srcPanel h3 { color: var(--tx); }
+.srcHead { color: var(--tx3); }
+.srcRow { color: #C6CCD4; border-radius: 12px; }
+.srcRow:active { background: #1C2029; }
+.srcRow.cur { background: var(--accent-soft); color: #86F5E7; }
+.srcRow.cur small { color: #57C0B2; }
+#srcSheet .srcBtns button { border-radius: 12px; }
+
+/* 设置面板里的折叠卡 */
+.setSec { background: #14161C; border: 1px solid var(--stroke-2); border-radius: 14px; }
+.secHead:active { background: #1A1D25; }
+.secTitle { color: var(--tx); }
+.secChev { color: var(--tx3); }
+
+/* ===== 2026-11-08 UI 改版第 4 批：设置面板外壳（底部全屏面板 + 四个页签）===== */
+.paSetHead {
+  position: sticky; top: 0; z-index: 3;
+  display: flex; align-items: center; justify-content: space-between;
+  margin: 0 -16px 6px; padding: 14px 16px 10px;
+  background: #0F1116; border-bottom: 1px solid rgba(255,255,255,.06);
+}
+.paSetTitle { font-size: 17px; font-weight: 600; color: #F0F2F5; letter-spacing: .01em; }
+.paSetX {
+  width: 32px; height: 32px; border-radius: 50%; padding: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(255,255,255,.09); border: 0; color: #B7BDC6;
+  font-size: 20px; line-height: 1; cursor: pointer;
+}
+.paSetX:active { background: rgba(255,255,255,.16); }
+
+.paTabs {
+  position: sticky; top: 57px; z-index: 2;
+  display: flex; gap: 6px; margin: 0 0 10px; padding: 6px 0 8px;
+  background: #0F1116;
+}
+.paTabs button {
+  flex: 1; height: 36px; border-radius: 10px;
+  background: #1A1D25; border: 1px solid rgba(255,255,255,.07);
+  color: #A8B0BA; font-size: 13px; cursor: pointer;
+}
+.paTabs button.on {
+  background: rgba(var(--accent-rgb),.18); border-color: rgba(var(--accent-rgb),.45); color: #7FF0D8;
+}
+
+/* 老代码把这些颜色写死在字符串的 style 里，只能靠 !important 才压得住 */
+.paSetBox a { color: var(--accent) !important; }
+.paSetBox button[style*="2f6feb"] {
+  background: var(--accent) !important; color: #06201C !important;
+  border-color: var(--accent) !important; font-weight: 600;
+}
+.paSetBox button[style*="2a2d36"] {
+  background: #212530 !important; color: #E8EAEE !important;
+  border-color: rgba(255,255,255,.09) !important;
+}
+.paSetBox input[type="text"], .paSetBox input:not([type]), .paSetBox textarea, .paSetBox select {
+  background: #171A21 !important; color: #E8EAEE !important;
+  border: 1px solid rgba(255,255,255,.09) !important; border-radius: 9px !important;
+}
+.paSetBox code { background: #171A21 !important; border-color: rgba(255,255,255,.08) !important; color: #C6CCD4 !important; }
+.paSetBox input[type="checkbox"] { accent-color: var(--accent); width: 16px; height: 16px; }
+
+/* 小屏帧率浮层 */
+@media (max-width: 960px) {
+  #hud { background: rgba(12,14,18,.74); border: 1px solid var(--stroke-2); border-radius: 8px; }
+}
+
+/* ===== 2026-11-08 UI 改版第 1 批：安全区适配 =====
+   刘海 / 灵动岛 / 挖孔 / home 指示条 / 安卓手势条。
+   注意：原来这里有一条 body > header 的顶部内边距补丁，第 3 批把旧顶栏整个删掉之后
+   它已经没有作用对象了，一并清理；现在顶部让位由 #paTop 自己算。 */
+/* 底部三条：临时提示 / 键盘栏 / 命令行栏 —— 不能被 home 指示条或安卓手势条压住 */
+#hint { padding: 5px calc(10px + var(--sa-r)) calc(5px + var(--sa-b)) calc(10px + var(--sa-l)); }
+#kbbar { padding: 8px calc(8px + var(--sa-r)) calc(8px + var(--sa-b)) calc(8px + var(--sa-l)); }
+#cmdbar { padding: 8px calc(8px + var(--sa-r)) calc(8px + var(--sa-b)) calc(8px + var(--sa-l)); }
+/* 右下角 / 左下角浮层 */
+#hud { bottom: calc(8px + var(--sa-b)); }
+#zoomPop { right: calc(8px + var(--sa-r)); }
+#viewReset { left: calc(8px + var(--sa-l)); }
+/* 来源选择面板（底部 sheet）的按钮行同样要躲开指示条 */
+#srcSheet .srcBtns { padding-bottom: calc(16px + var(--sa-b)); }
+/* 安卓 WebView / 部分国产浏览器在独立模式下 env() 返回 0，顶栏会直接钻进摄像头孔下面。
+   给保底：顶部不少于 32px、底部不少于 16px；iOS 独立模式 env() = 59/34 时 max() 取真实值。 */
+@media (display-mode: standalone) {
+  :root { --sa-t: max(env(safe-area-inset-top, 0px), 32px);
+          --sa-b: max(env(safe-area-inset-bottom, 0px), 16px); }
+}
+
+/* ===== 2026-11-08 UI 改版第 3 批：结构（顶部状态胶囊 + 底部 5 键工具条 + 更多抽屉）=====
+   原来的 <header> 不再存在：画面不再被顶栏往下挤，stage 直接吃满整屏（手机上的黑边会少一大截）。
+   所有按钮 id 保持不变，JS 的 getElementById 引用照旧。 */
+
+/* --- 顶部状态胶囊：不吃触摸，纯显示 --- */
+#paTop {
+  position: fixed; z-index: 9000; display: inline-flex; align-items: center; gap: 8px;
+  left: calc(10px + var(--sa-l)); top: calc(8px + var(--sa-t));
+  max-width: calc(100vw - 20px - var(--sa-l) - var(--sa-r));
+  padding: 6px 12px; border-radius: 14px;
+  background: rgba(16,18,23,.93); border: 1px solid rgba(255,255,255,.07);
+  /* 2026-11-08：去掉毛玻璃，见文件头说明 */
+  font-size: 11.5px; color: #9AA4B0; line-height: 1.3;
+  white-space: nowrap; overflow: hidden; pointer-events: none;
+}
+#paDot { width:6px; height:6px; border-radius:50%; background:var(--accent); flex:0 0 auto;
+         box-shadow: 0 0 8px rgba(var(--accent-rgb),.8); }
+#paTop #stat, #paTop #hud { overflow: hidden; text-overflow: ellipsis; }
+#paTop #hud { color: #6E7681; }
+
+/* --- 底部 5 键工具条 --- */
+#paDock {
+  position: fixed; z-index: 9001; left: 50%; transform: translateX(-50%);
+  bottom: calc(10px + var(--sa-b));
+  display: flex; align-items: center; gap: 2px; padding: 6px; border-radius: 26px;
+  background: rgba(16,18,23,.93); border: 1px solid rgba(255,255,255,.09);
+  
+  box-shadow: 0 12px 38px rgba(0,0,0,.55), inset 0 1px 0 rgba(255,255,255,.07);
+}
+/* 2026-11-08：全屏按钮已下线，这里只剩工具条按钮本身的样式 */
+#paDock button {
+  position: static; left: auto; top: auto; transform: none; opacity: 1;
+  width: auto; min-width: 52px; height: 46px; padding: 0 10px;
+  display: flex; align-items: center; justify-content: center;
+  border-radius: 20px; border: 1px solid transparent;
+  background: transparent; color: #C6CCD4; font-size: 12.5px; line-height: 1;
+  cursor: pointer; -webkit-tap-highlight-color: transparent;
+  /* #fsBtn 原来是贴左边缘的独立把手，带着 backdrop-filter 和 box-shadow；
+     不清掉的话它在工具条里会自作主张糊掉底下的画面，看起来像"按下的深色块" */
+  backdrop-filter: none; -webkit-backdrop-filter: none; box-shadow: none;
+}
+#paDock button.on {
+  background: rgba(var(--accent-rgb),.18); border-color: rgba(var(--accent-rgb),.45); color: #7FF0D8;
+}
+#paDock button:active { background: rgba(255,255,255,.08); transform: scale(.94); }
+
+/* --- 工具条收起 / 拉出（用户反馈底部工具条挡画面）---
+   把手在左边缘，点一下工具条滑出来，点画面任意处收回。
+   这里可以放心加过渡：第 2 批踩的坑是「元素首屏就带着目标 class」，属于一次性渲染；
+   这里走的是用户点击后的真实状态切换，transition 正常生效。 */
+/* 注意：这里**不能**用 transition 做 opacity 过渡。
+   实测：带 backdrop-filter 的元素（工具条就是）在 Chrome 上切 class 后
+   opacity 会卡在起点不推进——class 明明加上了，元素却一直透明。
+   改用一次性 @keyframes 动画（浏览器主动驱动，不受这个坑影响）。 */
+/* 2026-11-08 最终决定：入场不用 CSS 动画。
+   试过 transition 和 @keyframes 两种，实测在后台标签页 / 无头环境里动画时钟不推进，
+   动画会卡在 from 帧，元素就一直透明——真机上万一撞到同样情况，工具条会直接看不见，
+   这个代价太大。改成瞬时切换：可见性 100% 可靠；手感靠按钮的 :active 缩放补。 */
+body.uiopen #paDock {
+  opacity: 1; pointer-events: auto;
+  transform: translateX(-50%) translateY(0);
+}
+body:not(.uiopen) #paDock {
+  opacity: 0; pointer-events: none;
+  transform: translateX(-50%) translateY(10px);
+}
+#paHandle {
+  position: fixed; z-index: 9003;
+  /* 2026-11-08：把手挪到左边缘。右侧原来挤着缩放浮层和设置/套餐/关于三个圆钮，
+     把手放那儿就叠在一起了（用户横屏截图里的"最右边一堆东西"）。 */
+  left: var(--sa-l); right: auto; top: 50%; transform: translateY(-50%);
+  width: 26px; height: 66px; padding: 0;
+  border-radius: 0 13px 13px 0;
+  background: rgba(16,18,23,.88); border: 1px solid rgba(255,255,255,.10); border-left: 0;
+  
+  color: rgba(255,255,255,.6); font-size: 13px; line-height: 1;
+  display: flex; align-items: center; justify-content: center;
+  cursor: pointer; opacity: .8;
+}
+#paHandle:active { opacity: 1; background: rgba(30,36,46,.9); transform: translateY(-50%) scale(.95); }
+body.uiopen #paHandle { opacity: 0; pointer-events: none; }
+/* 2026-11-08 个性化：把手可以放右边（设置 → 常用 → 界面） */
+body.ha-right #paHandle {
+  left: auto; right: var(--sa-r);
+  border-radius: 13px 0 0 13px;
+  border-left: 1px solid rgba(255,255,255,.10); border-right: 0;
+}
+
+/* --- 更多抽屉 ---
+   同样不用 transition / visibility：抽屉也带 backdrop-filter，opacity 过渡会卡住。
+   用 @keyframes 做入场，命中判断交给 pointer-events。 */
+#paSheet {
+  position: fixed; z-index: 9002;
+  opacity: 0; pointer-events: none;
+  transform: translateY(18px) scale(.985);
+  left: calc(9px + var(--sa-l)); right: calc(9px + var(--sa-r));
+  bottom: calc(10px + var(--sa-b) + 62px);
+  padding: 9px 12px 13px; border-radius: 24px;
+  background: rgba(14,16,21,.97); border: 1px solid rgba(255,255,255,.09);
+  
+  box-shadow: 0 -10px 48px rgba(0,0,0,.62), inset 0 1px 0 rgba(255,255,255,.06);
+}
+#paSheet.on {
+  opacity: 1; pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+.paGrab { width: 36px; height: 4px; border-radius: 2px; background: rgba(255,255,255,.2); margin: 0 auto 10px; }
+.paGrid { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.paGrid button {
+  height: 46px; border-radius: 14px; padding: 0 6px;
+  background: #1A1D25; border: 1px solid rgba(255,255,255,.07);
+  color: #C6CCD4; font-size: 12.5px; cursor: pointer;
+}
+.paGrid button.on {
+  background: rgba(var(--accent-rgb),.18); border-color: rgba(var(--accent-rgb),.45); color: #7FF0D8;
+}
+.paGrid button:active { background: #232833; }
+/* 抽屉底部一行次级操作（目前只有「重新连接」） */
+.paSheetFoot {
+  display: flex; gap: 6px; margin-top: 9px; padding-top: 9px;
+  border-top: 1px solid rgba(255,255,255,.07);
+}
+.paSheetFoot button {
+  flex: 1; height: 40px; border-radius: 12px;
+  background: transparent; border: 1px solid rgba(255,255,255,.09);
+  color: #9AA1AB; font-size: 12.5px; cursor: pointer;
+}
+.paSheetFoot button:active { background: rgba(255,255,255,.06); }
+/* 2026-11-08：抽屉格子 / 抽屉页签 / 设置页签按下去有点「回弹」，手感不生硬 */
+.paGrid button, #paBtns > button, .paTabs button, .paSetX, .xbtn {
+  transition: transform .09s ease, background .12s ease;
+}
+.paGrid button:active, #paBtns > button:active, .paTabs button:active { transform: scale(.95); }
+/* 原来的三个圆形浮钮（设置/套餐/关于）现在住在抽屉里，改成和功能格一致的方块样式 */
+#paBtns > button {
+  width: auto; min-width: 0; height: 46px; border-radius: 14px;
+  display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 2px;
+  background: #1A1D25; border: 1px solid rgba(255,255,255,.07); color: #C6CCD4;
+  box-shadow: none; backdrop-filter: none; -webkit-backdrop-filter: none;
+}
+#paBtns > button:active { background: #232833; }
+#paBtns > button span { font-size: 10.5px; line-height: 1; color: #A8B0BA; }
+/* 宽屏（平板横屏 / 桌面）：抽屉别拉满整屏，居中限宽。
+   这里用 margin auto 居中，**不能**再用 transform: translateX(-50%)——
+   那会和 #paSheet.on 的 transform 抢同一个属性，导致展开动画和位置算错。 */
+@media (min-width: 600px) {
+  #paSheet { left: 0; right: 0; margin: 0 auto; width: min(520px, calc(100vw - 24px)); }
+}
+
+/* --- 全屏模式已下线，下面这段原来控制 body.fs 的显隐，已删除 --- */
+
+/* --- 覆盖旧规则：小屏原来把 #stat 和 #hud 藏了 / 钉到底部，现在它们住在顶部胶囊里 --- */
+@media (max-width: 960px) {
+  #stat { display: inline !important; }
+  /* 手机上 #stat 和 #hud 的内容是重复的（都是"分辨率 · 帧率 · 码率"），
+     两个都显示会让顶部胶囊拉得特别长，只留 #stat 一个。设置里的开关仍然两者一起控制。 */
+  #hud { display: none !important; }
+  #hud {
+    position: static !important; left: auto !important; bottom: auto !important;
+    max-width: none !important; background: none !important;
+    border: 0 !important; border-radius: 0 !important;
+    padding: 0 !important; font-size: 11.5px !important;
+    white-space: nowrap !important; text-align: left !important;
+  }
+}
 </style>
 <style>
 /* 选择显示来源：手机上原生 <select> 弹层会截断长列表，改成全屏底部面板 */
@@ -172,29 +487,50 @@ body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mou
 </style>
 </head>
 <body>
-<header>
-  <button id="mCrisp">清晰</button>
-  <button id="mSmooth">流畅</button>
-  <button id="srcBtn" title="选择显示来源">全部屏幕</button>
-  <select id="src" style="display:none"><option value="m-1">全部屏幕</option></select>
-  <button id="deskBtn" title="最小化所有窗口，露出桌面">桌面</button>
-  <button id="snd">声音</button>
-  <button id="ctl">控制</button>
-  <button id="kbBtn">输入</button>
-  <button id="zoomBtn" title="三指及以上手势的缩放方式">缩放</button>
-  <button id="cmdBtn">命令</button>
-  <span id="spacer"></span>
+<!-- 2026-11-08 UI 改版第 3 批：结构改造。
+     原来的 <header> 占了 60–130px 高度、把画面往下挤，而且 12 个按钮在手机上要折两行。
+     现在拆成三层：顶部只留一条状态胶囊（不吃触摸）、底部 5 个常驻高频操作、其余全部进抽屉。
+     所有按钮的 id 一个都没改，JS 里的 getElementById 引用全部照旧。 -->
+<div id="paTop" aria-hidden="true">
+  <span id="paDot"></span>
   <span id="stat">连接中…</span>
   <span id="hud"></span>
-</header>
-<button id="fsBtn" title="全屏（隐藏所有按钮和状态栏）">⛶</button>
+</div>
+
+<div id="paDock">
+  <button id="kbBtn" title="输入文字">键盘</button>
+  <!-- 2026-11-09：声音从抽屉搬回常驻工具条。state.audio 默认 false（移动端有声音的视频
+       不能自动播放），但按钮原来藏在抽屉里，用户根本想不到要先去点一下，体感就是"没声音"。 -->
+  <button id="snd" title="传输电脑声音">声音</button>
+  <button id="ctl" title="控制开关">控制</button>
+  <button id="zoomBtn" title="三指及以上手势的缩放方式">缩放</button>
+  <button id="moreBtn" title="更多功能">更多</button>
+</div>
+<!-- 右边缘把手：工具条收起后点它拉出来，平时只占 26px 宽，几乎不挡画面 -->
+<button id="paHandle" title="显示工具条" aria-label="显示工具条">〈</button>
+
+<div id="paSheet" role="dialog" aria-label="更多功能">
+  <div class="paGrab"></div>
+  <div class="paGrid">
+    <button id="mCrisp">清晰</button>
+    <button id="mSmooth">流畅</button>
+    <button id="srcBtn" title="选择显示来源">全部屏幕</button>
+    <button id="deskBtn" title="最小化所有窗口，露出桌面">桌面</button>
+    <button id="cmdBtn">命令</button>
+  </div>
+  <select id="src" style="display:none"><option value="m-1">全部屏幕</option></select>
+  <!-- 2026-11-09：断线时原来只能刷新页面；给一个明确入口 -->
+  <div class="paSheetFoot">
+    <button id="paReconnect" type="button" title="重新建立连接">重新连接</button>
+  </div>
+</div>
 <div id="srcSheet" role="dialog" aria-label="选择显示来源">
   <div id="srcPanel">
     <h3>选择显示来源</h3>
     <div id="srcList"></div>
     <div class="srcBtns">
-      <button id="srcClose" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a">关闭</button>
-      <button id="srcReload" style="background:#2f6feb;color:#fff;border:0">刷新列表</button>
+      <button id="srcClose" style="background:#212530;color:#E8EAEE;border:1px solid rgba(255,255,255,.09)">关闭</button>
+      <button id="srcReload" style="background:var(--accent);color:#06201C;border:0;font-weight:600">刷新列表</button>
     </div>
   </div>
 </div>
@@ -207,11 +543,11 @@ body.mouse-real #overlay, body.mouse-real #vid, body.mouse-real #stage, body.mou
 <!-- tabindex="-1"：画面区作为「焦点回收站」，点完特殊键按钮把焦点收回到这里，
      否则焦点留在按钮上，物理键盘按空格/回车会再次触发那个按钮 -->
 <div id="stage" tabindex="-1">
-  <img id="img" alt="">
+  <img id="img" alt="" draggable="false">
   <video id="vid" playsinline autoplay muted></video>
   <!-- 首帧前的占位：避免"黑屏很久像卡死"，画面一到就把这层藏起来 -->
   <div id="loadOv" style="position:absolute;inset:0;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:14px;background:#000;color:#9aa0aa;font-size:13px;z-index:5;pointer-events:none">
-    <div style="width:34px;height:34px;border:3px solid #2a2d36;border-top-color:#8fb6ff;border-radius:50%;animation:paSpin .9s linear infinite"></div>
+    <div style="width:34px;height:34px;border:3px solid #232832;border-top-color:var(--accent);border-radius:50%;animation:paSpin .9s linear infinite"></div>
     <div style="letter-spacing:.08em">正在连接画面…</div>
   </div>
   <style>@keyframes paSpin{to{transform:rotate(360deg)}}</style>
@@ -263,28 +599,39 @@ const stage = document.getElementById('stage');
 let img = document.getElementById('img');
 const vid = document.getElementById('vid');
 
-// ---- 全屏模式：隐藏顶栏/提示/状态值，只留画面 + 左边缘的半透明按钮 ----
-const fsBtn = document.getElementById('fsBtn');
-function fsIsOn() { return document.body.classList.contains('fs'); }
-function setFsOn(on) {
-  document.body.classList.toggle('fs', !!on);
-  if (fsBtn) fsBtn.textContent = on ? '⤢' : '⛶';
+// ===== 2026-11-08 个性化：强调色 / 工具条把手位置 =====
+// 存 localStorage，页面一加载就应用（写 inline style，优先级高于 :root 里的默认值）。
+// 强调色的半透明层（激活态、状态点光晕）全部走 var(--accent-rgb)，所以只改两个变量就整体跟着变。
+function paHexToRgb(h) {
+  const s = String(h || '').replace('#', '');
+  if (!/^[0-9a-fA-F]{6}$/.test(s)) return '53,214,196';
+  return parseInt(s.slice(0, 2), 16) + ',' + parseInt(s.slice(2, 4), 16) + ',' + parseInt(s.slice(4, 6), 16);
+}
+function applyAccent(c) {
+  if (!/^#[0-9a-fA-F]{6}$/.test(String(c || ''))) return;
   try {
-    if (on) {
-      if (document.documentElement.requestFullscreen) document.documentElement.requestFullscreen().catch(function () { });
-    } else if (document.fullscreenElement && document.exitFullscreen) {
-      document.exitFullscreen().catch(function () { });
-    }
+    document.documentElement.style.setProperty('--accent', c);
+    document.documentElement.style.setProperty('--accent-rgb', paHexToRgb(c));
   } catch (e) { }
 }
-if (fsBtn) fsBtn.addEventListener('click', function () { setFsOn(!fsIsOn()); });
-// 用户用系统手势退出全屏时，把 CSS 全屏一起收掉，别留下隐藏的顶栏
-document.addEventListener('fullscreenchange', function () {
-  if (!document.fullscreenElement && fsIsOn()) {
-    document.body.classList.remove('fs');
-    if (fsBtn) fsBtn.textContent = '⛶';
-  }
-});
+function applyHandleSide(side) {
+  try { document.body.classList.toggle('ha-right', side === 'right'); } catch (e) { }
+}
+(function paApplyPrefs() {
+  try {
+    const a = localStorage.getItem('pa.accent');
+    if (a) applyAccent(a);
+    const s = localStorage.getItem('pa.handleSide');
+    if (s === 'right') applyHandleSide('right');
+  } catch (e) { }
+})();
+// 本次会话的开始时间：设置面板里显示「本次已连接多久」（比"最近连接"更实用，我们没有设备列表首页）
+window.__paStart = Date.now();
+
+// 2026-11-08：全屏功能已删除（用户判断"没什么意义了"）。
+// 理由：第 3 批之后画面本来就铺满整屏（顶栏已去掉），工具条又能收进左边缘，
+// 再套一层 fullscreen 只会在手机上触发浏览器 UI 变化、且退出路径不明显。
+// 原来这里有 fsBtn / setFsOn / fullscreenchange 一整段，连同 body.fs 的样式一起清掉了。
 
 // ---- 游戏模式：一键深链到 Moonlight（硬核玩家用 Sunshine+Moonlight）----
 // ---- 游戏模式：深链到 Moonlight（入口在 设置 → 高性能模式，不占主界面）----
@@ -341,19 +688,32 @@ function zoomViewAt(cx, cy, factor) {
   }
   applyView();
 }
+// 2026-11-09：画面缩放模式下常驻的缩放浮条（＋ － ⟳ ×）。
+// 实测第一版太糟：bottom:130px 正好压在底部工具条上、38px 按钮又大又不透明、× 和别的按钮一样大。
+// 现在：抬到工具条上方更远处、按钮 28px、整体半透明（opacity .5）、× 单独 22px。
 function updateZoomCtl() {
   let el = document.getElementById('zoomCtl');
   if (!el) {
     el = document.createElement('div');
     el.id = 'zoomCtl';
-    el.style.cssText = 'position:fixed;right:8px;bottom:130px;z-index:9997;display:none;flex-direction:column;gap:2px;background:rgba(20,22,26,.35);border:1px solid rgba(255,255,255,.12);border-radius:26px;padding:4px;opacity:.55;transition:opacity .2s'; el.addEventListener('pointerdown', function(){ el.style.opacity = '1'; }); el.addEventListener('pointerleave', function(){ el.style.opacity = '.55'; });
-    const items = [['＋', 1.25], ['－', 0.8], ['⟳', 0]];
+    el.style.cssText = 'position:fixed;right:6px;bottom:210px;z-index:9997;display:none;flex-direction:column;gap:3px;background:rgba(20,22,26,.22);border:1px solid rgba(255,255,255,.08);border-radius:18px;padding:3px;opacity:.5;transition:opacity .15s';
+    el.addEventListener('pointerdown', function () { el.style.opacity = '.95'; });
+    el.addEventListener('pointerleave', function () { el.style.opacity = '.5'; });
+    // × ：关掉浮条并自动切回「系统缩放」
+    const items = [['＋', 1.25], ['－', 0.8], ['⟳', 0], ['×', -1]];
     items.forEach(function (it) {
       const b = document.createElement('button');
       b.textContent = it[0];
-      b.style.cssText = 'width:38px;height:38px;border-radius:19px;background:transparent;color:#e6e8eb;border:0;font-size:18px;line-height:1';
+      // × 额外小一号（用户要求）
+      if (it[0] === '×') {
+        b.style.cssText = 'width:22px;height:22px;border-radius:11px;background:transparent;color:rgba(230,232,235,.72);border:0;font-size:12px;line-height:1;align-self:center';
+      } else {
+        b.style.cssText = 'width:28px;height:28px;border-radius:14px;background:transparent;color:rgba(230,232,235,.92);border:0;font-size:15px;line-height:1';
+      }
       b.addEventListener('click', function (e) {
         e.stopPropagation();
+        // × ：关掉浮条并自动切回系统缩放（同时会复位画面）
+        if (it[1] === -1) { setZoomMode('system'); return; }
         if (it[1] === 0) { resetView(); return; }
         const r = stage.getBoundingClientRect();
         zoomViewAt(r.left + r.width / 2, r.top + r.height / 2, it[1]);
@@ -362,6 +722,7 @@ function updateZoomCtl() {
     });
     document.body.appendChild(el);
   }
+  // 2026-11-09：画面缩放模式常驻显示；系统缩放模式隐藏（点 × 会切回系统缩放，浮条随之消失）
   el.style.display = (zoomMode === 'view') ? 'flex' : 'none';
 }
 // 2026-11-07：电脑浏览器没有"双指放大手机画面"的场景，只保留系统缩放
@@ -369,7 +730,8 @@ if ((function(){ try { return window.matchMedia('(pointer: fine)').matches && !w
 function setZoomMode(m) {
   zoomMode = (m === 'view') ? 'view' : 'system';
   try { localStorage.setItem(ZOOM_MODE_KEY, zoomMode); } catch (e) {}
-  if (zoomMode === 'system') { /* 画面缩放保留，用户可继续看大图；要复原点左侧按钮 */ }
+  // 2026-11-09：切回系统缩放时自动复位画面（原来什么都不做，用户会以为已复位）
+  if (zoomMode === 'system') { resetView(); }
   updateZoomCtl();
 }
 if (viewReset) viewReset.addEventListener('click', (e) => { e.stopPropagation(); resetView(); });
@@ -558,7 +920,21 @@ function videoSourceSize() {
 const h264 = { ws: null, ms: null, sb: null, queue: [], mime: null, okAt: 0, failTimer: null, appended: 0, supported: null, jumpTimer: null };
 let srcTimer = null, srcSig = '';
 
-function setStat(t) { stat.textContent = t; }
+// 2026-11-08：状态文字做「显示层压缩」。
+// 原始文案太长（WebRTC264 直连 · 1920x1200 · 58.4 fps · 11.6 Mbps · 缓12ms · 帧806/解804 · 收15624KB），
+// 402 宽的屏放不下，后面的延迟会被省略号吃掉——而延迟恰恰是最该看的。
+// 这里统一砍掉连接方式前缀、帧计数和累计流量，只留「分辨率 · 帧率 · 码率 · 延迟」四段。
+// 只影响显示，不动任何内部状态，也不改调用方。
+function setStat(t) {
+  let s = String(t == null ? '' : t);
+  s = s.replace(/^WebRTC264\s*直连\s*·\s*/, '');
+  s = s.replace(/^WebRTC264\s*/, '');
+  s = s.replace(/\s*·\s*帧\s*\d+\s*\/\s*解\s*\d+/g, '');
+  s = s.replace(/\s*·\s*收\s*[\d.]+\s*[KMG]?B?/g, '');
+  s = s.replace(/\s*·\s*上限\s*[\d.]+\s*/g, ' · ');
+  s = s.replace(/\s*·\s*抓屏\s*[\d.]+\s*/g, '');
+  stat.textContent = s;
+}
 // 居中的临时提示：显示 ms 毫秒后自动消失（默认 5 秒），避免"已切换来源"一直挡在画面中间
 function setNote(t, ms) {
   note.textContent = t || '';
@@ -984,7 +1360,7 @@ function stopRtc264() {
   const sid = R.sid;
   R.sid = ''; R.firstVideo = false; R.startedAt = 0; R.hudText = '';
   try { clearTimeout(R.noVideoTimer); R.noVideoTimer = 0; } catch (e) { }
-  R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0;
+  R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0; R.frozenProbe = false;
   R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0; R.playStart = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
@@ -1192,11 +1568,36 @@ async function rtc264Stats() {
     // 冻结自愈：前台时 framesReceived 不再增长（服务端重启/链路假死）就主动重连。
     // 注意不能用 video.currentTime 判断——MediaStream 的 currentTime 是照播的，
     // 服务端死了它也照涨（上一版就踩了这个坑，画面冻结 20 秒都没重连）。
+    // 2026-11-09 修：画面**静止**时编码器会降码率，某些 2.5 秒窗口里 bytes 可能真的不涨，
+    // 于是被误判成"冻结"→ 强制重连 → 用户看到帧率掉成"…"并卡一下（用户实测反馈）。
+    // 现在多一道确认：先问服务端 /h264-status，它还活着就只清零计时、不重连。
     const nowMs = Date.now();
     if (!document.hidden && vw > 0) {
       if (fr > (R.lastFr || 0) || br > (R.lastBr || 0)) { R.lastFr = fr; R.lastBr = br; R.frozenSince = 0; }
       else if (!R.frozenSince) { R.frozenSince = nowMs; }
-      else if (nowMs - R.frozenSince > 2500) { R.frozenSince = 0; R.lastFr = fr; R.lastBr = br; try { console.log('rtc264: 画面冻结（帧不再增长），主动重连'); } catch (e) { } rtc264Retry('frozen'); return; }
+      else if (nowMs - R.frozenSince > 2500 && !R.frozenProbe) {
+        R.frozenProbe = true;
+        const since = R.frozenSince;
+        serverUp264().then(function (up) {
+          R.frozenProbe = false;
+          if (R.frozenSince !== since) return;          // 期间有新帧了，什么都不用做
+          if (up) {
+            // 服务端活着 → 只是画面静止（编码器低频输出），不清零会影响后续判断，但绝不重连
+            try { console.log('rtc264: 2.5s 无新帧但服务端在线（画面静止），不重连'); } catch (e) { }
+            R.frozenSince = 0;
+            R.lastFr = fr; R.lastBr = br;
+            return;
+          }
+          R.frozenSince = 0; R.lastFr = fr; R.lastBr = br;
+          try { console.log('rtc264: 画面冻结（服务端也失联），主动重连'); } catch (e) { }
+          rtc264Retry('frozen');
+        }).catch(function () {
+          R.frozenProbe = false;
+          R.frozenSince = 0; R.lastFr = fr; R.lastBr = br;
+          rtc264Retry('frozen');
+        });
+        return;
+      }
     } else { R.lastFr = fr; R.lastBr = br; R.frozenSince = 0; }
     const how = path === 'relay' ? '中继' : (path === 'srflx' || path === 'prflx' ? '直连(NAT)' : (path === 'host' ? '直连' : pc.iceConnectionState));
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
@@ -1215,7 +1616,15 @@ async function rtc264Stats() {
       }
     }
     // 刚连上的头 2 秒帧率会偏低（解码器预热/首个关键帧），这时先别报数，免得手机上闪过一个假的 5 fps
-    const fpsTxt = (R.qFps > 0 && Date.now() - (R.playStart || 0) > 2500) ? R.qFps.toFixed(1) + ' fps' : '… fps';
+    // 2026-11-09：帧率显示分三种情况，别再把"画面静止"显示成"…"（用户会以为出故障）。
+    //   · 刚连上的 2.5 秒内：解码器还没稳定，显示 …
+    //   · 正常有帧：显示实际帧率
+    //   · 帧率归零（画面没变化，编码器低频输出）：显示"静止"
+    const connMs = Date.now() - (R.playStart || 0);
+    let fpsTxt;
+    if (connMs < 2500) fpsTxt = '… fps';
+    else if (R.qFps > 0.05) fpsTxt = R.qFps.toFixed(1) + ' fps';
+    else fpsTxt = '静止';
     const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
     // 手机端 #stat 是隐藏的，HUD 才是用户看到的；HUD 只放「帧率 · 码率 · 缓冲」，
     // 累计帧数和累计流量放 #stat，给桌面排查用。
@@ -2203,6 +2612,57 @@ function ripple(x, y) {
   setTimeout(() => d.remove(), 450);
 }
 
+// ===== 2026-11-09：长按进度环 =====
+// 长按 550ms 才触发右键，这 0.55 秒里原来屏幕上什么都没有，用户会以为没按到而提前松手。
+// 现在按住时在按点画一个转满的圆弧；转满变绿 = 右键已触发。
+// 用 requestAnimationFrame 驱动（用户正按着屏幕＝页面在前台）；万一 rAF 被节流，
+// 圆环会停在起点——但右键该触发还是触发，只是少了个视觉反馈，不影响功能。
+const PA_LONG_MS = 550;
+const PA_ARC_LEN = 94.25;   // 2 * PI * r(15)
+let paLongRing = null;
+function startLongRing(x, y) {
+  try {
+    stopLongRing(false);
+    const r = stage.getBoundingClientRect();
+    const d = document.createElement('div');
+    d.className = 'paRing';
+    d.style.left = (x - r.left) + 'px';
+    d.style.top = (y - r.top) + 'px';
+    d.innerHTML = '<svg viewBox="0 0 36 36">'
+      + '<circle cx="18" cy="18" r="15" fill="none" stroke="rgba(53,214,196,.25)" stroke-width="2.5"></circle>'
+      + '<circle class="paRingArc" cx="18" cy="18" r="15" fill="none" stroke="#35D6C4" stroke-width="2.5"'
+      + ' stroke-linecap="round" transform="rotate(-90 18 18)"'
+      + ' style="stroke-dasharray:' + PA_ARC_LEN + ';stroke-dashoffset:' + PA_ARC_LEN + '"></circle>'
+      + '</svg>';
+    stage.appendChild(d);
+    const arc = d.querySelector('.paRingArc');
+    const ring = { el: d, arc: arc, t0: Date.now(), raf: 0 };
+    paLongRing = ring;
+    const tick = function () {
+      if (paLongRing !== ring) return;
+      const p = Math.min(1, (Date.now() - ring.t0) / PA_LONG_MS);
+      try { arc.style.strokeDashoffset = (PA_ARC_LEN * (1 - p)).toFixed(2); } catch (e) { }
+      if (p < 1) ring.raf = requestAnimationFrame(tick);
+    };
+    ring.raf = requestAnimationFrame(tick);
+  } catch (e) { }
+}
+function stopLongRing(ok) {
+  try {
+    if (!paLongRing) return;
+    const ring = paLongRing;
+    paLongRing = null;
+    if (ring.raf) { try { cancelAnimationFrame(ring.raf); } catch (e) { } }
+    if (ok) {
+      ring.el.classList.add('ok');
+      setTimeout(function () { try { ring.el.remove(); } catch (e) { } }, 300);
+    } else {
+      try { ring.el.remove(); } catch (e) { }
+    }
+  } catch (e) { }
+}
+
+
 async function postEvents(evs) {
   try {
     await fetch('/input', { method: 'POST', headers: { 'content-type': 'application/json' },
@@ -2550,13 +3010,17 @@ overlay.addEventListener('pointerdown', (e) => {
   }
   hideMouseCur();
   showDot(q.x, q.y);
+  // 2026-11-09：按住就开始转进度环，转满同长按触发（550ms）
+  try { startLongRing(q.x, q.y); } catch (e) { }
   longTimer = setTimeout(() => {
     longTimer = null;
-    if (moved || !ptr) return;
+    if (moved || !ptr) { try { stopLongRing(false); } catch (e) { } return; }
     dragBtn = 1;
     queue({ t: 'down', b: 1 });
     buzz(35);
-  }, 550);
+    // 长按成立：圆环变绿收尾（替掉之前那个涟漪，两者叠加太吵）
+    try { stopLongRing(true); } catch (e) { }
+  }, PA_LONG_MS);
 });
 
 function showMouseCur(x, y) {
@@ -2632,7 +3096,7 @@ overlay.addEventListener('pointermove', (e) => {
   const dx = q.x - ptr.x, dy = q.y - ptr.y;
   if (!moved && Math.hypot(dx, dy) > 14) {   // 2026-11-06：容差 8→14，正常手指抖动不再被误判成拖拽（否则点击根本不触发）
     moved = true;
-    if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+    if (longTimer) { clearTimeout(longTimer); longTimer = null; try { stopLongRing(false); } catch (e) { } }
     if (dragBtn < 0) { dragBtn = 0; queue({ t: 'down', b: 0 }); }
   }
   const now = Date.now();
@@ -2683,7 +3147,7 @@ overlay.addEventListener('pointerup', (e) => {
     }
     return;
   }
-  if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+  if (longTimer) { clearTimeout(longTimer); longTimer = null; try { stopLongRing(false); } catch (e) { } }
   if (!ptr || ptr.up) return;
   ptr.up = true;
   const q = layoutPoint(e.clientX, e.clientY);
@@ -2715,7 +3179,7 @@ overlay.addEventListener('pointerup', (e) => {
 });
 
 overlay.addEventListener('pointercancel', () => {
-  if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+  if (longTimer) { clearTimeout(longTimer); longTimer = null; try { stopLongRing(false); } catch (e) { } }
   if (ptr && !ptr.up) { queue({ t: 'up', b: dragBtn === 1 ? 1 : 0 }); }
   ptr = null; dragBtn = -1; moved = false;
 });
@@ -2745,7 +3209,7 @@ function pointsSpread(pts, c) {
 }
 // 双指/三指及以上开始时，把单指那套状态收干净：不能留下按着的左键或长按计时器
 function cancelSinglePointer() {
-  if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+  if (longTimer) { clearTimeout(longTimer); longTimer = null; try { stopLongRing(false); } catch (e) { } }
   if (ptr && !ptr.up && dragBtn >= 0) queue({ t: 'up', b: dragBtn });
   ptr = null; dragBtn = -1; moved = true;
 }
@@ -2892,7 +3356,7 @@ overlay.addEventListener('touchend', (e) => {
   if (e.touches.length < 2) pinch = null;
   // 多指手势结束后把单指状态彻底复位：否则偶尔残留 ptr/dragBtn，下一次单指会"没反应"
   if (e.touches.length === 0) {
-    if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+    if (longTimer) { clearTimeout(longTimer); longTimer = null; try { stopLongRing(false); } catch (e) { } }
     ptr = null; dragBtn = -1; moved = false;
     viewPan = null;
     activePtr.clear();
@@ -2902,7 +3366,7 @@ overlay.addEventListener('touchend', (e) => {
 }, { passive: true });
 
 overlay.addEventListener('touchcancel', () => {
-  if (longTimer) { clearTimeout(longTimer); longTimer = null; }
+  if (longTimer) { clearTimeout(longTimer); longTimer = null; try { stopLongRing(false); } catch (e) { } }
   pinch = null;
   zoomG = null;
   viewG = null;
@@ -2950,6 +3414,34 @@ overlay.addEventListener('contextmenu', (e) => {
   queue({ t: 'move', x: p.x, y: p.y });
   queue({ t: 'click', b: 1, n: 1 });
 });
+
+// ===== 2026-11-08 UI 改版第 1 批：iOS 系统手势抑制 =====
+// 只靠 CSS（-webkit-touch-callout / user-select）还不够稳 —— iOS 的 pinch 手势和选择行为
+// 还有 JS 层入口，这里补齐。四条都放行「正在编辑的输入框」：否则粘贴、拖光标、中文输入法
+// 候选词都会被我们自己的拦截打断，那就变成更烦人的新 bug。
+function isEditableEl(el) {
+  if (!el || !el.tagName) return false;
+  const t = el.tagName;
+  return t === 'INPUT' || t === 'TEXTAREA' || t === 'SELECT' || el.isContentEditable === true;
+}
+// ① 双指 / 多指 pinch：iOS 专属（gesturestart 系列），缩放的是整个页面而不是我们的画面
+['gesturestart', 'gesturechange', 'gestureend'].forEach(function (ev) {
+  document.addEventListener(ev, function (e) { e.preventDefault(); }, { passive: false });
+});
+// ② 长按选中：先拦「开始选择」，再兜底清选区（长按/双击都可能留下残余高亮）
+document.addEventListener('selectstart', function (e) {
+  if (!isEditableEl(e.target)) e.preventDefault();
+}, { passive: false });
+document.addEventListener('selectionchange', function () {
+  if (isEditableEl(document.activeElement)) return;
+  const s = window.getSelection && window.getSelection();
+  if (s && s.rangeCount) { try { s.removeAllRanges(); } catch (e) { } }
+});
+// ③ 文档级 contextmenu 兜底：原来只挂在 #overlay 上，长按顶栏按钮 / 浮层 / 提示区仍会弹系统菜单
+document.addEventListener('contextmenu', function (e) {
+  if (isEditableEl(e.target)) return;   // 输入框里保留系统菜单，否则没法粘贴
+  e.preventDefault();
+}, { passive: false });
 
 // ---- 统计 ------------------------------------------------------------------
 // 口径（三个数含义完全不同，别混）：
@@ -3196,7 +3688,7 @@ bindImg(img);
 (function personalization() {
   const LS_THEME = 'pa.theme', LS_CURSOR = 'pa.cursor', LS_CUSTOM = 'pa.customTheme', LS_CURSOR_IMG = 'pa.cursorImg';
   const THEMES = [
-    { key: 'dark', name: '深邃黑', free: true, meta: '#15161a' },
+    { key: 'dark', name: '深邃黑', free: true, meta: '#0A0B0D' },
     { key: 'light', name: '暖白', free: false, meta: '#f2f3f5' },
     { key: 'blue', name: '海洋蓝', free: false, meta: '#101a2b' },
     { key: 'purple', name: '暗夜紫', free: false, meta: '#171024' },
@@ -3541,9 +4033,9 @@ bindImg(img);
     + 'a2 2 0 0 1 1.5.6l7.3 7.3a2 2 0 0 1 0 2.8z"/>'
     + '<circle cx="8.2" cy="8.2" r="1.3"/></svg>';
   const BTN_CSS = 'width:34px;height:34px;display:flex;align-items:center;justify-content:center;'
-    + 'border-radius:50%;background:rgba(26,28,34,.9);color:#8CE68C;border:1px solid rgba(140,230,140,.38);'
-    + 'cursor:pointer;padding:0;backdrop-filter:blur(6px);-webkit-tap-highlight-color:transparent;'
-    + 'box-shadow:0 2px 10px rgba(0,0,0,.45)';
+    + 'border-radius:50%;background:rgba(18,20,26,.88);color:var(--accent);border:1px solid rgba(var(--accent-rgb),.34);'
+    + 'cursor:pointer;padding:0;-webkit-tap-highlight-color:transparent;'
+    + 'box-shadow:0 2px 12px rgba(0,0,0,.5)';
 
   function makeBtn(id, iconHtml, title) {
     const b = document.createElement('button');
@@ -3558,17 +4050,21 @@ bindImg(img);
 
   // 通用弹层（设置 / 支持共用外观）
   function openSheet(titleText, bodyHtml, closeId) {
+    // 2026-11-08 UI 改版第 4 批：从"中间的小弹窗"改成"从底部上滑的全屏面板"。
+    // 手机上小弹窗里滚几百个开关很难受，底部面板能贴到拇指、滚动更顺。
     const mask = document.createElement('div');
-    mask.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.62);'
-      + 'display:flex;align-items:center;justify-content:center;padding:18px';
+    mask.style.cssText = 'position:fixed;inset:0;z-index:99998;background:rgba(0,0,0,.6);'
+      + 'display:flex;align-items:flex-end;justify-content:center';
     const box = document.createElement('div');
-    box.style.cssText = 'max-width:460px;width:100%;max-height:84vh;overflow:auto;background:#15161a;color:#e8eaee;'
-      + 'border:1px solid #2c2f38;border-radius:14px;padding:20px;'
-      + 'font:15px/1.65 system-ui,-apple-system,"Microsoft YaHei",sans-serif';
-    box.innerHTML = '<div style="font-size:17px;font-weight:600;margin-bottom:12px">' + escHtml(titleText) + '</div>'
-      + bodyHtml
-      + '<div style="margin-top:18px;text-align:right"><button id="' + closeId + '" style="background:#2a2d36;'
-      + 'color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:9px 16px;font-size:14px;cursor:pointer">关闭</button></div>';
+    box.className = 'paSetBox';
+    box.style.cssText = 'max-width:600px;width:100%;max-height:92vh;overflow:auto;-webkit-overflow-scrolling:touch;'
+      + 'background:#0F1116;color:#E8EAEE;border:1px solid rgba(255,255,255,.09);border-bottom:0;'
+      + 'border-radius:22px 22px 0 0;padding:0 16px calc(22px + env(safe-area-inset-bottom, 0px));'
+      + 'font:15px/1.65 system-ui,-apple-system,"Microsoft YaHei",sans-serif;'
+      + 'box-shadow:0 -14px 64px rgba(0,0,0,.72)';
+    box.innerHTML = '<div class="paSetHead"><div class="paSetTitle">' + escHtml(titleText) + '</div>'
+      + '<button id="' + closeId + '" class="paSetX" type="button" aria-label="关闭">×</button></div>'
+      + bodyHtml;
     mask.appendChild(box);
     document.body.appendChild(mask);
     const close = () => mask.remove();
@@ -3578,12 +4074,9 @@ bindImg(img);
   }
 
   // ---- 设置面板 ---------------------------------------------------------------
-  // 用"可折叠分区卡片"的排版：标题一行、点一下收起，展开状态会记住
-  // 默认收起的"高级"分区：第一次打开面板时界面更干净（客户点开才看）
-  const DEFAULT_CLOSED = [
-    '这台电脑的机器码', '剪贴板（手机 ↔ 电脑）', '串流玩游戏（Moonlight）', '画质与流量',
-    '外观（主题 / 光标）', '防窥屏', '出问题时导出诊断'
-  ];
+  // 用「可折叠分区卡片 + 四个页签」的排版：标题一行、点一下收起，展开状态会记住。
+  // 2026-11-08：原来的 DEFAULT_CLOSED（首次打开默认收起哪几组）已经删掉——
+  // 分页之后每页只剩 3-5 张卡，默认全展开更顺手，不必再点两下。
   function secClosedList() {
     try {
       const raw = localStorage.getItem('setSec.closed');
@@ -3592,10 +4085,31 @@ bindImg(img);
       return Array.isArray(a) ? a : null;
     } catch (e) { return null; }
   }
-  function setSection(title, inner) {
+  // 2026-11-08：设置面板分页。用「分区标题 → 页签」的映射表来归属，
+  // 这样 14 处 setSection 调用一个字都不用改（改调用点最容易漏参数出错）。
+  const SET_TAB_OF = {
+    '许可证（可选）': 'about',
+    '这台电脑的机器码': 'about',
+    '连接与画面': 'basic',
+    '网络连接体检': 'net',
+    '剪贴板（手机 ↔ 电脑）': 'func',
+    '传文件（手机 ↔ 电脑）': 'func',
+    '串流玩游戏（Moonlight）': 'func',
+    '画质与流量': 'basic',
+    '外观（主题 / 光标）': 'basic',
+    '防窥屏': 'func',
+    '定时开关机（这台电脑）': 'func',
+    '没有网络时（离线模式）': 'net',
+    '出问题时导出诊断': 'about',
+    '版本与更新': 'about'
+  };
+  function setSection(title, inner, tab) {
     const saved = secClosedList();
-    const closed = (saved === null) ? (DEFAULT_CLOSED.indexOf(title) >= 0) : (saved.indexOf(title) >= 0);
-    return '<div class="setSec' + (closed ? ' closed' : '') + '" data-title="' + escHtml(title) + '">'
+    // 分页之后每页只剩 3-5 张卡片，默认全展开；用户手动收过的仍然记住
+    const closed = (saved === null) ? false : (saved.indexOf(title) >= 0);
+    const tabKey = tab || SET_TAB_OF[title] || 'basic';
+    return '<div class="setSec' + (closed ? ' closed' : '') + '" data-title="' + escHtml(title) + '"'
+      + ' data-tab="' + escHtml(tabKey) + '">'
       + '<div class="secHead"><span class="secTitle">' + escHtml(title) + '</span><span class="secChev">▾</span></div>'
       + '<div class="secBody">' + inner + '</div></div>';
   }
@@ -3604,6 +4118,98 @@ bindImg(img);
       + '<div style="color:#868c96;font-size:13px;min-width:74px;flex-shrink:0">' + escHtml(k) + '</div>'
       + '<div style="flex:1;font-size:13px;word-break:break-all">' + v + '</div></div>';
   }
+
+  // ---- 手势说明（2026-11-09）----
+  // 除了作者本人，没人猜得到「双指=滚动、三指=缩放、长按=右键」。这些手势一直是隐形的。
+  function gestureInner() {
+    const g = function (k, v, note) {
+      return '<div style="display:flex;gap:12px;padding:7px 0;border-bottom:1px solid rgba(255,255,255,.045)">'
+        + '<div style="flex:0 0 108px;color:#C6CCD4;font-size:12.5px">' + k + '</div>'
+        + '<div style="flex:1;color:#9AA1AB;font-size:12.5px;line-height:1.5">' + v
+        + (note ? '<span style="color:#5F666F">（' + note + '）</span>' : '') + '</div></div>';
+    };
+    return '<div style="font-size:12px;color:#5F666F;margin-bottom:6px">在画面上操作时的手势，全部在手机上完成。</div>'
+      + g('单指点击', '左键单击')
+      + g('快速点两下', '左键双击')
+      + g('单指长按', '右键（按住时圆环转满即触发）')
+      + g('单指拖动', '拖动 / 移动光标')
+      + g('双指上下滑', '滚动滚轮')
+      + g('三指张开 / 捏合', '缩放', '按上面「缩放」里选的方式')
+      + g('点画面', '收起工具条；工具条收起后点左边缘的小竖条叫出来');
+  }
+
+  // ---- 界面个性化（2026-11-08）：工具条把手位置 + 强调色 ----
+  const PA_ACCENTS = [
+    { name: '冷青', c: '#35D6C4' },
+    { name: '深海蓝', c: '#4C8DFF' },
+    { name: '星紫', c: '#A78BFA' },
+    { name: '苔绿', c: '#5FD68A' },
+    { name: '琥珀', c: '#FFB454' }
+  ];
+  function paAccentNow() {
+    try { return String(localStorage.getItem('pa.accent') || '#35D6C4').toLowerCase(); } catch (e) { return '#35d6c4'; }
+  }
+  function paSideNow() {
+    try { return localStorage.getItem('pa.handleSide') === 'right' ? 'right' : 'left'; } catch (e) { return 'left'; }
+  }
+  function interfaceInner() {
+    const cur = paAccentNow();
+    const side = paSideNow();
+    function sideBtn(id, label, key) {
+      const on = side === key;
+      return '<button type="button" id="' + id + '" style="flex:1;padding:10px;border-radius:10px;cursor:pointer;'
+        + 'background:' + (on ? 'rgba(var(--accent-rgb),.18)' : '#212530') + ';'
+        + 'color:' + (on ? '#7FF0D8' : '#C6CCD4') + ';'
+        + 'border:1px solid ' + (on ? 'rgba(var(--accent-rgb),.45)' : 'rgba(255,255,255,.09)') + '">' + label + '</button>';
+    }
+    let colors = '<div style="display:flex;gap:12px;flex-wrap:wrap;margin-top:6px">';
+    PA_ACCENTS.forEach(function (a) {
+      const on = a.c.toLowerCase() === cur;
+      colors += '<button type="button" data-accent="' + a.c + '" title="' + a.name + '" aria-label="' + a.name + '"'
+        + ' style="width:40px;height:40px;border-radius:50%;padding:0;cursor:pointer;background:' + a.c + ';'
+        + 'border:2px solid ' + (on ? '#E8EAEE' : 'transparent') + ';box-shadow:0 0 0 1px rgba(255,255,255,.12)"></button>';
+    });
+    colors += '</div>';
+    return '<div style="color:#9AA1AB;font-size:12.5px;margin-bottom:6px">工具条把手位置</div>'
+      + '<div style="display:flex;gap:8px">' + sideBtn('paSideL', '左边', 'left') + sideBtn('paSideR', '右边', 'right') + '</div>'
+      + '<div style="color:#9AA1AB;font-size:12.5px;margin:16px 0 2px">强调色</div>'
+      + colors
+      + '<div style="color:#5F666F;font-size:11px;margin-top:10px;line-height:1.6">'
+      + '换色只影响按钮激活态、开关、状态点和把手高光；整套主题（顶栏/卡片底色）在「外观」里换。</div>';
+  }
+  function interfaceBind(box) {
+    const cur = paAccentNow();
+    box.querySelectorAll('[data-accent]').forEach(function (b) {
+      b.addEventListener('click', function () {
+        const c = b.getAttribute('data-accent');
+        try { localStorage.setItem('pa.accent', c); } catch (e) { }
+        applyAccent(c);
+        box.querySelectorAll('[data-accent]').forEach(function (x) {
+          x.style.borderColor = (x === b) ? '#E8EAEE' : 'transparent';
+        });
+      });
+    });
+    const L = box.querySelector('#paSideL'), R = box.querySelector('#paSideR');
+    function paint(side) {
+      [[L, 'left'], [R, 'right']].forEach(function (pair) {
+        const el = pair[0];
+        if (!el) return;
+        const on = pair[1] === side;
+        el.style.background = on ? 'rgba(var(--accent-rgb),.18)' : '#212530';
+        el.style.color = on ? '#7FF0D8' : '#C6CCD4';
+        el.style.borderColor = on ? 'rgba(var(--accent-rgb),.45)' : 'rgba(255,255,255,.09)';
+      });
+    }
+    if (L) L.addEventListener('click', function () {
+      try { localStorage.setItem('pa.handleSide', 'left'); } catch (e) { }
+      applyHandleSide('left'); paint('left');
+    });
+    if (R) R.addEventListener('click', function () {
+      try { localStorage.setItem('pa.handleSide', 'right'); } catch (e) { }
+      applyHandleSide('right'); paint('right');
+    });
+  }
+
   // 手动下载入口（2026-11-02）：国内网盘 / Gitee / GitHub。
   // 数据来自 /licence 的 download（服务端读 product.config.json 的 update.*），改网盘只改配置、不用改代码。
   function dlLinksHtml(o, withTitle) {
@@ -5568,6 +6174,8 @@ bindImg(img);
   function esc2(x) { return String(x == null ? '' : x).replace(/[&<>"']/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c])); }
   function pwRepeatText(r) {
     if (r.repeat === 'weekdays') return '工作日';
+    // 2026-11-09：周末（周六、周日）
+    if (r.repeat === 'weekend') return '周末';
     if (r.repeat === 'once') return '仅一次' + (r.date ? '（' + r.date + '）' : '');
     return '每天';
   }
@@ -5610,14 +6218,51 @@ bindImg(img);
     } else {
       rules.forEach((r, i) => {
         const tk = taskOf(r.id);
-        const nextTxt = tk.off && tk.off.next ? (' · 下次 ' + esc2(tk.off.next)) : '';
-        h += '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #202228;font-size:13px">'
-          + '<span style="flex:1;min-width:0;color:#c9ccd1">' + pwRuleText(r)
+        const ruleOn = r.enabled !== false;
+        // 2026-11-09：把「下次休眠」和「下次唤醒」都显出来。之前只显示 off 的 next，
+        // 用户看不出唤醒到底排在什么时候（实测踩过：填了 05:30 以为是下午 5 点半）。
+        let nextTxt = '';
+        if (tk.off && tk.off.next) nextTxt += ' · 下次休眠 ' + esc2(tk.off.next);
+        if (tk.wake && tk.wake.next) nextTxt += ' · 下次唤醒 ' + esc2(tk.wake.next);
+        if (!ruleOn) nextTxt = ' · <span style="color:#ffb454">已关闭</span>';
+        h += '<div style="display:flex;gap:8px;align-items:center;padding:7px 0;border-bottom:1px solid #202228;font-size:13px' + (ruleOn ? '' : ';opacity:.55') + '">'
+          + '<input type="checkbox" data-pwrule="' + i + '"' + (ruleOn ? ' checked' : '') + ' title="单条启用/停用" style="width:15px;height:15px;flex:0 0 auto;cursor:pointer;accent-color:#35D6C4">'
+          + '<span style="flex:1;min-width:0;color:#c9ccd1;' + (ruleOn ? '' : 'text-decoration:line-through') + '">' + pwRuleText(r)
           + (r.mode === 'shutdown' && r.wakeTime ? ' <span style="color:#ff6b6b;font-weight:700">（关机后叫不醒）</span>' : '')
           + '<span style="color:#6b7078;font-size:11.5px">' + nextTxt + '</span></span>'
           + '<button data-pwdel="' + i + '" style="background:#2a2d36;color:#ff9d9d;border:1px solid #3a3e4a;border-radius:7px;padding:3px 9px;font-size:12px;cursor:pointer">删除</button></div>';
       });
     }
+
+    // 编辑器
+    h += '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #23252c">'
+      + '<div style="color:#aeb3bb;font-size:12.5px;margin-bottom:8px">加一条规则</div>'
+      // 2026-11-09：提示从输入框下方移到上方。手机用户反馈"点加入没反应"，
+      // 一部分原因就是失败/成功提示在他们视线之外。
+      + '<div id="pwMsg" style="color:#8CE58C;font-size:12px;margin:0 0 8px;line-height:1.7;word-break:break-all">' + (busy ? '<span style="color:#ffb454">正在应用，请稍候…</span>' : '') + '</div>'
+      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px">'
+      + '<label style="color:#868c96">休眠/关机 <input id="pwOff" type="time" value="23:00" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<label style="color:#868c96">唤醒 <input id="pwWake" type="time" value="07:30" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<select id="pwRepeat" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekend">周末</option><option value="once">仅一次</option></select>'
+      + '<input id="pwDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px">'
+      + '<select id="pwMode" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="hibernate">休眠（可定时开机）</option><option value="shutdown">关机</option></select>'
+      + '<button id="pwAdd" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">加入</button>'
+      + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
+      + '</div>'
+      + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把方式改成「休眠」。</div>'
+      + ((st && st.wakeMissing) ? '<div style="color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 检测到「唤醒任务」缺失：今晚的定时休眠不会自动唤醒。请点下面的「保存并应用」重建（会弹一次管理员授权）。</div>' : '')
+      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原界面）；完全关机后叫不醒。'
+      + '<b style="color:#ffb454">保存带「唤醒」的规则时会弹一次管理员授权</b>：定时唤醒要用系统身份注册计划任务，普通用户身份注册的闹钟在部分机器上到点不醒（已实测）。'
+      + '另外，如果这台机器的主板 BIOS 没开 RTC 唤醒，系统侧闹钟登记了也不会醒 —— 请先点上面的「自检」：'
+      + '能自己回来就说明支持；回不来就要进 BIOS（开机按 F2）找 <b>Power / Automatic Power On / Wake on RTC / Wake up on Time</b> 打开它，'
+      + '或者只能把「关机」时间当纯定时休眠用、手动开机。</div>'
+      + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #202228;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
+      + ((st && st.profile === 'release') ? '' : '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#c9ccd1;cursor:pointer"><input type="checkbox" id="pwUnlock"' + (st && st.unlockOnWake ? ' checked' : '') + ' style="width:15px;height:15px"> 唤醒后不要求登录（自用便利模式）</label>')
+      + '<span style="flex:1"></span>'
+      + '<button id="pwLockNow" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">立即锁屏</button>'
+      + '</div>'
+      + '<div style="color:#6b7078;font-size:11px;margin-top:4px;line-height:1.6">' + ((st && st.profile === 'release') ? '唤醒后不要求登录：仅自用版提供，发布版不提供该选项。' : '勾选后：唤醒/开机直接回桌面，手机不用输 Windows 密码。代价是走到电脑前的人也能直接用 —— 用完可以点「立即锁屏」。改完会弹一次管理员授权。') + '</div>'
+      + '</div>';
 
     if (tasks.length) {
       h += '<div style="margin-top:10px;color:#6b7078;font-size:11.5px;line-height:1.7">系统里的计划任务：'
@@ -5642,43 +6287,39 @@ bindImg(img);
       h += '<div style="margin-top:8px;color:#ffb454;font-size:12px;line-height:1.8">' + last.warnings.map((x) => '· ' + esc2(x)).join('<br>') + '</div>';
     }
 
-    // 编辑器
-    h += '<div style="margin-top:14px;padding-top:12px;border-top:1px solid #23252c">'
-      + '<div style="color:#aeb3bb;font-size:12.5px;margin-bottom:8px">加一条规则</div>'
-      + '<div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;font-size:12.5px">'
-      + '<label style="color:#868c96">休眠/关机 <input id="pwOff" type="time" value="23:00" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
-      + '<label style="color:#868c96">唤醒 <input id="pwWake" type="time" value="07:30" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
-      + '<select id="pwRepeat" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="daily">每天</option><option value="weekdays">工作日</option><option value="once">仅一次</option></select>'
-      + '<input id="pwDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px">'
-      + '<select id="pwMode" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="hibernate">休眠（可定时开机）</option><option value="shutdown">关机</option></select>'
-      + '<button id="pwAdd" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">加入</button>'
-      + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
-      + '</div>'
-      + '<div id="pwWarn" style="display:none;color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 你选了「关机」又填了唤醒时间：完全关机之后软件叫不醒电脑，这次唤醒不会生效。想要定时开机，请把方式改成「休眠」。</div>'
-      + ((st && st.wakeMissing) ? '<div style="color:#ff6b6b;font-size:12px;font-weight:700;margin-top:8px;line-height:1.7">⚠ 检测到「唤醒任务」缺失：今晚的定时休眠不会自动唤醒。请点下面的「保存并应用」重建（会弹一次管理员授权）。</div>' : '')
-      + '<div id="pwMsg" style="color:#868c96;font-size:11.5px;margin-top:8px;line-height:1.7">' + (busy ? '<span style="color:#ffb454">正在应用，请稍候…</span>' : '') + '</div>'
-      + '<div style="color:#6b7078;font-size:11.5px;margin-top:6px;line-height:1.7">休眠可以被定时叫醒（醒来回到原界面）；完全关机后叫不醒。'
-      + '<b style="color:#ffb454">保存带「唤醒」的规则时会弹一次管理员授权</b>：定时唤醒要用系统身份注册计划任务，普通用户身份注册的闹钟在部分机器上到点不醒（已实测）。'
-      + '另外，如果这台机器的主板 BIOS 没开 RTC 唤醒，系统侧闹钟登记了也不会醒 —— 请先点上面的「自检」：'
-      + '能自己回来就说明支持；回不来就要进 BIOS（开机按 F2）找 <b>Power / Automatic Power On / Wake on RTC / Wake up on Time</b> 打开它，'
-      + '或者只能把「关机」时间当纯定时休眠用、手动开机。</div>'
-      + '<div style="margin-top:12px;padding-top:10px;border-top:1px solid #202228;display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
-      + ((st && st.profile === 'release') ? '' : '<label style="display:flex;gap:6px;align-items:center;font-size:12.5px;color:#c9ccd1;cursor:pointer"><input type="checkbox" id="pwUnlock"' + (st && st.unlockOnWake ? ' checked' : '') + ' style="width:15px;height:15px"> 唤醒后不要求登录（自用便利模式）</label>')
-      + '<span style="flex:1"></span>'
-      + '<button id="pwLockNow" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;font-size:11.5px;cursor:pointer">立即锁屏</button>'
-      + '</div>'
-      + '<div style="color:#6b7078;font-size:11px;margin-top:4px;line-height:1.6">' + ((st && st.profile === 'release') ? '唤醒后不要求登录：仅自用版提供，发布版不提供该选项。' : '勾选后：唤醒/开机直接回桌面，手机不用输 Windows 密码。代价是走到电脑前的人也能直接用 —— 用完可以点「立即锁屏」。改完会弹一次管理员授权。') + '</div>'
-      + '</div>';
+
     return h;
   }
   function powerBind(box) {
     const wrap = box.querySelector('#pwWrap');
     if (!wrap) return;
     let pwCache = { enabled: false, rules: [] };
+    let lastSt = null;          // 最近一次完整状态，用于「加入」时只重绘列表、不提交
     let pollTimer = 0;
+    // 2026-11-09：手机端 <input type="time"> 的 value 不一定是标准 HH:mm
+    // （部分 Android 浏览器/输入法会给 "2:00 PM"、"02:00PM" 这类格式），
+    // 原来的严格正则会把用户填好的时间判成非法，然后什么都不会发生 —— 用户看到的就是"点了加入没反应"。
+    // 这里统一宽容解析：标准 24 小时制、带 AM/PM 的 12 小时制都接受，统一转成 HH:mm。
+    const parseTimeInput = (raw) => {
+      const v = String(raw || '').trim();
+      if (!v) return '';
+      let m = v.match(/^([01]?\d|2[0-3]):([0-5]\d)(:\d{2})?$/);
+      if (m) return String(m[1]).padStart(2, '0') + ':' + m[2];
+      m = v.match(/^(\d{1,2}):([0-5]\d)\s*([AaPp])\.?[Mm]\.?$/);
+      if (m) {
+        let h = parseInt(m[1], 10);
+        const mm = m[2];
+        const pm = (m[3] || '').toLowerCase() === 'p';
+        if (h === 12) h = pm ? 12 : 0;
+        else if (pm) h += 12;
+        if (h >= 0 && h <= 23) return String(h).padStart(2, '0') + ':' + mm;
+      }
+      return '';
+    };
     const msg = (t, c) => { const m = box.querySelector('#pwMsg'); if (m) { m.innerHTML = esc2(t); m.style.color = c || '#868c96'; } };
     const stopPoll = () => { if (pollTimer) { clearInterval(pollTimer); pollTimer = 0; } };
     const paint = (st) => {
+      lastSt = st || null;
       pwCache = { enabled: !!(st && st.enabled), rules: (st && Array.isArray(st.rules)) ? st.rules : [] };
       wrap.innerHTML = powerRowsHtml(st);
       const wireWarn = () => {
@@ -5730,24 +6371,58 @@ bindImg(img);
         }
         post({ enabled: true, rules: rules });
       }));
+      // 2026-11-09：单条规则的启用/停用开关。开关是"立即生效"的语义，
+      // 所以这里直接提交；停用的规则在引擎里会被跳过并删掉它遗留的计划任务。
+      wrap.querySelectorAll('[data-pwrule]').forEach((cb) => cb.addEventListener('change', () => {
+        const i = Number(cb.getAttribute('data-pwrule'));
+        const rules = pwCache.rules.slice();
+        if (!rules[i]) return;
+        rules[i] = Object.assign({}, rules[i], { enabled: !!cb.checked });
+        post({ enabled: pwCache.enabled, rules: rules });
+      }));
       const add = wrap.querySelector('#pwAdd');
       if (add) add.addEventListener('click', () => {
-        const off = String((wrap.querySelector('#pwOff') || {}).value || '').trim();
-        const wake = String((wrap.querySelector('#pwWake') || {}).value || '').trim();
+        const rawOff = String((wrap.querySelector('#pwOff') || {}).value || '').trim();
+        const rawWake = String((wrap.querySelector('#pwWake') || {}).value || '').trim();
+        const off = parseTimeInput(rawOff);
+        const wake = parseTimeInput(rawWake);
         const repeat = (wrap.querySelector('#pwRepeat') || {}).value || 'daily';
         const date = String((wrap.querySelector('#pwDate') || {}).value || '').trim();
         const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
-        const okT = (t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
-        if (!okT(off)) { msg('休眠/关机时间要写成 HH:mm，例如 23:00', '#ffb454'); return; }
-        if (wake && !okT(wake)) { msg('唤醒时间要写成 HH:mm，例如 07:00', '#ffb454'); return; }
-        if (wake && wake === off) { msg('唤醒时间和关机时间不能一样', '#ffb454'); return; }
+        // 校验失败时把「实际读到的值」也显示出来，否则用户完全不知道哪一步卡住了
+        if (!off) { msg('休眠/关机时间没读到有效值（读到的是 "' + rawOff + '"）。请重新选一次时间。', '#ff6b6b'); return; }
+        if (rawWake && !wake) { msg('唤醒时间没读到有效值（读到的是 "' + rawWake + '"）。请重新选一次时间。', '#ff6b6b'); return; }
+        if (wake && wake === off) { msg('唤醒时间和休眠时间不能一样（都是 ' + off + '）', '#ffb454'); return; }
         if (repeat === 'once') {
           if (!date) { msg('选「仅一次」时要选日期', '#ffb454'); return; }
-          const when = new Date(date + 'T' + (off.length === 4 ? '0' + off : off) + ':00');
+          const when = new Date(date + 'T' + off + ':00');
           if (isNaN(when.getTime()) || when.getTime() <= Date.now()) { msg('这个日期时间已经过去了，换一个', '#ffb454'); return; }
         }
-        const rules = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode }]);
-        post({ enabled: true, rules: rules });
+        // 2026-11-09 修：原来「加入」直接 post 到系统，和「保存并应用」完全重复（用户反馈）。
+        // 现在「加入」只把规则放进本地列表并重绘，真正写进系统要再点「保存并应用」。
+        const rules = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode, enabled: true }]);
+        pwCache.rules = rules;
+        pwCache.enabled = true;
+        paint(Object.assign({}, lastSt || {}, { enabled: true, rules: rules }));
+        // 2026-11-09：手机用户反馈"点了加入没反应"——功能其实是好的（规则确实进列表了），
+        // 但没有任何可见反馈：新规则加在列表末尾可能在视口外，提示文字也在下方看不见。
+        // 所以这里强制做三件事：①滚到新规则 ②按钮闪一下 ③消息回显实际加入的内容。
+        try {
+          const w2 = document.querySelector('.paSetBox').querySelector('#pwWrap');
+          const cbs = w2 ? w2.querySelectorAll('[data-pwrule]') : [];
+          const lastCb = cbs[cbs.length - 1];
+          if (lastCb && lastCb.parentElement) lastCb.parentElement.scrollIntoView({ block: 'center' });
+          const addBtn2 = w2 ? w2.querySelector('#pwAdd') : null;
+          if (addBtn2) {
+            addBtn2.textContent = '✓ 已加入';
+            addBtn2.style.background = '#2a6b3a';
+            setTimeout(function () {
+              try { addBtn2.textContent = '加入'; addBtn2.style.background = '#2f6feb'; } catch (e) { }
+            }, 1500);
+          }
+        } catch (e) { }
+        const repTxt = (repeat === 'weekdays' ? '工作日' : (repeat === 'weekend' ? '周末' : (repeat === 'once' ? '仅一次' : '每天')));
+        msg('已加入：' + repTxt + ' ' + off + ' 休眠' + (wake ? (' → 唤醒 ' + wake) : '') + '（共 ' + rules.length + ' 条）。点「保存并应用」才会写进系统。', '#8CE58C');
       });
       const uw = wrap.querySelector('#pwUnlock');
       if (uw) uw.addEventListener('change', () => {
@@ -5759,7 +6434,33 @@ bindImg(img);
         try { await fetch('/lock', { method: 'POST' }); msg('已锁屏', '#8CE58C'); } catch (e) { msg('锁屏请求失败：' + ((e && e.message) || e), '#ff9d9d'); }
       });
       const ap = wrap.querySelector('#pwApply');
-      if (ap) ap.addEventListener('click', () => post({ enabled: pwCache.enabled, rules: pwCache.rules }));
+      if (ap) ap.addEventListener('click', () => {
+        // 2026-11-09：用户反馈"填好了直接点保存却加不进去"——保存原来只看列表，不理输入框。
+        // 现在保存时如果输入框里填了有效时间，自动把它并进列表一起保存（并清空输入框，
+        // 避免下次保存重复添加同一条）。
+        try {
+          const rawOff = String((wrap.querySelector('#pwOff') || {}).value || '').trim();
+          const rawWake = String((wrap.querySelector('#pwWake') || {}).value || '').trim();
+          const off = parseTimeInput(rawOff);
+          const wake = parseTimeInput(rawWake);
+          const repeat = (wrap.querySelector('#pwRepeat') || {}).value || 'daily';
+          const date = String((wrap.querySelector('#pwDate') || {}).value || '').trim();
+          const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
+          if (off && (!wake || (wake && wake !== off)) && (repeat !== 'once' || date)) {
+            const rules2 = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode, enabled: true }]);
+            pwCache.rules = rules2;
+            pwCache.enabled = true;
+            const repTxt2 = (repeat === 'weekdays' ? '工作日' : (repeat === 'weekend' ? '周末' : (repeat === 'once' ? '仅一次' : '每天')));
+            msg('保存中（已自动加入：' + repTxt2 + ' ' + off + ' 休眠' + (wake ? ' → 唤醒 ' + wake : '') + '）…', '#8CE58C');
+            // 清空输入框，防止重复添加
+            try {
+              const o = wrap.querySelector('#pwOff'); if (o) o.value = '';
+              const w = wrap.querySelector('#pwWake'); if (w) w.value = '';
+            } catch (e2) { }
+          }
+        } catch (e3) { }
+        post({ enabled: pwCache.enabled, rules: pwCache.rules });
+      });
     };
     const post = async (doc) => {
       msg('正在应用到系统（会创建/更新计划任务，约 5-15 秒）…');
@@ -5828,6 +6529,12 @@ bindImg(img);
 
     // 连接与画面
     let connInner = setKv('地址', '<span style="color:#aeb3bb">' + escHtml(location.host) + '</span>');
+    // 2026-11-08：本次已连接多久（原来只有"实时"那行瞬时值，看不出连了多久）
+    try {
+      const secs = Math.max(0, Math.round((Date.now() - (window.__paStart || Date.now())) / 1000));
+      const t = secs < 60 ? (secs + ' 秒') : (Math.floor(secs / 60) + ' 分 ' + (secs % 60) + ' 秒');
+      connInner += setKv('已连接', '<span style="color:#aeb3bb">' + t + '</span>');
+    } catch (e) { }
     try {
       const im = document.querySelector('#stream, #frame, img[src*="frame"], img[src*="stream"]');
       const w = im && im.naturalWidth ? im.naturalWidth : 0;
@@ -5845,6 +6552,10 @@ bindImg(img);
     connInner += '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
       + '<input type="checkbox" id="hudToggle"> 显示帧率/分辨率等状态数值</label>';
     body += setSection('连接与画面', connInner);
+    // 2026-11-08：个性化——工具条把手位置 + 强调色
+    body += setSection('界面', interfaceInner(), 'basic');
+    // 2026-11-09：手势说明（双指/三指/长按这些一直没人猜得到）
+    body += setSection('手势说明', gestureInner(), 'basic');
 
     // 连接体检（Tailscale）——2026-11-03 A1/A3：装没装、登没登、在不在线、手机是直连还是中继。
     // 客户最大的门槛就是这一步；数据来自服务端 /tailscale-status（只读，不透传节点公钥）。
@@ -6014,10 +6725,42 @@ bindImg(img);
       + '检查更新只在你点按钮时联网一次，产品平时不会主动连接任何服务器。'
       + '</div>';
 
+    // 2026-11-08 UI 改版第 4 批：分页外壳。14 个分区按「常用 / 功能 / 网络 / 关于」过滤，
+    // 各分区的内容一律没动，只是在外层加了个页签和显隐开关。
+    body = '<div id="setTabs" class="paTabs">'
+      + '<button type="button" data-tab="basic" class="on">常用</button>'
+      + '<button type="button" data-tab="func">功能</button>'
+      + '<button type="button" data-tab="net">网络</button>'
+      + '<button type="button" data-tab="about">关于</button>'
+      + '</div>' + body;
+
     const box = openSheet('设置', body, 'setClose');
+
+    // 页签切换：只切 .setSec[data-tab] 的显隐，卡片内部的元素（含事件绑定）一直活着
+    (function bindSetTabs() {
+      const tabsEl = box.querySelector('#setTabs');
+      if (!tabsEl) return;
+      const show = function (key) {
+        const secs = box.querySelectorAll('.setSec[data-tab]');
+        for (let i = 0; i < secs.length; i++) {
+          secs[i].style.display = (secs[i].getAttribute('data-tab') === key) ? '' : 'none';
+        }
+        const bs = tabsEl.querySelectorAll('button');
+        for (let j = 0; j < bs.length; j++) {
+          bs[j].classList.toggle('on', bs[j].getAttribute('data-tab') === key);
+        }
+      };
+      tabsEl.addEventListener('click', function (e) {
+        const t = e.target;
+        const b = (t && t.closest) ? t.closest('button[data-tab]') : null;
+        if (b) show(b.getAttribute('data-tab'));
+      });
+      show('basic');
+    })();
 
     // 个性化 + 许可证粘贴激活的事件绑定（半免费）
     p13nBind(box, lic);
+    interfaceBind(box);
     privacyBind(box);
     powerBind(box);
     offlineBind(box);
@@ -6305,10 +7048,10 @@ bindImg(img);
   function bottomButtons(lic) {
     const wrap = document.createElement('div');
     wrap.id = 'paBtns';
-    // 纵排（上下叠）贴在屏幕最右边：齿轮在上、支持在下。
-    // 用 column + gap 控制间距；right/bottom 留 8/12px，让它们贴着右下角但不压到内容。
-    wrap.style.cssText = 'position:fixed;right:8px;bottom:12px;z-index:9000;'
-      + 'display:flex;flex-direction:column;gap:8px;align-items:flex-end';
+    // 2026-11-08 UI 改版第 3 批补充：原来这三个圆按钮 fixed 在右下角，和缩放浮层、
+    // 工具条把手挤成一竖列（用户横屏截图里"最右边一堆东西"）。
+    // 现在 display:contents 让它们直接变成「更多」抽屉里的三个格子，右侧彻底清空。
+    wrap.style.cssText = 'display:contents';
     const gear = makeBtn('paGear', ICON_GEAR, '设置');
     wrap.appendChild(gear);
     // 套餐按钮（2026-10-30 加）：三种方案写在这里，价格由 product.config.json 的 plans 提供，
@@ -6317,7 +7060,7 @@ bindImg(img);
     const showPlans = !!(plans && plans.enabled !== false && Array.isArray(plans.items) && plans.items.length);
     let priceBtn = null;
     if (showPlans) {
-      priceBtn = makeBtn('paPlans', ICON_PRICE, (plans.title || '套餐与价格'));
+      priceBtn = makeBtn('paPlans', ICON_PRICE, (plans.title || '套餐'));
       wrap.appendChild(priceBtn);
     }
     // 支持按钮：卖家可以在 product.config.json 里用 support.enabled=false 整体关掉
@@ -6327,7 +7070,23 @@ bindImg(img);
       heart = makeBtn('paSupport', ICON_HEART, ((lic.support && lic.support.title) || '关于'));
       wrap.appendChild(heart);
     }
-    document.body.appendChild(wrap);
+    // 塞进抽屉的功能网格（#paSheet .paGrid），没有就退回 body 免得整块消失
+    const grid = document.querySelector('#paSheet .paGrid');
+    (grid || document.body).appendChild(wrap);
+    // 抽屉里只有图标认不出来，给每个格子补一行小字。
+    // 注意：makeBtn 写的是 inline 样式（圆形 34px），外部 CSS 压不过它，
+    // 所以这里必须直接改 inline，否则它们在网格里还是三个小圆点挤成一团。
+    [gear, priceBtn, heart].forEach(function (b) {
+      if (!b) return;
+      b.style.cssText = 'width:auto;min-width:0;height:46px;border-radius:14px;padding:0 4px;'
+        + 'display:flex;flex-direction:column;align-items:center;justify-content:center;gap:2px;'
+        + 'background:#1A1D25;border:1px solid rgba(255,255,255,.07);color:#C6CCD4;'
+        + 'box-shadow:none;backdrop-filter:none;-webkit-backdrop-filter:none;cursor:pointer';
+      const s = document.createElement('span');
+      s.style.cssText = 'font-size:10.5px;line-height:1;color:#A8B0BA';
+      s.textContent = (b.id === 'paPlans') ? '套餐' : b.title;
+      b.appendChild(s);
+    });
     // 用最新的许可证信息而不是页面加载时那一份：页面可能开着跨过许可证到期，
     // 30 秒轮询会更新 window.__paLic，弹层每次都读最新的才不会显示过期状态。
     const latest = () => (window.__paLic || lic);
@@ -6964,8 +7723,8 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 <style>
 @media (max-width: 960px) {
   body { padding-top: 0 !important; }
-  #bar, .bar, header { margin-top: 0 !important; padding-top: 2px !important; padding-bottom: 2px !important; }
-  #hud { white-space: pre-line !important; text-align: left !important; }
+  /* 第 3 批：#hud 已经住进顶部状态胶囊，不能再按 " · " 拆成多行（会把胶囊撑高挡住画面） */
+  #hud { white-space: nowrap !important; text-align: left !important; }
 }
 </style>
 <script>
@@ -6980,6 +7739,9 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
       if (h) h.style.display = on ? '' : 'none';
       var s = document.getElementById('stat');
       if (s) s.style.display = on ? '' : 'none';
+      // 2026-11-08：两个数值都关掉时，顶部胶囊不能留个空壳继续占着画面（用户反馈"关不掉"）
+      var top = document.getElementById('paTop');
+      if (top) top.style.display = on ? '' : 'none';
     }
     function fmt() {
       if (!h) return;
@@ -6994,11 +7756,78 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 })();
 </script><style>#zoomPop{z-index:10001 !important;}</style>
 <script>
-(function(){
-  try{
-    var sheet=document.getElementById('mobSheet');
-    if(sheet){ sheet.addEventListener('click',function(e){ if(e.target && e.target.tagName==='BUTTON'){ setTimeout(function(){ sheet.style.display='none'; },60); } }); }
-  }catch(e){}
+/* 2026-11-08：#mobSheet 这个元素从来没被创建过（页面里查不到），
+   原来这段挂在它上面的点击收起脚本是空操作，已随死代码清理删除。 */
+</script>
+<script>
+/* 2026-11-08 UI 改版第 3 批补充：工具条收起 / 从右边缘拉出（用户反馈底部条挡画面） */
+(function () {
+  try {
+    var handle = document.getElementById('paHandle');
+    var body = document.body;
+    var timer = null;
+    function open() { body.classList.add('uiopen'); if (timer) { clearTimeout(timer); timer = null; } }
+    function close() { body.classList.remove('uiopen'); if (timer) { clearTimeout(timer); timer = null; } }
+    window.__paUiOpen = open;
+    window.__paUiClose = close;
+    if (handle) {
+      handle.addEventListener('pointerdown', function (e) { e.stopPropagation(); });
+      handle.addEventListener('click', function (e) { e.preventDefault(); e.stopPropagation(); open(); });
+    }
+    // 点画面就把工具条收起来；这一下照常发给电脑（不吞点击，否则"想收工具条"会丢一次点击）
+    var ov = document.getElementById('overlay');
+    if (ov) ov.addEventListener('pointerdown', function () { close(); }, true);
+    // 打开页面先亮出来，让人看见工具条在哪。
+    // 2026-11-08：第一次进页面**不自动收起**（新用户很可能没注意到就收了，之后只剩一个
+    // 没人认识的小竖条）；同时给一句提示。之后的访问仍然 4.5 秒自动收起。
+    open();
+    var firstVisit = false;
+    try { firstVisit = !localStorage.getItem('pa.seen'); } catch (e) { }
+    if (firstVisit) {
+      try { localStorage.setItem('pa.seen', '1'); } catch (e) { }
+      try { setNote('点画面任意处可收起工具条；收起后点左边缘的小竖条再叫出来', 7000); } catch (e) { }
+    } else {
+      timer = setTimeout(function () {
+        var sh = document.getElementById('paSheet');
+        if (sh && sh.classList.contains('on')) return;
+        close();
+      }, 4500);
+    }
+  } catch (e) { }
+})();
+(function () {
+  try {
+    var more = document.getElementById('moreBtn');
+    var sheet = document.getElementById('paSheet');
+    if (!more || !sheet) return;
+    function setOpen(on) {
+      sheet.classList.toggle('on', on);
+      more.classList.toggle('on', on);
+      more.textContent = on ? '收起' : '更多';
+    }
+    more.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      setOpen(!sheet.classList.contains('on'));
+    });
+    // 抽屉里点了任何按钮 → 收起来，别一直挡着画面下半截
+    sheet.addEventListener('click', function (e) {
+      if (e.target && e.target.tagName === 'BUTTON') setTimeout(function () { setOpen(false); }, 90);
+    });
+    // 点画面其它地方也收起；这一下不往电脑发点击（否则"想关抽屉"会顺手点坏电脑上的东西）
+    document.addEventListener('pointerdown', function (e) {
+      if (!sheet.classList.contains('on')) return;
+      if (sheet.contains(e.target) || more.contains(e.target)) return;
+      setOpen(false);
+      e.stopPropagation();
+    }, true);
+
+    // 2026-11-09：抽屉里的「重新连接」——重新加载页面即重建 WebRTC 会话
+    var rc = document.getElementById('paReconnect');
+    if (rc) rc.addEventListener('click', function (e) {
+      e.preventDefault(); e.stopPropagation();
+      try { location.reload(); } catch (err) { }
+    });
+  } catch (e) { }
 })();
 </script>
 </body></html>`;

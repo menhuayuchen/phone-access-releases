@@ -19,6 +19,11 @@
 param(
   [switch]$DryRun,          # 干跑：只检查、不落地、不提权、不启动任何服务
   [switch]$NoPause,         # 结束时不等待"按回车"（给自动化用；客户双击入口不会传这个参数）
+  # 2026-11-09：给 GUI 外壳用的非交互模式。只影响"等用户按键"，不改任何安装判定逻辑。
+  #   · "按回车键关闭窗口" 类结束等待 → 直接跳过，不留窗口
+  #   · Tailscale 未安装等待 → 不再无限等（重试一次就判定，装不上照样报错）
+  #   · Tailscale 登录等待 → 不再等（本来就可以"先继续装，装完再登录"）
+  [switch]$NonInteractive,
   [switch]$SkipSelfCheck,   # 跳过最后的客户自检（排查安装器自身时用）
   [switch]$SkipDefender,    # 不添加 Windows Defender 排除项
   [switch]$SkipHighPerformance, # 跳过「高性能模式」（Sunshine/Moonlight，可选组件）
@@ -43,6 +48,7 @@ $script:AppTitle      = '轻屏控制'
 $script:InstallerVer  = '1.0'
 $script:DryRunMode    = [bool]$DryRun
 $script:NoPauseMode   = [bool]$NoPause
+$script:NonInteractive = [bool]$NonInteractive
 $script:LogLines      = New-Object System.Collections.ArrayList
 $script:Warnings      = New-Object System.Collections.ArrayList
 $script:CurrentStepNo = 0
@@ -468,7 +474,7 @@ function Fail-Install {
   } catch { }
 
   Write-Host ''
-  if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
+  if (-not $script:NoPauseMode -and -not $script:NonInteractive) { $null = Read-Host '按回车键关闭窗口' }
   exit 3
 }
 
@@ -516,7 +522,7 @@ function Request-Elevation {
     Write-Host ''
     Write-Host '想装的话：重新双击安装文件，弹窗出现时点【是】。' -ForegroundColor Yellow
     Add-Log '[UAC] 客户取消了提权'
-    if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
+    if (-not $script:NoPauseMode -and -not $script:NonInteractive) { $null = Read-Host '按回车键关闭窗口' }
     exit 4
   }
   exit 0
@@ -875,7 +881,7 @@ try {
         Write-Host '安装已经在另一个窗口里进行中，请不要重复双击。' -ForegroundColor Yellow
         Write-Host '如果找不到那个窗口：等 2 分钟后再双击一次，或者重启电脑后再装。' -ForegroundColor Yellow
         Write-Host ''
-        if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
+        if (-not $script:NoPauseMode -and -not $script:NonInteractive) { $null = Read-Host '按回车键关闭窗口' }
         exit 0
       }
     } catch { }
@@ -1257,7 +1263,12 @@ try {
       if ($script:DryRunMode) { break }
       $attempt++
       Write-Host ''
-      $null = Read-Host '装好并登录后，按回车继续（要退出请直接关掉这个窗口）'
+      if ($script:NonInteractive) {
+        # 非交互：GUI 外壳里没人按回车。给 2 秒缓冲后重试一次；还找不到就按原逻辑报错。
+        Start-Sleep -Seconds 2
+      } else {
+        $null = Read-Host '装好并登录后，按回车继续（要退出请直接关掉这个窗口）'
+      }
       if ($script:ConfigSource) {
         $tsResolved = Resolve-ProductRuntime -AppDir $script:SourceDirFull -Name 'tailscale' -Config $script:ConfigSource -WellKnownDirs (Get-TailscaleWellKnownDirs)
         $tsPath = $tsResolved.Path
@@ -1286,7 +1297,13 @@ try {
     while ((-not $tsInfo.Running) -and $loginAttempt -lt 3 -and -not $script:DryRunMode) {
       $loginAttempt++
       Write-Host ''
-      $null = Read-Host '登录好再按回车重新检查（也可以直接按回车先继续装，装完再登录）'
+      if ($script:NonInteractive) {
+        # 非交互：不等登录。原逻辑本来就说"可以先继续装，装完再登录"，直接跳出重试循环。
+        Write-WarnLine '（非交互模式）不等 Tailscale 登录，继续安装；装完请手动登录。'
+        break
+      } else {
+        $null = Read-Host '登录好再按回车重新检查（也可以直接按回车先继续装，装完再登录）'
+      }
       $tsInfo = Get-TailscaleInfo -TailscaleExe $tsPath
       if (-not $tsInfo.Running) { Write-WarnLine '还是没连上。可以继续装，但装完要记得登录 Tailscale，否则手机连不上。' }
     }
@@ -1992,7 +2009,7 @@ if ($SkipHighPerformance) {
     Write-Host ''
     Write-Host '干跑完成：没有改动任何东西（没复制文件、没改防火墙、没注册任务、没启动服务、没生成密钥）。' -ForegroundColor Green
     Write-Host '正式安装会按上面 12 步执行完毕，并在最后运行客户自检。' -ForegroundColor Green
-    if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
+    if (-not $script:NoPauseMode -and -not $script:NonInteractive) { $null = Read-Host '按回车键关闭窗口' }
     exit 0
   }
 
@@ -2092,26 +2109,42 @@ if ($SkipHighPerformance) {
     Set-Content -LiteralPath (Join-Path $desktopDir '桌面快捷方式信息.txt') -Value ($infoLines -join "`r`n") -Encoding utf8 -ErrorAction SilentlyContinue
   } catch { }
 
-  # 手机入口：优先打开二维码（客户要扫码）；没有二维码就打开网址文件
+  # 手机入口：2026-11-09 改成「一个页面」。
+  # 原来这里会依情况弹 图片查看器 / 记事本 / 资源管理器，客户装完一次看到好几个窗口，乱。
+  # 现在统一生成「手机入口.html」（二维码 + 网址 + 机器码 + 接下来三步），用默认浏览器打开一次。
+  # 生成失败才回退到原来的打开方式，保证任何情况下客户都能拿到入口信息。
   $qrPath = Join-Path $script:InstallRoot 'screen-qr.png'
   $urlFilePath = Join-Path $script:InstallRoot 'screen-url.txt'
-  # 2026-11-08 修：服务刚起来时 screen-url.txt 可能还没写出来（实测有延迟）。
-  # 原来立即判断会走"没生成"分支，客户什么都看不到。这里最多等 30 秒再决定。
   $urlWait = 0
   while ($urlWait -lt 30 -and -not (Test-Path -LiteralPath $qrPath) -and -not (Test-Path -LiteralPath $urlFilePath)) {
     Start-Sleep -Seconds 1
     $urlWait++
   }
-  if (Test-Path -LiteralPath $qrPath) {
-    Write-Note '正在打开手机扫码入口：用手机扫这个二维码（手机要先连上 Tailscale）。'
-    try { $null = Start-Process -FilePath $qrPath } catch { Write-WarnLine '二维码没能自动打开，文件在：' + $qrPath }
-  } elseif (Test-Path -LiteralPath $urlFilePath) {
-    Write-Note '正在打开手机入口文件（里面是带密钥的网址，别截图发给别人）。'
-    try { $null = Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $urlFilePath + '"') } catch { Write-WarnLine ('网址文件在：' + $urlFilePath) }
-  } else {
-    Write-WarnLine '手机入口文件 30 秒内还没生成（画面服务可能起得慢或没起来）。'
-    Write-Host ('  手动入口：双击 ' + (Join-Path $script:InstallRoot '手机入口.cmd') + ' 生成二维码；或重新运行一次安装包。') -ForegroundColor Yellow
-    try { $null = Start-Process -FilePath 'explorer.exe' -ArgumentList ('"' + $script:InstallRoot + '"') } catch { }
+  $entryOpened = $false
+  $entryHtml = Join-Path $script:InstallRoot '手机入口.html'
+  $entryScript = Join-Path $script:InstallRoot 'make-entry-html.ps1'
+  if (Test-Path -LiteralPath $entryScript) {
+    try {
+      Write-Note '正在打开手机入口页面（二维码、网址、接下来要做的事都在这一页里）。'
+      & (Get-PowerShellExe) -NoProfile -ExecutionPolicy Bypass -File $entryScript -InstallRoot $script:InstallRoot -Open | Out-Null
+      if (Test-Path -LiteralPath $entryHtml) { $entryOpened = $true }
+    } catch {
+      $entryOpened = $false
+      Add-Log ('[入口页] 生成失败，回退到逐个打开：' + $_.Exception.Message)
+    }
+  }
+  if (-not $entryOpened) {
+    # ---- 回退路径：保持原来的行为（只可能打开其中一个）----
+    if (Test-Path -LiteralPath $qrPath) {
+      Write-Note '正在打开手机扫码入口：用手机扫这个二维码（手机要先连上 Tailscale）。'
+      try { $null = Start-Process -FilePath $qrPath } catch { Write-WarnLine '二维码没能自动打开，文件在：' + $qrPath }
+    } elseif (Test-Path -LiteralPath $urlFilePath) {
+      Write-Note '正在打开手机入口文件（里面是带密钥的网址，别截图发给别人）。'
+      try { $null = Start-Process -FilePath 'notepad.exe' -ArgumentList ('"' + $urlFilePath + '"') } catch { Write-WarnLine ('网址文件在：' + $urlFilePath) }
+    } else {
+      Write-WarnLine '手机入口文件 30 秒内还没生成（画面服务可能起得慢或没起来）。'
+      Write-Host ('  手动入口：双击 ' + (Join-Path $script:InstallRoot '手机入口.cmd') + ' 生成二维码；或重新运行一次安装包。') -ForegroundColor Yellow
+    }
   }
 
   # ---- 许可证 ---------------------------------------------------------------
@@ -2185,7 +2218,7 @@ if ($SkipHighPerformance) {
     Write-Host ('    ' + $summaryPath)
   }
   Write-Host ''
-  if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
+  if (-not $script:NoPauseMode -and -not $script:NonInteractive) { $null = Read-Host '按回车键关闭窗口' }
   exit 0
 }
 catch {
@@ -2197,7 +2230,7 @@ catch {
   } catch {
     Write-Host ''
     Write-BadLine ('安装中断：' + $script:CurrentStep + ' / ' + [string]$_.Exception.Message)
-    if (-not $script:NoPauseMode) { $null = Read-Host '按回车键关闭窗口' }
+    if (-not $script:NoPauseMode -and -not $script:NonInteractive) { $null = Read-Host '按回车键关闭窗口' }
     exit 3
   }
 }
