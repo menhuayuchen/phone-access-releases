@@ -1330,6 +1330,8 @@ const WC264 = {
       if (m.type === "diag") { this.lastErr = (this.lastErr || "") + " {" + m.msg + "}"; }
       this.lastErr = (this.lastErr || "") + " [" + m.type + "]";
     } else if (m.type === "ready") {
+      // 记录实际用的解码方式，HUD 里能看到是硬件还是回退
+      try { this.hw = m.hw || "?"; } catch (e) { }
       console.log("wc264 decoder ready", m.codec);
     } else if (m.type === "error") {
       this.lastErr = String(m.message || "decode");
@@ -1337,6 +1339,16 @@ const WC264 = {
     }
   },
   stop() {
+    // 2026-11-10：回退必须把 transform 摘掉，否则浏览器永远收不到解码权，<video> 一片黑。
+    // 这是 iOS 老版本/不支持设备走回退路径的关键一步。
+    try {
+      const _pc = window.__rtc264 && window.__rtc264.pc;
+      if (_pc && _pc.getReceivers) {
+        _pc.getReceivers().forEach(function (r) {
+          try { if (r.track && r.track.kind === "video") r.transform = null; } catch (e) { }
+        });
+      }
+    } catch (e) { }
     try { if (this.worker) this.worker.terminate(); } catch (e) { }
     this.worker = null; this.on = false; this.stats = null;
     if (this.canvas) { try { this.canvas.remove(); } catch (e) { } this.canvas = null; this.ctx = null; }
@@ -1787,6 +1799,7 @@ async function rtc264Stats() {
             if (typeof OffscreenCanvas !== 'undefined') _f.push('OC');
             if (typeof VideoFrame !== 'undefined') _f.push('VF');
             _fitTag += ' {' + _f.join('/') + '}';
+            try { const _hw = window.__wc264 && window.__wc264.hw; if (_hw) _fitTag += " hw=" + _hw; } catch (e) { }
           } catch (e) { }
         }
       } catch (e) { }

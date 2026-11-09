@@ -105,43 +105,91 @@ function toAvcc(nals) {
 }
 
 // ---------- 解码器 ----------
+// 2026-11-10：两阶段配置 —— 优先硬件解码，不支持再回退。
+//
+// hardwareAcceleration 的语义（WebCodecs 规范）：
+//   'prefer-hardware' : 优先硬件；**不支持时 configure 会失败**（不会自动回退）
+//   'no-preference'   : 交给浏览器决定（Chrome 通常也走硬件，但不保证）
+// 所以不能只写 prefer-hardware 就完事，必须先探测再决定，否则在低端设备上会直接崩。
+//
+// iOS 注意：Safari 的 VideoDecoder 是 16.4+ 才有的，isConfigSupported 实现比较保守；
+// 探测失败一律当作"不支持硬件"，绝不把异常抛到主线程。
+var decoderIniting = false;
+var decoderHw = '';
+
+function buildConfig(hw) {
+  const desc = buildAvcC(sps, pps);
+  const cfg = {
+    codec: 'avc1.4D0032',     // 与实际码流一致（日志 avc1.4D4032 / Main 3.2）
+    description: desc,
+    optimizeForLatency: true,
+  };
+  if (hw) cfg.hardwareAcceleration = hw;
+  return cfg;
+}
+
+function probe(hw) {
+  try {
+    if (typeof VideoDecoder.isConfigSupported !== 'function') return Promise.resolve(false);
+    return VideoDecoder.isConfigSupported(buildConfig(hw))
+      .then(function (r) { return !!(r && r.supported); })
+      .catch(function () { return false; });
+  } catch (e) { return Promise.resolve(false); }
+}
+
+function createDecoder(hw) {
+  try { if (decoder) decoder.close(); } catch (e) { }
+  decoder = new VideoDecoder({
+    output: (frame) => {
+      S.decoded++;
+      post({ type: 'frame', frame, ts: frame.timestamp }, [frame]);
+    },
+    error: (e) => {
+      S.lastErr = 'dec: ' + String((e && e.message) || e);
+      post({ type: 'error', message: S.lastErr });
+      try { decoder.close(); } catch (x) { }
+      decoder = null;
+      decoderReady = false;
+      decoderIniting = false;
+      waitKey = true;
+    },
+  });
+  decoder.configure(buildConfig(hw));
+  decoderHw = hw || 'default';
+  decoderReady = true;
+  decoderIniting = false;
+  post({ type: 'ready', hw: decoderHw });
+  return true;
+}
+
 function ensureDecoder() {
   if (decoder) return decoderReady;
-  try {
-    decoder = new VideoDecoder({
-      output: (frame) => {
-        S.decoded++;
-        post({ type: 'frame', frame, ts: frame.timestamp }, [frame]);
-      },
-      error: (e) => {
-        S.lastErr = 'dec: ' + String((e && e.message) || e);
-        post({ type: 'error', message: S.lastErr });
-        try { decoder.close(); } catch (x) { }
-        decoder = null;
-        decoderReady = false;
-        waitKey = true;
-      },
-    });
-    // 2026-11-10 实测：Chrome 的 VideoDecoder 不给 description 时不会按 Annex-B 解析
-    // （喂了 1000+ 帧、23 个 IDR，一个 VideoFrame 都没输出）。必须给 avcC description，
-    // 输入同时改 AVCC（4 字节长度前缀）。codec 与实际码流一致（日志 avc1.4D4032）。
-    if (!sps || !pps) return false;
-    const desc = buildAvcC(sps, pps);
-    decoder.configure({
-      codec: 'avc1.4D0032',
-      description: desc,
-      optimizeForLatency: true,
-    });
-    decoderReady = true;
-    post({ type: 'ready', mode: 'annexb' });
-    return true;
-  } catch (e) {
-    S.lastErr = 'configure: ' + String((e && e.message) || e);
-    post({ type: 'error', message: S.lastErr });
-    decoder = null;
-    decoderReady = false;
-    return false;
-  }
+  if (decoderIniting) return false;
+  if (!sps || !pps) return false;
+  decoderIniting = true;
+
+  // 阶段1：探测硬件支持
+  probe('prefer-hardware').then(function (hwOk) {
+    if (hwOk) {
+      try { createDecoder('prefer-hardware'); return; }
+      catch (e) {
+        S.lastErr = 'hw-configure: ' + String((e && e.message) || e);
+        // 硬件配置失败 -> 落到阶段2
+      }
+    }
+    // 阶段2：回退到浏览器自选
+    try { createDecoder(''); }
+    catch (e2) {
+      S.lastErr = 'configure: ' + String((e2 && e2.message) || e2);
+      post({ type: 'error', message: S.lastErr });
+      decoderIniting = false;
+      decoderReady = false;
+    }
+  }).catch(function () {
+    try { createDecoder(''); } catch (e3) { decoderIniting = false; decoderReady = false; }
+  });
+
+  return false;   // 本帧先丢，等初始化完成
 }
 
 // ---------- 一帧 ----------
