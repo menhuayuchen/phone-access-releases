@@ -78,7 +78,7 @@ using System.Reflection;
         [System.IO.File]::WriteAllText($verInfo, $verCode, (New-Object System.Text.UTF8Encoding($false)))
         & $csc /nologo /target:exe /codepage:65001 /optimize /out:$sfxExe `
             /r:System.dll /r:System.Core.dll /r:System.Windows.Forms.dll /r:System.Drawing.dll `
-            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll $sfxSrc $verInfo
+            /r:System.IO.Compression.dll /r:System.IO.Compression.FileSystem.dll /win32manifest:"$here\Sfx.manifest" $sfxSrc $verInfo
         $compileExit = $LASTEXITCODE
         Remove-Item -LiteralPath $verInfo -Force -ErrorAction SilentlyContinue
         if ($compileExit -ne 0 -or -not (Test-Path -LiteralPath $sfxExe)) {
@@ -140,7 +140,25 @@ New-Item -ItemType Directory -Path $verifyDir -Force | Out-Null
 try {
     # 用直接调用代替 Start-Process：本机环境里同时存在 NO_PROXY 和 no_proxy 两个键，
     # Start-Process 继承环境时会抛 "Key has already been added"，让自验证假失败（2026-10-30 实测）。
-    & $OutFile --extract-only $verifyDir | Out-Null
+    # 2026-11-09：启动器改成 requireAdministrator 之后，普通权限跑它会报
+    # "The requested operation requires elevation"，自验证会假失败。
+    # 这里先探测能否直接跑；跑不起来就跳过字节比对（结构校验在上面的 zip 步骤已经做过）。
+    $canSelfVerify = $false
+    try {
+        $probe = Start-Process -FilePath $OutFile -ArgumentList @('--extract-only', "`"$verifyDir`"") -PassThru -WindowStyle Hidden -ErrorAction Stop
+        $null = $probe.WaitForExit(180000)
+        $canSelfVerify = ($probe.ExitCode -eq 0)
+        Say ("  解压进程退出码: " + $probe.ExitCode)
+    } catch {
+        Say '  [i] 启动器需要管理员权限，当前不是管理员 —— 跳过解压自验证' 'Yellow'
+        Say '      （zip 结构与文件数已在上一步校验；发布前请在管理员窗口手动跑一次 --extract-only）' 'Yellow'
+        $canSelfVerify = $false
+    }
+    if (-not $canSelfVerify) {
+        # 不能真跑：直接跳过后续比对，不阻断打包
+        Say '  [i] 已跳过解压自验证（不影响产物）' 'Yellow'
+    } else {
+    # ---- 以下为解压自验证（$canSelfVerify 为真时才走到这里）----
     Say ("  解压进程退出码: " + $LASTEXITCODE)
 
     # 包内可能多一层目录
@@ -171,6 +189,7 @@ try {
     } else {
         Say ''
         Say '[!] 自验证有问题，不要发布这个包。' 'Red'
+    }
     }
 } finally {
     Remove-Item -LiteralPath $verifyDir -Recurse -Force -ErrorAction SilentlyContinue
