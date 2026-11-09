@@ -1680,7 +1680,12 @@ async function rtc264Stats() {
     });
     if (bestPair) { const c = cands[bestPair.localCandidateId]; if (c) path = c.candidateType; }
     const vw = vid.videoWidth || 0;
-    if (vw > 0) {
+    // 2026-11-10：WebCodecs 接收端启用后，RTP 被 transform 拦走，<video> 拿不到解码权，
+    // videoWidth 永远是 0。原来只看 videoWidth 会把 firstVideo 一直判成 false，
+    // 12 秒后 watchdog 触发 rtc264Retry -> 黑屏重连 -> 又 12 秒 -> 无限循环。
+    // 所以两种"有画面"都算：<video> 有尺寸，或者 WebCodecs 已经绘出过帧。
+    const wcAlive = !!(window.__wc264 && window.__wc264.on && window.__wc264.frames > 0);
+    if (vw > 0 || wcAlive) {
       if (!R.firstVideo) R.playStart = Date.now();   // 出第一帧的时刻：头 2 秒的帧率不可信
     if (!R.firstVideo) { clearTimeout(R.noVideoTimer); R.noVideoTimer = 0; }
       R.firstVideo = true; R.attempts = 0;
@@ -1741,15 +1746,17 @@ async function rtc264Stats() {
       if (window.__wc264 && window.__wc264.on && window.__wc264.lastFrameAt) {
         _wcBufOverride = Math.max(0, Date.now() - window.__wc264.lastFrameAt);
         // 2026-11-10 看门狗：解码器偶发卡在 "A key frame is required" 后不再出帧，
-        // 画面停在最后一帧、(WC) 数字涨到几万毫秒。超 3 秒没新帧就重建（摘 transform ->
-        // 浏览器接管 -> 重新挂 -> 重新解码），20 秒冷却避免持续故障时反复重建。
+        // 画面停在最后一帧、(WC) 数字涨到几万毫秒。
+        // 处理方式：只回退一次，不反复重建 —— 实测"重建"会变成
+        // "黑屏 -> 重建 -> 又黑" 的循环，比不修还糟。
+        // 回退只是把 transform 摘掉、让 <video> 接管：延迟回到浏览器 jitter buffer 的水平
+        // （会涨），但画面不再黑、也不再触发重连。稳定性优先。
         try {
           const _stall = Date.now() - window.__wc264.lastFrameAt;
-          if (_stall > 3000 && Date.now() - (window.__wc264.lastHeal || 0) > 20000) {
-            window.__wc264.lastHeal = Date.now();
-            try { console.log("wc264: 卡了 " + _stall + "ms，重建"); } catch (e0) { }
+          if (_stall > 3000 && !window.__wc264.gaveUp) {
+            window.__wc264.gaveUp = true;
+            try { console.log("wc264: 卡了 " + _stall + "ms，回退到浏览器解码"); } catch (e0) { }
             try { window.__wc264.stop(); } catch (e1) { }
-            try { if (window.__rtc264 && window.__rtc264.pc) tryStartWC264(window.__rtc264.pc); } catch (e2) { }
           }
         } catch (e) { }
       }
