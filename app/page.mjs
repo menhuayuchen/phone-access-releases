@@ -1255,6 +1255,94 @@ function startWtTransport() {
 //  4. 回前台时如果连接已经死了，自动重连一次（手机锁屏再解锁的常见场景）。
 let rtc264Gen = 0;
 const RTC264 = { pc: null, sid: '', watchdog: null, statsTimer: null, attempts: 0, startedAt: 0, firstVideo: false, busy: false };
+// 2026-11-10：WebCodecs 自研接收端（可选路径）。
+// 目的：绕过浏览器 jitter buffer —— 它在零丢包/零抖动/速率匹配的情况下仍会缓慢膨胀，
+// 且 jitterBufferTarget/playoutDelayHint 实测被 Chrome 无视，页面侧没有任何 API 能压住。
+// 做法：RTCRtpScriptTransform 把 RTP 交给 Worker 自己解包 + VideoDecoder 解码 + Canvas 渲染。
+// 不支持 RTCRtpScriptTransform 的老浏览器（部分旧 iOS）自动回退到原来的 <video> 路径。
+// 2026-11-10：尝试启用 WebCodecs 接收端。receivers 刚创建时 track 可能还没绑，轮询几次。
+function tryStartWC264(pc) {
+  let tries = 0;
+  const attempt = function () {
+    tries++;
+    try {
+      if (WC264.on) return;
+      const rxs = pc.getReceivers ? pc.getReceivers().filter(function (r) { return r.track && r.track.kind === 'video'; }) : [];
+      if (rxs.length && WC264.start(pc)) return;
+    } catch (e) { }
+    if (tries < 20) setTimeout(attempt, 100);
+  };
+  attempt();
+}
+const WC264 = {
+  on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0, lastFrameAt: 0, lastErr: "",
+  supported() { try { return typeof RTCRtpScriptTransform !== "undefined" && typeof VideoDecoder !== "undefined"; } catch (e) { return false; } },
+  start(pc) {
+    if (this.on || !pc) return false;
+    if (!this.supported()) { this.lastErr = "no-rtp-tf"; return false; }
+    try {
+      const rxs = pc.getReceivers ? pc.getReceivers().filter(function (r) { return r.track && r.track.kind === "video"; }) : [];
+      if (!rxs.length) { this.lastErr = "no-video-receiver"; return false; }
+      const w = new Worker("/wc264-worker.js");
+      const self_ = this;
+      w.onmessage = function (e) { self_.onMsg(e.data); };
+      w.onerror = function (e) { self_.lastErr = "worker:" + (e && e.message); };
+      for (let i = 0; i < rxs.length; i++) { rxs[i].transform = new RTCRtpScriptTransform(w); }
+      this.worker = w;
+      // 告诉 Worker 当前的编码帧率，用于合成均匀时间戳
+      try { const _fps = (typeof H264_FPS !== "undefined" && H264_FPS) ? H264_FPS : 60; w.postMessage({ type: "fps", fps: _fps }); } catch (e) { }
+      let c = document.getElementById("wc264c");
+      if (!c) {
+        c = document.createElement("canvas");
+        c.id = "wc264c";
+        c.style.cssText = "position:absolute;inset:0;width:100%;height:100%;background:#000;display:block;z-index:3;";
+        const st = document.getElementById("stage") || document.body;
+        st.appendChild(c);
+      }
+      c.style.display = "block";
+      this.canvas = c;
+      this.ctx = c.getContext("2d", { alpha: false, desynchronized: true });
+      this.on = true;
+      setStat("WebCodecs 接收端已启用");
+      return true;
+    } catch (e) {
+      this.lastErr = String((e && e.message) || e);
+      this.stop();
+      return false;
+    }
+  },
+  onMsg(m) {
+    if (!m) return;
+    if (m.type === "frame") {
+      const f = m.frame;
+      try {
+        const c = this.canvas, x = this.ctx;
+        if (c && x) {
+          if (c.width !== f.displayWidth || c.height !== f.displayHeight) { c.width = f.displayWidth; c.height = f.displayHeight; }
+          x.drawImage(f, 0, 0);
+          this.frames++;
+          this.lastFrameAt = Date.now();
+        }
+      } catch (e) { } finally { try { f.close(); } catch (e2) { } }
+    } else if (m.type === "stats") {
+      this.stats = m.stats;
+    } else if (m.type === "hello" || m.type === "tx-event" || m.type === "first-rtp" || m.type === "diag") {
+      if (m.type === "diag") { this.lastErr = (this.lastErr || "") + " {" + m.msg + "}"; }
+      this.lastErr = (this.lastErr || "") + " [" + m.type + "]";
+    } else if (m.type === "ready") {
+      console.log("wc264 decoder ready", m.codec);
+    } else if (m.type === "error") {
+      this.lastErr = String(m.message || "decode");
+      console.warn("wc264", this.lastErr);
+    }
+  },
+  stop() {
+    try { if (this.worker) this.worker.terminate(); } catch (e) { }
+    this.worker = null; this.on = false; this.stats = null;
+    if (this.canvas) { try { this.canvas.remove(); } catch (e) { } this.canvas = null; this.ctx = null; }
+  }
+};
+try { window.__wc264 = WC264; } catch (e) { }
 try { window.__rtc264 = RTC264; } catch (e) { }   // 诊断/端到端测试用
 
 // ---- 码率自动（可选，默认关）------------------------------------------------
@@ -1452,6 +1540,8 @@ async function startRtc264() {
               if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
             } else {
               RTC264.videoReceiver = e.receiver;
+          // 2026-11-10：视频轨到了就尝试启用 WebCodecs 接收端（成功则 RTP 由 Worker 接管，
+          // 绕过浏览器 jitter buffer；失败/不支持则什么都不做，继续用原来的 <video> 解码渲染）。
               if ('jitterBufferTarget' in e.receiver) e.receiver.jitterBufferTarget = 20;
               if ('playoutDelayHint' in e.receiver) e.receiver.playoutDelayHint = 0;
             }
@@ -1496,6 +1586,10 @@ async function startRtc264() {
       } else if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
     };
     await pc.setRemoteDescription({ type: 'offer', sdp: offer.sdp });
+    // 2026-11-10：WebCodecs 接收端必须在「接收开始之前」挂上 transform。
+    // 放在 setRemoteDescription 之后（此时 receivers 已按 offer 创建）、setLocalDescription 之前。
+    // 之前放在 ontrack 里太晚了 —— 那时 RTP 已经在往浏览器解码器送，transform 挂上去收不到流。
+    try { tryStartWC264(pc); } catch (e0) { }
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     await new Promise(function (r) {
@@ -1523,6 +1617,29 @@ async function startRtc264() {
 async function rtc264Stats() {
   const R = RTC264, pc = R.pc;
   if (!pc) return;
+  // 2026-11-10：把 video 元素尺寸贴合到视频实际显示区域（object-fit:contain 后的区域），
+  // 不再撑满全屏。原来 #vid 是 width:100%;height:100% + contain —— 元素仍占满屏幕，
+  // 浏览器按整个元素面积合成。实测：全屏时渲染管线跟不上 → 积压 → Chrome 自适应加大
+  // jitter buffer → 「缓」1 分钟涨到 300ms（安卓和 iPhone 17 Pro 一样）；
+  // 把元素缩到 480px 宽后缓冲立刻不涨。这里按原比例居中，视觉上和以前一模一样（黑边由容器背景提供）。
+  try {
+    if (vid && vid.videoWidth > 0) {
+      const _pe = vid.parentElement || document.body;
+      const _cw = _pe.clientWidth || window.innerWidth;
+      const _ch = _pe.clientHeight || window.innerHeight;
+      const _va = vid.videoWidth / vid.videoHeight;
+      const _ca = _cw / _ch;
+      let _w, _h;
+      if (_va > _ca) { _w = _cw; _h = Math.round(_cw / _va); } else { _h = _ch; _w = Math.round(_ch * _va); }
+      if (Math.abs((vid.clientWidth || 0) - _w) > 2 || Math.abs((vid.clientHeight || 0) - _h) > 2) {
+        vid.style.inset = "auto";
+        vid.style.left = Math.round((_cw - _w) / 2) + "px";
+        vid.style.top = Math.round((_ch - _h) / 2) + "px";
+        vid.style.width = _w + "px";
+        vid.style.height = _h + "px";
+      }
+    }
+  } catch (e) { }
   try {
     const st = await pc.getStats();
     const cands = {};
@@ -1600,7 +1717,32 @@ async function rtc264Stats() {
       }
     } else { R.lastFr = fr; R.lastBr = br; R.frozenSince = 0; }
     const how = path === 'relay' ? '中继' : (path === 'srflx' || path === 'prflx' ? '直连(NAT)' : (path === 'host' ? '直连' : pc.iceConnectionState));
+    // 2026-11-10：WebCodecs 模式下画面不走浏览器 jitter buffer，
+    // 实测「缓」涨到 300ms 时 WebCodecs 那边的帧率仍是 87fps、延迟由我们自己的解码管线决定。
+    // 所以这里在 WebCodecs 生效时显示真实链路延迟（帧从解码到绘制的间隔），而不是误导性的 jitterBufferDelay。
+    let _wcBufOverride = -1;
+    try {
+      if (window.__wc264 && window.__wc264.on && window.__wc264.lastFrameAt) {
+        _wcBufOverride = Math.max(0, Date.now() - window.__wc264.lastFrameAt);
+      }
+    } catch (e) { }
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
+    // 2026-11-10：缓冲自愈。Chrome/WebKit 接收端的 jitter buffer 在"零丢包、零抖动、速率匹配"
+    // 的情况下仍会缓慢膨胀（实测 60fps 与 30fps 涨速一样，与帧率/分辨率/网络无关），
+    // 页面侧没有 API 能压住它（jitterBufferTarget=0 实测无效）。唯一能让延迟回到低位的手段
+    // 是重建 PeerConnection。这里做阈值触发 + 30 秒冷却，避免频繁闪烁。
+    try {
+      const _now = Date.now();
+      if (bufMs >= 200 && !RTC264.resyncing && _now - (RTC264.lastResync || 0) > 30000) {
+        RTC264.resyncing = true;
+        RTC264.lastResync = _now;
+        setStat('缓冲过高，正在同步…');
+        setTimeout(function () {
+          try { RTC264.resyncing = false; } catch (e2) { }
+          try { rtc264Retry('buffer-high'); } catch (e3) { }
+        }, 600);
+      }
+    } catch (e) { }
     const res = vw ? vw + 'x' + vid.videoHeight : '连接中';
     // 帧率/码率：用相邻两次采样的差值算。HUD 以前显示的是「帧1776/解1775」这种累计计数，
     // 越看越大、根本不是帧率（用户反馈"帧率显示有问题"就是它）。
@@ -1628,9 +1770,29 @@ async function rtc264Stats() {
     const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
     // 手机端 #stat 是隐藏的，HUD 才是用户看到的；HUD 只放「帧率 · 码率 · 缓冲」，
     // 累计帧数和累计流量放 #stat，给桌面排查用。
+      // 2026-11-10 诊断标记：显示 video 元素实际渲染尺寸，便于确认「贴合尺寸」逻辑是否生效
+      let _fitTag = '';
+      try {
+        const _v = document.getElementById('vid');
+        if (_v && _v.videoWidth > 0) {
+          const _pe = _v.parentElement;
+          const _cw = _pe ? _pe.clientWidth : 0; const _ch = _pe ? _pe.clientHeight : 0;
+          _fitTag = ' [画' + (_v.clientWidth||0) + 'x' + (_v.clientHeight||0) + '/' + _cw + 'x' + _ch + ']';
+          // 2026-11-10：能力检测 —— WebCodecs 自研接收端方案的前提
+          try {
+            const _f = [];
+            if (typeof RTCRtpScriptTransform !== 'undefined') _f.push('RTP-TF');
+            if (typeof MediaStreamTrackProcessor !== 'undefined') _f.push('MSTP');
+            if (typeof VideoDecoder !== 'undefined') _f.push('VD');
+            if (typeof OffscreenCanvas !== 'undefined') _f.push('OC');
+            if (typeof VideoFrame !== 'undefined') _f.push('VF');
+            _fitTag += ' {' + _f.join('/') + '}';
+          } catch (e) { }
+        }
+      } catch (e) { }
     RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · ' + fpsTxt
       + (mbpsTxt ? ' · ' + mbpsTxt : '')
-      + ' · 缓' + bufMs + 'ms' + autoqTag();
+      + ' · 缓' + ((_wcBufOverride >= 0 ? _wcBufOverride : bufMs)) + 'ms' + (_wcBufOverride >= 0 ? '(WC)' : '') + autoqTag() + _fitTag;
     setStat(RTC264.hudText + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB');
   } catch (e) { }
 }

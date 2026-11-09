@@ -139,6 +139,8 @@ $appFiles = @(
   'stop-phone-access.ps1',
   'stop-phone-access.cmd',
   'supervise.ps1',
+  # 2026-11-10：WebCodecs 自研接收端的 Worker（绕过浏览器 jitter buffer 用）
+  'wc264-worker.js',
   'autostart.ps1',
   'run-autostart.vbs',
   'install-elevated-input.ps1',

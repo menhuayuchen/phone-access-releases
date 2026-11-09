@@ -3073,7 +3073,11 @@ async function handler(req, res) {
   // 收款码等品牌图片：未授权客户要靠它找到购买方式，必须公开
   const isBrandingAsset = url.pathname.startsWith('/branding/') && /\.(png|jpe?g)$/i.test(url.pathname);
   // 明确公开的少量资源（不含任何画面/控制/许可证数据）
-  const PUBLIC_PATHS = new Set(['/health', '/sw.js', '/ca.crt', '/icon-192.png', '/icon-512.png']);
+  // 2026-11-10：/wc264-worker.js 也要免鉴权 —— Worker 请求是浏览器自己发的，带不上 ?k=。
+  // 它只是 RTP 解包 + VideoDecoder 的代码，不含任何密钥或主机信息。
+  const PUBLIC_PATHS = new Set(['/health', '/sw.js', '/wc264-worker.js', '/ca.crt', '/icon-192.png', '/icon-512.png']);
+  // 临时诊断：记录每个需要鉴权的请求路径（确认 /wc264-worker.js 到底走到这里没有）
+  if (url.pathname.indexOf('wc264') >= 0) { console.log('[diag] wc264 request path=' + JSON.stringify(url.pathname) + ' inPublic=' + PUBLIC_PATHS.has(url.pathname)); }
   // 浏览器取 manifest 时不发 cookie，页面里现签一个短时 token 例外
   const manifestOk = url.pathname === '/manifest.json' && manifestTokenOk(url);
   if (!PUBLIC_PATHS.has(url.pathname) && !isBrandingAsset && !manifestOk && !authorized(req, url)) {
@@ -5821,6 +5825,18 @@ async function handler(req, res) {
     return;
   }
 
+
+  // 2026-11-10：WebCodecs 自研接收端的 Worker 脚本。
+  // 必须放在兜底鉴权之前 —— Worker 请求是浏览器自己发的，带不上 ?k=，
+  // 而且它只是 RTP 解包 + VideoDecoder 的代码，不含任何密钥/画面/主机信息。
+  if (url.pathname === '/wc264-worker.js') {
+    try {
+      const js = readFileSync(join(HERE, 'wc264-worker.js'));
+      res.writeHead(200, { 'content-type': 'application/javascript; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(js);
+    } catch (e) { res.writeHead(404); res.end('not found'); }
+    return;
+  }
 
   if (!authorized(req, url)) {
     rejectAuth(req, res, url, ra);
