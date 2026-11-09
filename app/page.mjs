@@ -1768,7 +1768,12 @@ async function rtc264Stats() {
     // 是重建 PeerConnection。这里做阈值触发 + 30 秒冷却，避免频繁闪烁。
     try {
       const _now = Date.now();
-      if (bufMs >= 200 && !RTC264.resyncing && _now - (RTC264.lastResync || 0) > 30000) {
+      // 2026-11-10 修：WebCodecs 生效时不要做这个判断。
+      // bufMs 来自浏览器的 jitterBufferDelay，它照涨；但 WebCodecs 模式下画面根本不走它，
+      // 之前没排除，于是每 30 秒被误判"缓冲过高"触发一次 rtc264Retry ——
+      // 用户看到的"经常黑屏重启"，侧车日志里就是每 29 秒一次 pc-closed。
+      const _wcActive = !!(window.__wc264 && window.__wc264.on);
+      if (!_wcActive && bufMs >= 200 && !RTC264.resyncing && _now - (RTC264.lastResync || 0) > 30000) {
         RTC264.resyncing = true;
         RTC264.lastResync = _now;
         setStat('缓冲过高，正在同步…');
