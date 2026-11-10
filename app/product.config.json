@@ -53,9 +53,15 @@
                                        },
                                 "_说明":  "网页端 H.264（MSE）串流：enabled=true 且 bin\\ffmpeg.exe 存在时，清晰模式走 H.264，失败自动回落 MJPEG。width=0 表示用当前发送宽度；fps/kbps 是编码参数。2026-11-08：默认 kbps 从 20000 降到 14000（Tailscale/4G 链路余量更大、卡顿更少；要更高画质可在设置里调）；GOP 已改成 0.5 秒，丢包后最多黑半秒。",
                                 "enabled":  true,
+                                "experiment":  {
+                                                   "enabled":  true,
+                                                   "fps":  240,
+                                                   "kbps":  100000,
+                                                   "_说明":  "自用实验版专用：解除帧率/码率上限（240fps / 100Mbps），发挥本机全部实力。发布版由 mark-release.ps1 强制关闭。"
+                                               },
                                 "width":  1920,
-                                "fps":  60,
-                                "kbps":  14000
+                                "fps":  90,
+                                "kbps":  50000
                             },
                    "_offline说明":  "true=离线模式（旧路子）：把 8660/8661/8662 都绑到所有网卡，并停用「拒绝局域网」的防火墙规则。能用，但把 tailnet 入口一起放宽了，安全上不推荐；保留只为兼容老用户。",
                    "offline":  false,
