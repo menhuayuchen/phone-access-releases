@@ -4522,24 +4522,40 @@ bindImg(img);
       + '</div></div>';
   }
 
-  // ---- 作者 B 站主页（2026-11-10 加）--------------------------------------------
+  // ---- 作者 B 站主页（2026-11-10 加；同日改版：卡片化 + 号召关注）------------------
   // 教程视频（下载 / 安装 / 使用）都放在这里。用**直连**的 space 地址，不用 b23.tv 短链：
   // 直连少一次 302 跳转（更快），也不带分享会话参数、不会过期。
-  // 内容全部来自 product.config.json 的 support.bili —— 以后改文案不用动代码。
+  // 文案全部来自 product.config.json 的 support.bili —— 以后改字不用动代码。
   function biliBlockHtml(lic) {
     const b = (lic.support && lic.support.bili) || null;
     if (!b || b.enabled === false) return '';
     const url = String(b.url || '').trim();
     if (!/^https:\/\/\S+$/i.test(url)) return '';
     const name = String(b.name || '').trim() || 'B 站';
-    const note = String(b.note || '').trim();
-    return '<div style="margin:16px 0 0;padding-top:14px;border-top:1px solid #23252c">'
-      + '<div style="color:#8b9098;font-size:12px;margin-bottom:7px">教程视频</div>'
+    const note = String(b.note || '').trim() || '教程 / 更新 / 答疑都在这里';
+    const cta = String(b.cta || '').trim() || '去 B 站关注支持';
+    const cheer = String(b.cheer || '').trim() || '如果「轻屏」帮到了你，点个关注就是最大的支持。';
+    return '<div style="margin:18px 0 0;border-radius:14px;padding:14px 15px;'
+      + 'background:linear-gradient(135deg,rgba(251,114,153,.17),rgba(0,161,214,.13));'
+      + 'border:1px solid rgba(251,114,153,.36)">'
+      + '<div style="display:flex;align-items:center;gap:11px">'
+      + '<div style="width:38px;height:38px;border-radius:11px;flex:0 0 auto;'
+      + 'background:linear-gradient(135deg,#FB7299,#00A1D6);display:flex;align-items:center;justify-content:center;'
+      + 'box-shadow:0 3px 12px rgba(251,114,153,.38)">'
+      + '<svg viewBox="0 0 24 24" width="19" height="19" fill="#fff" aria-hidden="true">'
+      + '<path d="M7.6 3.2 10.4 6h3.2l2.8-2.8 1.3 1.3L16.1 6H18a3 3 0 0 1 3 3v9a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3V9a3 3 0 0 1 3-3h1.9L6.3 4.5zM6 8a1 1 0 0 0-1 1v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V9a1 1 0 0 0-1-1zm3.2 3.1 5.2 2.9-5.2 2.9z"/></svg>'
+      + '</div>'
+      + '<div style="min-width:0">'
+      + '<div style="color:#fff;font-size:14px;font-weight:600;line-height:1.3">' + esc(name) + ' · B 站</div>'
+      + '<div style="color:#c9ccd1;font-size:11.5px;line-height:1.5;margin-top:2px">' + esc(note) + '</div>'
+      + '</div></div>'
       + '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" '
-      + 'style="display:inline-flex;align-items:center;gap:8px;background:#2f6feb;color:#fff;'
-      + 'text-decoration:none;border-radius:8px;padding:9px 14px;font-size:13px">'
-      + '打开 B 站主页（' + esc(name) + '）</a>'
-      + (note ? '<div style="color:#6b7078;font-size:11.5px;line-height:1.6;margin-top:8px">' + esc(note) + '</div>' : '')
+      + 'style="margin-top:12px;display:block;text-align:center;'
+      + 'background:linear-gradient(135deg,#FB7299,#00A1D6);text-decoration:none;'
+      + 'border-radius:10px;padding:10px 14px;box-shadow:0 4px 14px rgba(251,114,153,.28)">'
+      + '<span style="color:#fff;font-size:13.5px;font-weight:600;'
+      + '-webkit-text-fill-color:#fff;text-shadow:0 1px 2px rgba(0,0,0,.18)">' + esc(cta) + '</span></a>'
+      + '<div style="color:#8b9098;font-size:11.5px;line-height:1.6;margin-top:9px">' + esc(cheer) + '</div>'
       + '</div>';
   }
 
@@ -7613,6 +7629,17 @@ bindImg(img);
       + '· 高清 1920 与超清 2560 都不限时；多台设备同时观看，不限台数<br>'
       + '· 无广告、不用注册账号、没有试用期倒计时<br>'
       + '· 个性化（主题 / 光标形状）和同时观看台数都不再有门槛</div>'
+      // 2026-11-10：这一版改动很大（花屏 / 黑屏等待 / 音画不同步 / 弱机器保护），
+      // 在「关于」里直接告诉用户修好了什么，比让他去猜"是不是缓存还是老样子"有用得多。
+      + '<div style="margin:13px 0 0;padding:11px 13px;border-radius:10px;background:#14151a;'
+      + 'border:1px solid #24262e;color:#aeb3bb;font-size:12px;line-height:1.8">'
+      + '<span style="color:#8CE58C;font-weight:600">这一版（1.0.21）修好了</span><br>'
+      + '· 全屏 / 最小化窗口时偶尔「花一下」——找到真因并修掉了<br>'
+      + '· 切「清晰」以前要黑等好几秒，现在几乎立刻出画面<br>'
+      + '· 声音越听越不同步（几分钟偏一点、突然跳一下）——现在会一直对齐<br>'
+      + '· 弱电脑一开清晰就黑屏——现在自动识别，按设备能力降档，保证有画面<br>'
+      + '· 240fps 下偶发黑屏、解码队列越拖越卡——都已修'
+      + '</div>'
       + machineCodeHtml(lic)
       + (lic.licensed
         ? '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">这台电脑已经装好许可证（可选项）。</div>'
@@ -8445,7 +8472,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.9';
+export const PAGE_VER = '2026-11-10.10';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
