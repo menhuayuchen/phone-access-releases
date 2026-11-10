@@ -313,6 +313,26 @@ func readAudioFeed(conn net.Conn, enc *opusEncoder) {
 			tsAcc = epochTicks()
 			audioTsSnaps.Add(1)
 			logf("音频时间戳贴回真实时间（漂移 %dms）", drift/48)
+		} else {
+			// 2026-11-10：慢速 PLL（治"越听越不同步"）。
+			// 实测（线上 19 分钟采样）：音频源每秒只投 99.0~99.4 块（应 100 块），
+			// 这里的时间轴是按"收到的采样数"累加的 → 每秒落后 6~12ms；攒到 3 秒被上面的
+			// 兜底"贴回真实时间"一次（日志里反复出现 -2.8s/-3.2s），用户听到的就是
+			// "声音越来越慢，然后突然跳一下"。缺的块数 × 10ms 与贴回总量完全对得上。
+			// 现在每个块按误差比例纠偏（drift/8，最多 ±6 tick = ±125µs ≈ 1.25%/块），
+			// 把时间轴平滑拉回真实时间；接收端 NetEq 据此做 1% 级的轻微伸缩，听感上基本无感，
+			// 但音画不会越走越偏（也就不会再触发那个 2 秒的大跳）。
+			const maxStepTicks = 6
+			step := drift / 8
+			if step > maxStepTicks {
+				step = maxStepTicks
+			} else if step < -maxStepTicks {
+				step = -maxStepTicks
+			}
+			if step != 0 {
+				tsAcc = uint32(int64(tsAcc) - step)
+				audioPllFixes.Add(1)
+			}
 		}
 		ts := tsAcc
 		tsAcc += samplesPerCh

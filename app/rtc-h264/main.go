@@ -43,7 +43,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const sidecarVersion = "0.5.2"   // 2026-11-10：丢帧置 needKey + gap 标记 + NACK 缓存 1024->4096
+const sidecarVersion = "0.5.3"   // 2026-11-10：音频时间轴慢速 PLL（治越听越不同步）；此前 0.5.2 丢帧置 needKey + gap 标记 + NACK 4096
 
 // 2026-11-08 P1b：两轨共用同一个时钟原点（epoch）——视频按"帧到达侧车的时刻"、
 // 音频按"内容累计时间 + epoch 起点"。之前视频轨用 TrackLocalStaticSample，
@@ -249,6 +249,7 @@ var (
 	audioPayloadLast atomic.Int64
 	audioPayloadMax  atomic.Int64
 	audioTsSnaps     atomic.Uint64
+	audioPllFixes    atomic.Uint64 // 2026-11-10：慢速 PLL 纠偏次数（治音频时间轴每秒落后 ~10ms）
 
 	logPath string
 
@@ -820,6 +821,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"audioPayloadMax": audioPayloadMax.Load(),
 		"audioEncErr":  audioEncErr.Load(),
 		"audioTsSnaps": audioTsSnaps.Load(),
+		"audioPllFixes": audioPllFixes.Load(),
 	})
 }
 
