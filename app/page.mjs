@@ -1918,6 +1918,19 @@ async function rtc264Stats() {
         }
         const _avgDraw = (RTC264.dw && RTC264.dw.length >= 8)
           ? (RTC264.dw.reduce(function (a, b) { return a + b; }, 0) / RTC264.dw.length) : 0;
+        // 2026-11-10 修（独立审查 P1-1）：inFps 原来只在 h264QualityBind 里赋值，而那个函数
+        // 只有"用户打开设置面板"才跑 → 不开设置，_need 恒为 false，自动降档**永不触发**（功能回归）。
+        // 现在每 ~10 秒直接问服务端要一次当前帧率，与设置面板解耦。
+        if (!RTC264.inFpsAt || _now - RTC264.inFpsAt > 10000) {
+          if (!RTC264.inFpsAt) RTC264.inFpsAt = _now;   // 防抖：请求在飞的时候不要连发
+          fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })
+            .then(function (r) { return r.json(); })
+            .then(function (j) {
+              const f = Number(j && j.fps) || 0;
+              if (f > 0) { RTC264.inFps = f; RTC264.inFpsAt = Date.now(); }
+            })
+            .catch(function () { });
+        }
         const _in = Number(RTC264.inFps) || 0;
         const _need = _in > 0 && _avgDraw > 0 && _avgDraw < _in * 0.85;
         const _rsHot = (_rs >= 2 && _w._rsAt && _now - _w._rsAt < 12000);
@@ -1932,7 +1945,6 @@ async function rtc264Stats() {
             try {
               const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
               const cur = Number(j && j.fps) || 60;
-              RTC264.inFps = cur;
               const STEPS = [30, 60, 90, 120, 240];
               let next = 30;
               for (const st of STEPS) { if (st < cur) next = st; }      // 取"比当前小的最大标准档"
@@ -1945,33 +1957,41 @@ async function rtc264Stats() {
               // 1920x1200@121fps / 54Mbps 完全正常（q=0、丢包 0）——降档把它冤枉地压成了 30fps。
               // 现在：自动降档只发 auto:true 的请求（服务端也不落盘），用户自己的选择永远不变；
               // 刷新页面 / 手动选画质就回到用户想要的值。
-              await fetch('/h264-quality', {
+              const rj = await (await fetch('/h264-quality', {
                 method: 'POST', headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ fps: next, auto: true })
-              });
-              try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(next); } catch (e) { }
+              })).json();
+              // 审查 P1-2：基线必须用**服务端实际生效的值**回填（原来写的是降档前的 cur，
+              // 导致恢复判据（next 必须大于当前值）永远达不到、_need 长期误判为真 → 可能二次误降）。
+              const applied = Number(rj && rj.fps) || next;
+              RTC264.inFps = applied;
+              RTC264.inFpsAt = Date.now();
+              RTC264.downgraded = true;                                 // 只有真降过档才允许走恢复路径
+              try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(applied); } catch (e) { }
               RTC264.dw = [];   // 重新攒窗口，别拿降档前的旧值触发下一步
-              setMsg('这台设备解码跟不上，本次已临时降到 ' + next + 'fps（可在设置里改回；刷新页面也会恢复）', '#ffb454');
+              setMsg('这台设备解码跟不上，本次已临时降到 ' + applied + 'fps（可在设置里改回；刷新页面也会恢复）', '#ffb454');
             } catch (e2) { } finally { RTC264.downshifting = false; }
           })();
         }
       }
     } catch (e) { }
     // 2026-11-10：自动降档的**恢复路径**（误判自愈，别只降不升）。
-    // 判据：最近 10 秒（5 个采样）画布出帧率平均 ≥ 输入帧率的 90%，且这 20 秒内 worker 没再重建过。
-    // 攒够 15 个这样的采样（约 30 秒）→ 回一档；每次会话最多回 2 档、两次之间至少 30 秒，
-    // 且绝不超过用户存过的选择（hqFps）—— 这样瞬时误判能自己修回来，也不会降/升来回抖。
+    // 判据：**确实降过档**（RTC264.downgraded）＋最近 16~20 秒（≥8 个采样）画布出帧率平均 ≥ 输入帧率的 90%
+    // ＋这 20 秒内 worker 没再重建过。攒够 15 个这样的采样（约 30 秒）→ 回一档；每次会话最多回 2 档、
+    // 两次之间至少 30 秒，且绝不超过用户存过的选择（hqFps）。
+    // 审查 P1-2：原来没有"曾降档"前置 → 打开过一次设置的健康设备会在 30~60 秒后被主动升档（还杀 ffmpeg 重启）。
     try {
       const _w2 = window.__wc264;
       const _in2 = Number(RTC264.inFps) || 0;
-      if (_w2 && _w2.on && _in2 > 0 && RTC264.dw && RTC264.dw.length >= 5) {
+      if (_w2 && _w2.on && _in2 > 0 && RTC264.dw && RTC264.dw.length >= 8) {
         const _now2 = Date.now();
         const _avg2 = RTC264.dw.reduce(function (a, b) { return a + b; }, 0) / RTC264.dw.length;
         const _stable = _avg2 >= _in2 * 0.9 && !(_now2 - (_w2._rsAt | 0) < 20000);
         RTC264.goodTicks = _stable ? ((RTC264.goodTicks | 0) + 1) : 0;
-        const _want = Number(localStorage.getItem('hqFps') || 0) || Number(RTC264.userTarget || 0) || 240;
+        const _want = Number(localStorage.getItem('hqFps') || 0) || Number(RTC264.userTarget || 0) || 0;
         const _ups = RTC264.ups | 0;
-        if (RTC264.goodTicks >= 15 && _ups < 2 && _now2 - (RTC264.lastUp | 0) > 30000 && !RTC264.downshifting) {
+        if (RTC264.downgraded && _want > _in2 && RTC264.goodTicks >= 15 && _ups < 2 &&
+            _now2 - (RTC264.lastUp | 0) > 30000 && !RTC264.downshifting) {
           RTC264.goodTicks = 0;
           RTC264.lastUp = _now2;
           RTC264.ups = _ups + 1;
@@ -1984,14 +2004,22 @@ async function rtc264Stats() {
               for (const st of STEPS) { if (st > cur && st <= _want) { next = st; break; } }
               if (!next || next <= cur) return;
               setStat('解码跟得上了，恢复到 ' + next + 'fps…');
-              await fetch('/h264-quality', {
+              const rj = await (await fetch('/h264-quality', {
                 method: 'POST', headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ fps: next, auto: true })
-              });
-              RTC264.inFps = next;
+              })).json();
+              // 审查 P1-2：用服务端实际生效值回填基线；已回到用户要的档就不再算"降档中"，
+              // 否则恢复路径会一直挂着、反复尝试。
+              const applied = Number(rj && rj.fps) || next;
+              RTC264.inFps = applied;
+              RTC264.inFpsAt = Date.now();
+              // 审查 P1-3：**不要在这里清 ups**（原来清了 → "每次会话最多回 2 档"的额度被还回去 →
+              // 对确实吃不下目标档的设备会 60⇄90 无限振荡，88 秒一轮、每轮两次编码器重启）。
+              // ups 只由"用户手动改画质"（apply）清零；自动路径用满 2 档就停在低档不再升。
+              if (!_want || applied >= _want) { RTC264.downgraded = false; }
               RTC264.dw = [];
-              try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(next); } catch (e3) { }
-              setMsg('画面已经跟得上，帧率恢复到 ' + next + 'fps', '#8CE58C');
+              try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(applied); } catch (e3) { }
+              setMsg('画面已经跟得上，帧率恢复到 ' + applied + 'fps', '#8CE58C');
             } catch (e4) { }
           })();
         }
@@ -5009,24 +5037,23 @@ bindImg(img);
         kSel.value = String(j.kbps);
         // 2026-11-10：自动降档判据要用"输入帧率"，这里把服务端当前档位记下来
         try { RTC264.inFps = Number(j.fps) || 0; } catch (e) { }
-        // 2026-11-10：把"这台设备/这条线路吃得下的画质"记住并**在这次页面加载时拉回去**。
-        // 起因：手机端解码只有 ~30fps（1200p 走不上硬件解码），自动降档把帧率降到 30 之后，
-        // 只要服务端重启（升级/部署/崩溃自愈），H264_FPS/KBPS 会从配置重读回默认（90fps / 50Mbps）
-        // → 又喂不动、又在丢包 → 又堆队列 → 又冻。这里初始化时比对一次，只降不升；
-        // 用户手动改高走 apply()，那里会把新值写进同一份存储（手动选择永远优先）。
+        // 2026-11-10：把用户在设置里**显式选过**的画质，在这次页面加载时和服务端对齐。
+        // 起因：服务端重启（升级/部署/崩溃自愈）会把帧率/码率重读回配置默认；而"自动降档"是
+        // 临时性的（auto:true、不落盘、不写 localStorage），所以这里以用户的显式选择为准：
+        // 服务端和它不一致就下发一次，双向收敛（这样"刷新页面也会恢复"才是真的）。
         try {
           const wantF = Number(localStorage.getItem('hqFps') || 0);
           const wantK = Number(localStorage.getItem('hqKbps') || 0);
           const post = {};
-          if (wantF >= 30 && Number(j.fps) > wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
-          if (wantK >= 2000 && Number(j.kbps) > wantK) { post.kbps = wantK; kSel.value = String(wantK); }
+          if (wantF >= 30 && Number(j.fps) !== wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
+          if (wantK >= 2000 && Number(j.kbps) !== wantK) { post.kbps = wantK; kSel.value = String(wantK); }
           if (post.fps || post.kbps) {
             fetch('/h264-quality', {
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify(post)
             }).catch(function () { });
-            setMsg('这台设备之前定在 ' + (post.fps || j.fps) + 'fps / '
-              + Math.round((post.kbps || j.kbps) / 1000) + 'Mbps，已自动拉回（可在下面手动改）', '#ffb454');
+            setMsg('已按你上次选的画质对齐：' + (post.fps || j.fps) + 'fps / '
+              + Math.round((post.kbps || j.kbps) / 1000) + 'Mbps（可在下面手动改）', '#ffb454');
           }
         } catch (e) { }
         if (!j.width || !j.height) setMsg('高清通道未启用');
@@ -5055,6 +5082,9 @@ bindImg(img);
     };
     const apply = async () => {
       setMsg('正在应用…');
+      // 2026-11-10（独立审查建议）：只有用户**真的改了帧率**才把新值写成"我的选择"。
+      // 否则他在"自动降档后的低帧率"状态下去改码率，会把降档值永久写成自己的选择。
+      const fpsChanged = Number(fpsSel.value) !== Number(RTC264.inFps || 0);
       try {
         const j = await (await fetch('/h264-quality', {
           method: 'POST', headers: { 'content-type': 'application/json' },
@@ -5062,13 +5092,17 @@ bindImg(img);
         })).json();
         if (j && j.ok) {
           try { fpsSel.value = String(j.fps); wSel.value = String(j.width); kSel.value = String(j.kbps); } catch (e) { }
-          // 2026-11-10：用户手动选的画质也要记住（自动降档用同一个键，手动选择即覆盖它）
-          try { localStorage.setItem('hqFps', String(j.fps)); localStorage.setItem('hqKbps', String(j.kbps)); } catch (e) { }
-          // 手动改画质 = 用户重新拍了板：清掉自动降档的记录，让它重新从当前档位判断
+          try {
+            localStorage.setItem('hqKbps', String(j.kbps));
+            if (fpsChanged) localStorage.setItem('hqFps', String(j.fps));
+          } catch (e) { }
+          // 用户显式拍板 = 清掉自动降档的记录，让它重新从当前档位判断
           try {
             RTC264.inFps = Number(j.fps) || 0;
+            RTC264.inFpsAt = Date.now();
             RTC264.dw = []; RTC264.goodTicks = 0; RTC264.ups = 0; RTC264.userTarget = 0;
             RTC264.lastDown = 0; RTC264.lastUp = 0;
+            if (fpsChanged) RTC264.downgraded = false;
           } catch (e) { }
           updateFlow();
           setMsg('已生效：' + j.width + '×' + j.height + ' · ' + j.fps + 'fps · ' + Math.round(j.kbps / 1000) + 'Mbps', '#8CE58C');
@@ -8411,7 +8445,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.7';
+export const PAGE_VER = '2026-11-10.9';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

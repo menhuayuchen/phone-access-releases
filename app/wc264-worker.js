@@ -358,7 +358,7 @@ function onEncodedFrame(data, isKey, inTs) {
     if (_maxQ < 8) _maxQ = 8;
     if (_maxQ > 120) _maxQ = 120;
     if (q > _maxQ) {
-      const _nowR = Date.now();
+      const _nowR = performance.now();   // 用单调时钟：系统时间回拨不会让限流窗口变长
       if (_nowR - (S.lastResyncAt | 0) < 2000) {
         // 重建限流：2 秒内只重建一次。这段时间里直接丢帧、等到下一个关键帧再恢复，
         // 宁可画面停一下，也不能因为反复重建把整屏变成黑的。
