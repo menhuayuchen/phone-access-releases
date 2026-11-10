@@ -840,12 +840,22 @@ function spsPpsPrefix() {
 function feed264(key, data) {
   if (!conn264 || conn264.destroyed || !conn264.writable) return;
   // 侧车写不动（进程卡住/系统卡）时丢帧，绝不让 Node 的内存无限涨
-  if (conn264.writableLength > 4 * 1024 * 1024) { rtc264FeedDrops++; noteDrop(Date.now()); return; }
+  if (conn264.writableLength > 4 * 1024 * 1024) {
+    rtc264FeedDrops++;
+    // 2026-11-10：丢的这一帧必须让侧车知道 —— 否则它照旧往下推 P 帧，
+    // 而这些 P 帧全缺参考帧（侧车不推进 RTP 序号，接收端也发现不了），
+    // 表现就是连着花屏直到下一个 IDR。这里只打标记，下一帧真正写出去时带上。
+    rtc264PendingGap = true;
+    noteDrop(Date.now());
+    return;
+  }
   try {
     const payload = key ? Buffer.concat([spsPpsPrefix(), annxB(data)]) : annxB(data);
     const head = Buffer.alloc(5);
     head.writeUInt32BE(payload.length, 0);
-    head[4] = key ? 1 : 0;
+    // flags: bit0=关键帧，bit1=gap（这一帧之前上游丢过帧，侧车据此让会话等下一个关键帧）
+    head[4] = (key ? 1 : 0) | (rtc264PendingGap ? 2 : 0);
+    rtc264PendingGap = false;
     conn264.write(Buffer.concat([head, payload]));
     rtc264Frames++;
   } catch { }
@@ -859,6 +869,8 @@ const RTC264_FEED_PORT = Number(CFG264.feedPort) || 9900;
 const RTC264_AUDIO_PORT = RTC264_FEED_PORT + 2;   // 2026-11-08 P1：音频帧输入（带 µs 时间戳）
 let conn264Audio = null;
 let conn264AudioRetry = 0;   // 音频帧输入的重连次数（侧车刚起来时端口还没 listen）
+// 2026-11-10：Node 侧刚丢过帧（feed 缓冲满），下一帧写出去时带 gap 标志让侧车等关键帧
+let rtc264PendingGap = false;
 const RTC264_EXE = join(HERE, 'rtc-h264', 'rtc-h264.exe');
 const RTC264_TURN_PORT = CFG264.turn === false ? 0 : (Number(CFG264.turnPort) || 3478);
 let rtc264Spawning = false;
@@ -975,7 +987,7 @@ function connect264Feed() {
   const c = net.connect(RTC264_FEED_PORT, '127.0.0.1');
   conn264 = c;
   try { c.setNoDelay(true); } catch { }
-  c.on('connect', () => { conn264Retry = 0; console.log('rtc264: 帧输入已连接'); });
+  c.on('connect', () => { conn264Retry = 0; rtc264PendingGap = false; console.log('rtc264: 帧输入已连接'); });
   c.on('error', () => { });
   c.on('close', () => {
     if (conn264 === c) conn264 = null;
@@ -5108,6 +5120,8 @@ async function handler(req, res) {
       // B 方案（Pion WebRTC H.264）默认通道：页面默认走它，?rtc264=0 可强制旧 WS 通道
       rtc: { enabled: !!(CFG264.enabled && fileExists(RTC264_EXE)), port: RTC264_PORT, turn: RTC264_TURN_PORT },
       wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,
+      // 2026-11-10：Node 侧 feed 缓冲满丢掉的帧数（这些帧会带 gap 标志让侧车等关键帧）
+      feedDrops: rtc264FeedDrops,
       lastError: h264.lastError
     }));
     return;

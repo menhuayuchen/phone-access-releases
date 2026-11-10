@@ -38,7 +38,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const sidecarVersion = "0.5.0"
+const sidecarVersion = "0.5.1"   // 2026-11-10：丢帧置 needKey + gap 标记（上游丢帧也能让接收端等关键帧）
 
 // 2026-11-08 P1b：两轨共用同一个时钟原点（epoch）——视频按"帧到达侧车的时刻"、
 // 音频按"内容累计时间 + epoch 起点"。之前视频轨用 TrackLocalStaticSample，
@@ -173,6 +173,16 @@ func (s *session) feed(f frame) {
 	default:
 		s.dropped.Add(1)
 		droppedFrames.Add(1)
+		// 2026-11-10：队列满被丢掉一帧 = 参考帧链断了。
+		// 关键点：丢帧时我们**不推进 RTP 序号**，接收端根本不知道少了一帧，
+		// 于是后面依赖这一帧的 P 帧全部缺参考帧 —— 表现为连着花屏，直到下一个 IDR
+		// （GOP 0.5 秒，看着就是"画面偶尔花一下"）。
+		// 这里改成一丢帧就让该会话等下一个关键帧再推：画面最多停半秒，但不会再出花屏。
+		// 注意：只在这里置位（真丢帧）。绝不要拿 PLI/FIR 置位 —— 之前踩过：
+		// PLI 成串 → 长期没帧 → 页面判冻结 → 主动重连 → 死循环。
+		s.keyMu.Lock()
+		s.needKey = true
+		s.keyMu.Unlock()
 	}
 }
 
@@ -200,6 +210,8 @@ var (
 	framesIn      atomic.Uint64
 	droppedFrames atomic.Uint64
 	idleFrames    atomic.Uint64 // 没有观众时收到的帧（不算丢帧，只是没人要）
+	gapMarks      atomic.Uint64 // 2026-11-10：上游标记"之前丢过帧"的次数（生产上要盯它）
+	lastGapLog    atomic.Int64
 	lastFrameUnix atomic.Int64
 	startedAt     = time.Now()
 
@@ -397,7 +409,10 @@ func newSession() (*session, error) {
 	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
 		MimeType:    webrtc.MimeTypeH264,
 		ClockRate:   90000,
-		SDPFmtpLine: "profile-level-id=42c032;packetization-mode=1;level-asymmetry-allowed=1",
+		// 2026-11-10：原来写死 42c032（Baseline 3.2），但实际编码是 Main profile（日志 avc1.4D4032）。
+		// 接收端按 SDP 声明配置解码器，声明 Baseline 却收到 Main 帧，iPhone 的 VideoToolbox 会解码异常/退回软解，
+		// 表现为积压 → 缓冲一路涨（安卓和 iPhone 17 Pro 都一样）。改成与实际编码一致的 Main 3.2。
+		SDPFmtpLine: "profile-level-id=4D0032;packetization-mode=1;level-asymmetry-allowed=1",
 	}, "video", "pa-"+id)
 	if err != nil {
 		pc.Close()
@@ -483,40 +498,20 @@ func liveCount() int {
 	return len(live)
 }
 
-// 2026-11-10：时间戳平滑（不改帧协议，只改时间戳怎么算）。
-// 原来直接用"到达时刻"当 RTP 时间戳基准。到达时刻有逐帧抖动
-// （ffmpeg 输出节奏、Node 解析转发、TCP 调度），浏览器把这种抖动当成网络抖动，
-// jitter buffer 就缓慢自适应膨胀 —— 实测 1920x90 下零丢帧、90fps 跑满，
-// 缓冲仍以约 1.1ms/秒 稳定上涨，5 分钟就到 300ms（iPhone 17 Pro 完全一样）。
-// 这里用 EMA 估计真实帧间隔，时间戳按 EMA 推进：跟随真实帧率，但去掉逐帧抖动。
-var (
-	tsLastUs   int64
-	tsInterval float64
-	tsInit     bool
-)
-
+// feedFrame 把一帧广播给所有会话。
 func feedFrame(data []byte, key bool) {
+	feedFrameGap(data, key, false)
+}
+
+// feedFrameGap 同上。gap=true 表示"这一帧之前，上游（Node 解析/转发那段）已经丢过帧了"：
+// 接收端看不到这种丢失（丢帧时我们不会推进 RTP 序号），所以必须由我们让会话停下来等下一个关键帧。
+// 帧格式：[4 字节大端长度][1 字节 flags]，flags bit0=关键帧，bit1=gap。
+func feedFrameGap(data []byte, key bool, gap bool) {
 	framesIn.Add(1)
 	now := time.Now()
 	lastFrameUnix.Store(now.UnixMilli())
-	arriveUs := now.Sub(epoch).Microseconds()
-	// 帧间隔 EMA：首帧用 1/60 起手，之后慢速收敛（0.98/0.02 约 3 秒窗口）
-	tsUs := arriveUs
-	if tsInit {
-		d := float64(arriveUs - tsLastUs)
-		if d > 0 {
-			if tsInterval == 0 {
-				tsInterval = d
-			} else {
-				tsInterval = tsInterval*0.98 + d*0.02
-			}
-		}
-		tsUs = tsLastUs + int64(tsInterval)
-	} else {
-		tsInterval = 16666 // 1/60s
-		tsInit = true
-	}
-	tsLastUs = tsUs
+	// 到达时刻（微秒，相对 epoch）：这就是视频 RTP 时间戳的基准。
+	tsUs := now.Sub(epoch).Microseconds()
 	mu.Lock()
 	ls := live
 	mu.Unlock()
@@ -525,6 +520,20 @@ func feedFrame(data []byte, key bool) {
 		// （实测空闲几十分钟后 dropped 变成上万，报障时完全没法用）。单独记。
 		idleFrames.Add(1)
 		return
+	}
+	if gap {
+		gapMarks.Add(1)
+		// 每秒最多记一条：上游卡一次可能连着丢很多帧，别把日志刷满
+		nw := now.UnixMilli()
+		if last := lastGapLog.Load(); nw-last > 1000 {
+			lastGapLog.Store(nw)
+			logf("上游丢帧（gap 标记）：%d 个会话等下一个关键帧再推", len(ls))
+		}
+		for _, s := range ls {
+			s.keyMu.Lock()
+			s.needKey = true
+			s.keyMu.Unlock()
+		}
 	}
 	for _, s := range ls {
 		if s.stopped.Load() {
@@ -780,6 +789,7 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"lastFrameMs":  age,
 		"framesIn":     framesIn.Load(),
 		"dropped":      droppedFrames.Load(),
+		"gapMarks":     gapMarks.Load(),
 		"turnOk":       tok,
 		"turnPort":     tp,
 		"avSkewMs":     skew,
@@ -1061,7 +1071,7 @@ func main() {
 						if _, err := io.ReadFull(rd, buf); err != nil {
 							return
 						}
-						feedFrame(buf, hdr[4] == 1)
+						feedFrameGap(buf, hdr[4]&1 == 1, hdr[4]&2 != 0)
 					}
 				}(conn)
 			}
@@ -1084,6 +1094,6 @@ func main() {
 		if _, err := io.ReadFull(rd, buf); err != nil {
 			select {}
 		}
-		feedFrame(buf, hdr[4] == 1)
+		feedFrameGap(buf, hdr[4]&1 == 1, hdr[4]&2 != 0)
 	}
 }
