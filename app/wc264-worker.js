@@ -11,7 +11,7 @@
 // 数据流：
 //   receiver.transform -> 本 Worker 收到完整帧（Annex-B）
 //   -> 切 NALU，取 SPS(7)/PPS(8) 备用，找 IDR(5)
-//   -> VideoDecoder（不设 description，按 Annex-B 输入）
+//   -> VideoDecoder（给 avcC description + AVCC 输入；参数集一变就重建解码器）
 //   -> VideoFrame 回传主线程 -> Canvas 绘制
 
 /* eslint-disable no-restricted-globals */
@@ -27,14 +27,29 @@ const S = {
   keyframes: 0,
   lastPost: 0,
   lastErr: '',
+  // 2026-11-10 诊断：解码器被重建的次数 / SPS 变化的次数 / 当前解码队列积压
+  cfg: 0,
+  spsChanges: 0,
+  queue: 0,
 };
 
 let decoder = null;
 let decoderReady = false;
 let waitKey = true;
 let sps = null, pps = null;
+// 2026-11-10：当前解码器是用哪一组 SPS/PPS 配置的。编码器重启（切分辨率/切窗口/崩溃重启）
+// 会带来新的 SPS，而送进解码器的数据里 SPS/PPS 是被剥掉的（走 description/avcC 路线），
+// 所以解码器不会自己发现参数变了 —— 必须在这里比对并重建，否则画面会冻住或花屏。
+let cfgSps = null, cfgPps = null;
+let pendingKey = null;     // 解码器还在 configure 时先存下的关键帧，配置好立刻喂进去
 let tsUs = 0;              // 合成时间戳（微秒）：每帧按 1/fps 推进
 let fpsHint = 60;          // 由主线程告知，默认 60
+
+function bytesEq(a, b) {
+  if (!a || !b || a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) { if (a[i] !== b[i]) return false; }
+  return true;
+}
 
 function post(msg, transfer) {
   if (transfer) self.postMessage(msg, transfer);
@@ -138,8 +153,10 @@ function probe(hw) {
 }
 
 function createDecoder(hw) {
-  try { if (decoder) decoder.close(); } catch (e) { }
-  decoder = new VideoDecoder({
+  const prev = decoder;
+  decoderReady = false;
+  try { if (prev) prev.close(); } catch (e) { }
+  const self = new VideoDecoder({
     output: (frame) => {
       S.decoded++;
       post({ type: 'frame', frame, ts: frame.timestamp }, [frame]);
@@ -147,18 +164,33 @@ function createDecoder(hw) {
     error: (e) => {
       S.lastErr = 'dec: ' + String((e && e.message) || e);
       post({ type: 'error', message: S.lastErr });
-      try { decoder.close(); } catch (x) { }
-      decoder = null;
-      decoderReady = false;
-      decoderIniting = false;
-      waitKey = true;
+      // 只拆自己这一只：旧解码器迟到的 error 不能把新解码器一起废掉
+      try { self.close(); } catch (x) { }
+      if (decoder === self) {
+        decoder = null;
+        decoderReady = false;
+        decoderIniting = false;
+        waitKey = true;
+        pendingKey = null;
+      }
     },
   });
+  decoder = self;
   decoder.configure(buildConfig(hw));
+  // 记住"这只解码器是按哪组参数集配的"，onEncodedFrame 里靠它发现编码器换参数了
+  cfgSps = sps ? sps.slice() : null;
+  cfgPps = pps ? pps.slice() : null;
   decoderHw = hw || 'default';
   decoderReady = true;
   decoderIniting = false;
-  post({ type: 'ready', hw: decoderHw });
+  S.cfg++;
+  post({ type: 'ready', hw: decoderHw, cfg: S.cfg });
+  // configure 期间攒下的那个关键帧：现在解码器能用了，立刻喂进去（否则每次连上都要黑 0.5 秒等下一个 IDR）
+  if (pendingKey) {
+    const p = pendingKey;
+    pendingKey = null;
+    try { submitFrame(p, true); } catch (e) { S.lastErr = 'pending: ' + String((e && e.message) || e); }
+  }
   return true;
 }
 
@@ -190,6 +222,23 @@ function ensureDecoder() {
   });
 
   return false;   // 本帧先丢，等初始化完成
+}
+
+// 真正把一帧交给解码器。抽出来是为了两条路共用：正常路径和"configure 期间攒下的关键帧"。
+function submitFrame(buf, isKeyFrame) {
+  if (!decoder || !decoderReady) throw new Error('decoder-not-ready');
+  tsUs += Math.round(1e6 / Math.max(1, fpsHint));
+  decoder.decode(new EncodedVideoChunk({
+    type: isKeyFrame ? 'key' : 'delta',
+    timestamp: tsUs,
+    data: buf,
+  }));
+  S.frames++;
+  // 提交成功才允许喂 P 帧：原来是一拿到 IDR 就清 waitKey，可那时解码器可能还在 configure，
+  // 这一帧被丢掉之后紧接着喂 P 帧 → "A key frame is required after configure()"，
+  // 每次连上前 0.5 秒必黑、还白丢 40 多帧。
+  waitKey = false;
+  try { S.queue = decoder.decodeQueueSize | 0; } catch (e) { S.queue = 0; }
 }
 
 // ---------- 一帧 ----------
@@ -225,14 +274,37 @@ function onEncodedFrame(data, isKey) {
   const isKeyFrame = isKey || hasIdr;
   if (isKeyFrame) S.keyframes++;
 
-  if (waitKey) {
-    if (!isKeyFrame) { S.dropped++; return; }
-    waitKey = false;
+  // 参数集变了 = 编码器重启了（切分辨率、切窗口、崩溃重启）。
+  // 现有解码器是按旧 avcC 配的，而我们在喂数据前把 SPS/PPS 剥掉了，解码器自己永远发现不了 ——
+  // 继续喂的结果就是画面冻住（桌面硬解）或整屏花屏（手机硬解），而且计数器看着完全正常。
+  // 这里必须重建解码器，等下一个关键帧重新 configure。
+  if ((sps && !bytesEq(cfgSps, sps)) || (pps && !bytesEq(cfgPps, pps))) {
+    if (decoder || cfgSps) {
+      S.spsChanges++;
+      post({ type: 'reconfig', spsChanges: S.spsChanges, cfg: S.cfg });
+      try { if (decoder) decoder.close(); } catch (e0) { }
+      decoder = null;
+      decoderReady = false;
+      decoderIniting = false;
+      waitKey = true;
+      pendingKey = null;
+    }
   }
-  if (!decoderReady && !ensureDecoder()) { S.dropped++; return; }
 
   // 输入用 AVCC（4 字节长度前缀），与 configure 里的 avcC description 配套
   const buf = toAvcc(kept);
+
+  // 解码器不在就建；关键帧先攒着，configure 完立刻喂（createDecoder 里会取走 pendingKey）
+  if (!decoderReady) {
+    if (!ensureDecoder()) {
+      if (isKeyFrame) pendingKey = buf;
+      S.dropped++;
+      return;
+    }
+  }
+  if (waitKey) {
+    if (!isKeyFrame) { S.dropped++; return; }
+  }
 
   // 首帧时探测配置是否真的被支持（不支持的 codec 会静默卡住，不报错）
   if (S.frames === 1 && !self.__probed) {
@@ -245,19 +317,20 @@ function onEncodedFrame(data, isKey) {
       }
     } catch (e) { }
   }
-  tsUs += Math.round(1e6 / Math.max(1, fpsHint));
 
   try {
-    decoder.decode(new EncodedVideoChunk({
-      type: isKeyFrame ? 'key' : 'delta',
-      timestamp: tsUs,
-      data: buf,
-    }));
-    S.frames++;
+    submitFrame(buf, isKeyFrame);
   } catch (e) {
     S.dropped++;
     S.lastErr = 'decode: ' + String((e && e.message) || e);
     post({ type: 'error', message: S.lastErr });
+    // 提交失败说明解码器状态已经坏了：拆掉，下一帧按当前 SPS 重建
+    try { if (decoder) decoder.close(); } catch (e2) { }
+    decoder = null;
+    decoderReady = false;
+    decoderIniting = false;
+    waitKey = true;
+    pendingKey = null;
   }
 }
 
@@ -286,6 +359,7 @@ function handleRtpTransform(event) {
     .catch(() => { });
 
   setInterval(() => {
+    try { S.queue = decoder ? (decoder.decodeQueueSize | 0) : 0; } catch (e) { S.queue = 0; }
     post({ type: 'stats', stats: Object.assign({}, S), ready: decoderReady, waitKey, err: S.lastErr });
   }, 2000);
 }
@@ -300,8 +374,15 @@ self.onmessage = (e) => {
     waitKey = true;
     tsUs = 0;
     sps = null; pps = null;
+    cfgSps = null; cfgPps = null;
+    pendingKey = null;
     try { if (decoder) decoder.close(); } catch (x) { }
-    decoder = null; decoderReady = false;
+    decoder = null; decoderReady = false; decoderIniting = false;
+  } else if (m.type === 'gap') {
+    // 2026-11-10：主线程从 getStats 看到丢包，说明参考帧链断了。
+    // 继续解 P 帧只会得到一整片花屏，改成等下一个 IDR（GOP 0.5 秒，画面最多停半秒）。
+    S.gaps = (S.gaps || 0) + 1;
+    waitKey = true;
   } else if (m.type === 'ping') {
     post({ type: 'stats', stats: Object.assign({}, S), ready: decoderReady, waitKey, err: S.lastErr });
   }

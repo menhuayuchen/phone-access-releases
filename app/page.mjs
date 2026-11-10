@@ -1290,10 +1290,14 @@ function tryStartWC264(pc) {
 }
 const WC264 = {
   on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0, lastFrameAt: 0, lastErr: "",
+  // 2026-11-10：卡死自愈用。gaveUp=彻底放弃（回退 <video>）；restarts=已经重建过几次接收端。
+  gaveUp: false, restarts: 0, restarting: false,
   supported() { try { return typeof RTCRtpScriptTransform !== "undefined" && typeof VideoDecoder !== "undefined"; } catch (e) { return false; } },
   start(pc) {
     if (this.on || !pc) return false;
     if (!this.supported()) { this.lastErr = "no-rtp-tf"; return false; }
+    this.lastErr = "";
+    this.restarting = false;
     try {
       const rxs = pc.getReceivers ? pc.getReceivers().filter(function (r) { return r.track && r.track.kind === "video"; }) : [];
       if (!rxs.length) { this.lastErr = "no-video-receiver"; return false; }
@@ -1344,9 +1348,14 @@ const WC264 = {
       } catch (e) { } finally { try { f.close(); } catch (e2) { } }
     } else if (m.type === "stats") {
       this.stats = m.stats;
+    } else if (m.type === "reconfig") {
+      // 2026-11-10：编码器换了参数集（切分辨率/切窗口/崩溃重启），Worker 正在重建解码器。
+      // 这里只记一笔，画布保留最后一帧（比黑屏好看），新解码器配置好后第一帧就会覆盖它。
+      this.cfg = m.cfg; this.spsChanges = m.spsChanges;
+      try { console.log("wc264: 参数集变化 #" + m.spsChanges + "，正在重建解码器（cfg#" + m.cfg + "）"); } catch (e) { }
     } else if (m.type === "hello" || m.type === "tx-event" || m.type === "first-rtp" || m.type === "diag") {
-      if (m.type === "diag") { this.lastErr = (this.lastErr || "") + " {" + m.msg + "}"; }
-      this.lastErr = (this.lastErr || "") + " [" + m.type + "]";
+      if (m.type === "diag" && this.lastErr.length < 400) { this.lastErr = (this.lastErr || "") + " {" + m.msg + "}"; }
+      if (this.lastErr.length < 400) this.lastErr = (this.lastErr || "") + " [" + m.type + "]";
     } else if (m.type === "ready") {
       // 记录实际用的解码方式，HUD 里能看到是硬件还是回退
       try { this.hw = m.hw || "?"; } catch (e) { }
@@ -1475,6 +1484,8 @@ function stopRtc264() {
   // 否则 WC264.on 一直是 true，重连后 start() 直接 return，新 PC 挂不上 transform，
   // 表现：画面停在最后一帧、「缓」一路涨到几万毫秒（实测 21886ms）。
   try { WC264.stop(); } catch (e) { }
+  // 每次重连都重新给 WebCodecs 机会：上一次连接攒下的"放弃/重建次数"不能带到新连接上
+  try { WC264.gaveUp = false; WC264.restarts = 0; WC264.restarting = false; WC264._lastDec = undefined; WC264._lastRtp = undefined; } catch (e) { }
   const R = RTC264;
   rtc264Gen++;
   if (R.statsTimer) { clearInterval(R.statsTimer); R.statsTimer = null; }
@@ -1677,13 +1688,14 @@ async function rtc264Stats() {
   try {
     const st = await pc.getStats();
     const cands = {};
-    let br = 0, fr = 0, fd = 0, path = '', jb = 0, jbc = 0;
+    let br = 0, fr = 0, fd = 0, path = '', jb = 0, jbc = 0, lost = 0;
     let bestPair = null, bestBytes = -1;
     st.forEach(function (r) { if (r.type === 'local-candidate' || r.type === 'remote-candidate') cands[r.id] = r; });
     st.forEach(function (r) {
       if (r.type === 'inbound-rtp' && r.kind === 'video') {
         br = r.bytesReceived || 0; fr = r.framesReceived || 0; fd = r.framesDecoded || 0;
         jb = r.jitterBufferDelay || 0; jbc = r.jitterBufferEmittedCount || 0;
+        lost = r.packetsLost || 0;
       }
       // 原来取「最后一条 succeeded 的 candidate-pair」，同时存在多条通路时会随机显示成中继/直连；
       // 现在优先取浏览器标记的 selected 通路，没标记就取实际流量最大的那条（2026-11-06 体检）。
@@ -1763,23 +1775,64 @@ async function rtc264Stats() {
     try {
       if (window.__wc264 && window.__wc264.on && window.__wc264.lastFrameAt) {
         _wcBufOverride = Math.max(0, Date.now() - window.__wc264.lastFrameAt);
-        // 2026-11-10 看门狗：解码器偶发卡在 "A key frame is required" 后不再出帧，
-        // 画面停在最后一帧、(WC) 数字涨到几万毫秒。
-        // 处理方式：只回退一次，不反复重建 —— 实测"重建"会变成
-        // "黑屏 -> 重建 -> 又黑" 的循环，比不修还糟。
-        // 回退只是把 transform 摘掉、让 <video> 接管：延迟回到浏览器 jitter buffer 的水平
-        // （会涨），但画面不再黑、也不再触发重连。稳定性优先。
+        // 2026-11-10 看门狗（第二版）：WebCodecs 接收端卡死时自愈。
+        //
+        // 第一版是"卡 3 秒就永久回退 <video>"，实测代价太大：编码器只要重启一次
+        // （切分辨率/切窗口/码率、ffmpeg 崩溃重启）就会断帧 1~4 秒，于是每次调画质都
+        // 永久丢掉 WebCodecs，用户莫名其妙回到"延迟会涨"的浏览器解码链路，
+        // 而且 gaveUp 一旦置位，后面再卡死连回退都不会做了（黑屏不恢复）。
+        //
+        // 现在：卡住先自己重建接收端（最多 3 次，每次间隔 1.2 秒），真的救不回来才回退。
+        // 另外加一条"解码器僵死"判据：帧还在进来、但解出来的帧数不涨 —— 这种状态
+        // lastFrameAt 照涨（主线程还在 drawImage 旧帧），光看时间戳发现不了。
         try {
-          const _stall = Date.now() - window.__wc264.lastFrameAt;
-          if (_stall > 3000 && !window.__wc264.gaveUp) {
-            window.__wc264.gaveUp = true;
-            try { console.log("wc264: 卡了 " + _stall + "ms，回退到浏览器解码"); } catch (e0) { }
-            try { window.__wc264.stop(); } catch (e1) { }
+          const _wc = window.__wc264;
+          const _stall = Date.now() - _wc.lastFrameAt;
+          const _st = _wc.stats;
+          let _stuck = false;
+          if (_st) {
+            if (_wc._lastDec !== undefined && _st.rtp > _wc._lastRtp && _st.decoded <= _wc._lastDec) _stuck = true;
+            _wc._lastDec = _st.decoded; _wc._lastRtp = _st.rtp;
+          }
+          if (!_wc.restarting && (_stall > 8000 || _stuck)) {
+            _wc.restarts = (_wc.restarts || 0) + 1;
+            if (_wc.restarts <= 3) {
+              _wc.restarting = true;
+              try { console.log("wc264: " + (_stuck ? "解码器僵死" : "卡了 " + _stall + "ms") + "，第 " + _wc.restarts + " 次重建接收端"); } catch (e0) { }
+              try { _wc.stop(); } catch (e1) { }
+              setTimeout(function () {
+                try { _wc.restarting = false; } catch (e4) { }
+                try {
+                  const _pc = window.__rtc264 && window.__rtc264.pc;
+                  if (_pc && state.mode === 'h264' && !_wc.on) _wc.start(_pc);
+                } catch (e5) { }
+              }, 1200);
+            } else if (!_wc.gaveUp) {
+              _wc.gaveUp = true;
+              try { console.log("wc264: 连续 " + (_wc.restarts - 1) + " 次重建都救不回来，回退到浏览器解码"); } catch (e6) { }
+              try { _wc.stop(); } catch (e7) { }
+            }
           }
         } catch (e) { }
       }
     } catch (e) { }
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
+    // 2026-11-10：丢包 → 告诉 WebCodecs 接收端"参考链断了，等下一个关键帧再解"。
+    // 我们自己的解码器看不到 RTP 序号（transform 拿到的是完整帧），网络丢包时它会把
+    // 依赖丢失帧的那些 P 帧照旧解下去 —— 结果就是一整片花屏，直到下一个 IDR（GOP 0.5 秒）。
+    // 浏览器自带管线遇到缺包会直接丢弃这些帧，我们绕过了它，所以得自己补这一刀：
+    // 把浏览器的 packetsLost 当"断链信号"，让 Worker 停喂直到下一个 IDR（最多冻 0.5 秒，不出花屏）。
+    try {
+      const _wc = window.__wc264;
+      if (_wc && _wc.on && _wc.worker) {
+        if (_wc._lastLost === undefined) _wc._lastLost = lost;
+        if (lost > _wc._lastLost) {
+          _wc._lastLost = lost;
+          _wc.gaps = (_wc.gaps || 0) + 1;
+          try { _wc.worker.postMessage({ type: 'gap' }); } catch (e0) { }
+        }
+      }
+    } catch (e) { }
     // 2026-11-10：缓冲自愈。Chrome/WebKit 接收端的 jitter buffer 在"零丢包、零抖动、速率匹配"
     // 的情况下仍会缓慢膨胀（实测 60fps 与 30fps 涨速一样，与帧率/分辨率/网络无关），
     // 页面侧没有 API 能压住它（jitterBufferTarget=0 实测无效）。唯一能让延迟回到低位的手段
@@ -1801,7 +1854,13 @@ async function rtc264Stats() {
         }, 600);
       }
     } catch (e) { }
-    const res = vw ? vw + 'x' + vid.videoHeight : '连接中';
+    let res = vw ? vw + 'x' + vid.videoHeight : '连接中';
+    // 2026-11-10：WebCodecs 模式下画面走画布、<video> 不接管，videoWidth 可能一直是 0，
+    // HUD 就永远显示"连接中"（用户排查时完全看不出真实分辨率）。有画布就用画布的尺寸。
+    try {
+      const _cv = (window.__wc264 && window.__wc264.on) ? window.__wc264.canvas : null;
+      if (_cv && _cv.width > 0) res = _cv.width + 'x' + _cv.height;
+    } catch (e) { }
     // 帧率/码率：用相邻两次采样的差值算。HUD 以前显示的是「帧1776/解1775」这种累计计数，
     // 越看越大、根本不是帧率（用户反馈"帧率显示有问题"就是它）。
     const prevRate = R.rate;
