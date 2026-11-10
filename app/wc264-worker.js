@@ -341,15 +341,18 @@ function onEncodedFrame(data, isKey, inTs) {
   // 2026-11-10：解码队列保护（手机端实测踩过）。
   // 解码器跟不上输入时 decodeQueueSize 会**无上限**增长：实测手机端攒到 1481 帧 ≈ 25 秒，
   // 表现就是"画面越来越卡、HUD 显示静止"，而 rtp/丢包/PLI 全都正常 —— 光看那些指标发现不了。
-  // 这里到 30 帧（≈0.5 秒 @60fps）就主动重建解码器并等到下一个关键帧：
-  // 队列立刻清空、画面追上实时，代价是最多冻半个 GOP。页面那边会据此自动降帧率（见 rtc264Stats）。
+  // 阈值按**时间**算（250ms 的帧数），不写死 30 帧：240fps 时 30 帧只有 125ms（太敏感），
+  // 30fps 时 30 帧是 1 秒（太迟钝）。到阈值就重建解码器并等到下一个关键帧，
+  // 队列立刻清空、画面追上实时，代价是最多冻半个 GOP。页面会据此判断"设备吃不下"并降档。
   {
     let q = 0;
     try { q = (decoder && decoder.decodeQueueSize) || 0; } catch (e) { q = 0; }
     S.queue = q | 0;
-    if (q > 30) {
+    const _msPerFrame = (S.tsEma > 0 ? S.tsEma : 16);
+    const _maxQ = Math.max(4, Math.round(250 / _msPerFrame));
+    if (q > _maxQ) {
       S.resyncs = (S.resyncs || 0) + 1;
-      post({ type: 'resync', queue: q, resyncs: S.resyncs });
+      post({ type: 'resync', queue: q, resyncs: S.resyncs, max: _maxQ });
       try { if (decoder) decoder.close(); } catch (e9) { }
       decoder = null;
       decoderReady = false;

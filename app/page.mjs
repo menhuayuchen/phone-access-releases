@@ -1884,31 +1884,61 @@ async function rtc264Stats() {
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
 
     // 2026-11-10：解码器扛不住当前帧率 → 自动降档（手机端实测：解码队列攒到 1481 帧 ≈25 秒，
-    // 画面越拖越卡、HUD 显示静止，而丢包/PLI 全是 0）。判定用两个信号：
-    //   ① Worker 因队列堆积主动重建过（resyncs 增长，说明积压已到 30 帧）；
-    //   ② 队列连续 3 次采样 >10 帧。
-    // 降档是把编码帧率减半（不低于 30），编码器重启后画面自然追上；60 秒冷却避免来回抖。
+    // 画面越拖越卡、HUD 显示静止，而丢包/PLI 全是 0）。
+    //
+    // 2026-11-10 第二次修（用户反馈"有时候会误判"）：判据从"一次队列事件"改成**持续性**判定。
+    // 之前的两个误判来源：
+    //   · 场景突变（全屏/换窗口）会吐巨帧（历史实测单帧 688KB），解码器瞬时卡一下就把队列顶到 30，
+    //     清空后可能再顶一次 → 12 秒内 2 次重建 → 直接降半档，而设备其实完全够用；
+    //   · 只砍半（240→120→60→30）步骤太粗，且**只降不升**，一次瞬时误判会挂一整个会话。
+    // 现在的判据（三选二不算，必须同时满足）：
+    //   ① worker 因队列堆积重建过 ≥2 次（清空后又堆 = 真的吃不下，不是一次抖动）；
+    //   ② 最近 10 秒（5 个采样）我们**自己画布的出帧率**平均不到输入帧率的 85%
+    //      —— 这是"设备真的解不动"的直接证据，场景突变不会把 10 秒平均拉下来；
+    //   再加上 90 秒冷却；降一档（按 30/60/90/120/240 标准档位，不再砍半）。
+    // 恢复：连续 5 个采样画满 90% 且期间没重建 → 计一次"稳定"，攒够 15 次（约 30 秒）回一档，
+    // 每次会话最多回 2 档、且不超过用户存过的选择（hqFps）—— 误判能自己修回来，也不会来回抖。
     try {
       const _w = window.__wc264;
       if (_w && _w.on && _w.stats) {
         const _now = Date.now();
         const _rs = _w.resyncs | 0;
-        const _q = _w.stats.queue | 0;
+        // ① worker 重建计数变化
         if (_rs !== (_w._rsSeen | 0)) { _w._rsSeen = _rs; _w._rsAt = _now; }
-        _w._qOver = _q > 10 ? ((_w._qOver | 0) + 1) : 0;
-        // 触发条件收紧（2026-11-10）：一次 resync 不算数 —— 队列保护本身会先把积压清掉，
-        // 只有"清完又堆"（worker 累计重建 ≥2 次）或队列连续 3 次 >10 帧，才认为设备真的吃不下。
-        const _busy = (_rs >= 2 && _w._rsAt && _now - _w._rsAt < 12000) || (_w._qOver | 0) >= 3;
-        if (_busy && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 60000) {
+        // ② 自己画布的出帧率（2 秒一个采样，保留 5 个 ≈10 秒）
+        const _nf = _w.frames | 0;
+        if (!RTC264.drawAt) { RTC264.drawAt = _now; RTC264.drawN = _nf; }
+        else if (_now - RTC264.drawAt >= 1500) {
+          const _dt = (_now - RTC264.drawAt) / 1000;
+          const _df = (_nf - (RTC264.drawN | 0)) / _dt;
+          RTC264.drawAt = _now; RTC264.drawN = _nf;
+          RTC264.dw = RTC264.dw || [];
+          RTC264.dw.push(Math.max(0, _df));
+          if (RTC264.dw.length > 5) RTC264.dw.shift();
+        }
+        const _avgDraw = (RTC264.dw && RTC264.dw.length >= 5)
+          ? (RTC264.dw.reduce(function (a, b) { return a + b; }, 0) / RTC264.dw.length) : 0;
+        const _in = Number(RTC264.inFps) || 0;
+        const _need = _in > 0 && _avgDraw > 0 && _avgDraw < _in * 0.85;
+        const _rsHot = (_rs >= 2 && _w._rsAt && _now - _w._rsAt < 12000);
+        // 启动宽限：连上后的前 15 秒出帧率天然偏低（解码器预热 + 首批关键帧），不参与判断。
+        // 实测启动瞬间 worker 也会因为首批突发重建 1~2 次，两个信号凑一起会误判成"设备吃不下"。
+        const _warm = _now - (R.playStart || 0) < 15000;
+        if (!_warm && _need && _rsHot && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 90000) {
           RTC264.downshifting = true;
           RTC264.lastDown = _now;
+          RTC264.goodTicks = 0;
           (async function () {
             try {
               const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
               const cur = Number(j && j.fps) || 60;
-              if (cur <= 30) return;                    // 已经最低档，不再降
-              const next = Math.max(30, Math.floor(cur / 2));
-              setStat('解码跟不上，本次临时降到 ' + next + 'fps…');
+              RTC264.inFps = cur;
+              const STEPS = [30, 60, 90, 120, 240];
+              let next = 30;
+              for (const st of STEPS) { if (st < cur) next = st; }      // 取"比当前小的最大标准档"
+              if (next >= cur) { RTC264.downshifting = false; return; } // 已经在最低档
+              if (!RTC264.userTarget) RTC264.userTarget = cur;          // 记下用户原本要的档
+              setStat('解码跟不上（' + Math.round(_avgDraw) + '/' + cur + 'fps），本次临时降到 ' + next + 'fps…');
               // 2026-11-10 修（重要）：自动降档**只对本次会话生效，不写进记忆**。
               // 之前把降档结果写进 localStorage，结果一次瞬时卡顿（例如手机上同时开了两个页面、
               // 两份解码抢同一个硬件解码器）就被当成"设备上限"永久记住；实测这台手机单独跑
@@ -1920,13 +1950,53 @@ async function rtc264Stats() {
                 body: JSON.stringify({ fps: next, auto: true })
               });
               try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(next); } catch (e) { }
+              RTC264.dw = [];   // 重新攒窗口，别拿降档前的旧值触发下一步
               setMsg('这台设备解码跟不上，本次已临时降到 ' + next + 'fps（可在设置里改回；刷新页面也会恢复）', '#ffb454');
             } catch (e2) { } finally { RTC264.downshifting = false; }
           })();
         }
       }
     } catch (e) { }
-    // 2026-11-10：丢包 → 告诉 WebCodecs 接收端"参考链断了，等下一个关键帧再解"。
+    // 2026-11-10：自动降档的**恢复路径**（误判自愈，别只降不升）。
+    // 判据：最近 10 秒（5 个采样）画布出帧率平均 ≥ 输入帧率的 90%，且这 20 秒内 worker 没再重建过。
+    // 攒够 15 个这样的采样（约 30 秒）→ 回一档；每次会话最多回 2 档、两次之间至少 30 秒，
+    // 且绝不超过用户存过的选择（hqFps）—— 这样瞬时误判能自己修回来，也不会降/升来回抖。
+    try {
+      const _w2 = window.__wc264;
+      const _in2 = Number(RTC264.inFps) || 0;
+      if (_w2 && _w2.on && _in2 > 0 && RTC264.dw && RTC264.dw.length >= 5) {
+        const _now2 = Date.now();
+        const _avg2 = RTC264.dw.reduce(function (a, b) { return a + b; }, 0) / RTC264.dw.length;
+        const _stable = _avg2 >= _in2 * 0.9 && !(_now2 - (_w2._rsAt | 0) < 20000);
+        RTC264.goodTicks = _stable ? ((RTC264.goodTicks | 0) + 1) : 0;
+        const _want = Number(localStorage.getItem('hqFps') || 0) || Number(RTC264.userTarget || 0) || 240;
+        const _ups = RTC264.ups | 0;
+        if (RTC264.goodTicks >= 15 && _ups < 2 && _now2 - (RTC264.lastUp | 0) > 30000 && !RTC264.downshifting) {
+          RTC264.goodTicks = 0;
+          RTC264.lastUp = _now2;
+          RTC264.ups = _ups + 1;
+          (async function () {
+            try {
+              const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+              const cur = Number(j && j.fps) || 0;
+              const STEPS = [30, 60, 90, 120, 240];
+              let next = 0;
+              for (const st of STEPS) { if (st > cur && st <= _want) { next = st; break; } }
+              if (!next || next <= cur) return;
+              setStat('解码跟得上了，恢复到 ' + next + 'fps…');
+              await fetch('/h264-quality', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fps: next, auto: true })
+              });
+              RTC264.inFps = next;
+              RTC264.dw = [];
+              try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(next); } catch (e3) { }
+              setMsg('画面已经跟得上，帧率恢复到 ' + next + 'fps', '#8CE58C');
+            } catch (e4) { }
+          })();
+        }
+      }
+    } catch (e) { }
     // 我们自己的解码器看不到 RTP 序号（transform 拿到的是完整帧），网络丢包时它会把
     // 依赖丢失帧的那些 P 帧照旧解下去 —— 结果就是一整片花屏，直到下一个 IDR（GOP 0.5 秒）。
     // 浏览器自带管线遇到缺包会直接丢弃这些帧，我们绕过了它，所以得自己补这一刀。
@@ -4937,6 +5007,8 @@ bindImg(img);
         }
         fpsSel.value = String(j.fps);
         kSel.value = String(j.kbps);
+        // 2026-11-10：自动降档判据要用"输入帧率"，这里把服务端当前档位记下来
+        try { RTC264.inFps = Number(j.fps) || 0; } catch (e) { }
         // 2026-11-10：把"这台设备/这条线路吃得下的画质"记住并**在这次页面加载时拉回去**。
         // 起因：手机端解码只有 ~30fps（1200p 走不上硬件解码），自动降档把帧率降到 30 之后，
         // 只要服务端重启（升级/部署/崩溃自愈），H264_FPS/KBPS 会从配置重读回默认（90fps / 50Mbps）
@@ -4992,6 +5064,12 @@ bindImg(img);
           try { fpsSel.value = String(j.fps); wSel.value = String(j.width); kSel.value = String(j.kbps); } catch (e) { }
           // 2026-11-10：用户手动选的画质也要记住（自动降档用同一个键，手动选择即覆盖它）
           try { localStorage.setItem('hqFps', String(j.fps)); localStorage.setItem('hqKbps', String(j.kbps)); } catch (e) { }
+          // 手动改画质 = 用户重新拍了板：清掉自动降档的记录，让它重新从当前档位判断
+          try {
+            RTC264.inFps = Number(j.fps) || 0;
+            RTC264.dw = []; RTC264.goodTicks = 0; RTC264.ups = 0; RTC264.userTarget = 0;
+            RTC264.lastDown = 0; RTC264.lastUp = 0;
+          } catch (e) { }
           updateFlow();
           setMsg('已生效：' + j.width + '×' + j.height + ' · ' + j.fps + 'fps · ' + Math.round(j.kbps / 1000) + 'Mbps', '#8CE58C');
           updateFlow();
@@ -8333,7 +8411,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.5';
+export const PAGE_VER = '2026-11-10.6';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
