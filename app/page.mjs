@@ -1896,7 +1896,9 @@ async function rtc264Stats() {
         const _q = _w.stats.queue | 0;
         if (_rs !== (_w._rsSeen | 0)) { _w._rsSeen = _rs; _w._rsAt = _now; }
         _w._qOver = _q > 10 ? ((_w._qOver | 0) + 1) : 0;
-        const _busy = (_rs > 0 && _w._rsAt && _now - _w._rsAt < 8000) || (_w._qOver | 0) >= 3;
+        // 触发条件收紧（2026-11-10）：一次 resync 不算数 —— 队列保护本身会先把积压清掉，
+        // 只有"清完又堆"（worker 累计重建 ≥2 次）或队列连续 3 次 >10 帧，才认为设备真的吃不下。
+        const _busy = (_rs >= 2 && _w._rsAt && _now - _w._rsAt < 12000) || (_w._qOver | 0) >= 3;
         if (_busy && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 60000) {
           RTC264.downshifting = true;
           RTC264.lastDown = _now;
@@ -1906,16 +1908,19 @@ async function rtc264Stats() {
               const cur = Number(j && j.fps) || 60;
               if (cur <= 30) return;                    // 已经最低档，不再降
               const next = Math.max(30, Math.floor(cur / 2));
-              setStat('解码跟不上，帧率降到 ' + next + '…');
+              setStat('解码跟不上，本次临时降到 ' + next + 'fps…');
+              // 2026-11-10 修（重要）：自动降档**只对本次会话生效，不写进记忆**。
+              // 之前把降档结果写进 localStorage，结果一次瞬时卡顿（例如手机上同时开了两个页面、
+              // 两份解码抢同一个硬件解码器）就被当成"设备上限"永久记住；实测这台手机单独跑
+              // 1920x1200@121fps / 54Mbps 完全正常（q=0、丢包 0）——降档把它冤枉地压成了 30fps。
+              // 现在：自动降档只发 auto:true 的请求（服务端也不落盘），用户自己的选择永远不变；
+              // 刷新页面 / 手动选画质就回到用户想要的值。
               await fetch('/h264-quality', {
                 method: 'POST', headers: { 'content-type': 'application/json' },
-                body: JSON.stringify({ fps: next })
+                body: JSON.stringify({ fps: next, auto: true })
               });
-              // 2026-11-10：记住这个值，服务端重启/配置重读后由 h264QualityBind 初始化时拉回来，
-              // 否则又会被喂回 90fps → 队列再次堆积 → 反复冻（本次线上故障的真正循环）。
-              try { localStorage.setItem('hqFps', String(next)); } catch (e) { }
               try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(next); } catch (e) { }
-              _w.resyncs = 0; _w._rsSeen = 0; _w._qOver = 0;
+              setMsg('这台设备解码跟不上，本次已临时降到 ' + next + 'fps（可在设置里改回；刷新页面也会恢复）', '#ffb454');
             } catch (e2) { } finally { RTC264.downshifting = false; }
           })();
         }

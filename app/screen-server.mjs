@@ -5324,7 +5324,9 @@ async function handler(req, res) {
       // 起因（线上实测）：服务一重启，H264_FPS/KBPS 就从 product.config.json 重读回默认（90fps/50Mbps），
       // 而手机端只能解 ~30fps —— 每次升级/部署/崩溃自愈都会把客户重新喂爆，队列堆积、反复冻。
       // 落盘后启动时优先恢复上次生效值，默认值只在从来没有调过画质时使用。
-      try { saveH264QualityState(); } catch { }
+      // 但页面"自动降档"发来的请求带 auto:true —— 那种临时降档**不能落盘**（否则一次瞬时卡顿
+      // 会被永久记住，把客户冤枉地压成低画质；实测这台手机单独跑 121fps/54Mbps 完全正常）。
+      try { if (m.auto !== true) saveH264QualityState(); } catch { }
       qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
         device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
     });
