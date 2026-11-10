@@ -341,16 +341,32 @@ function onEncodedFrame(data, isKey, inTs) {
   // 2026-11-10：解码队列保护（手机端实测踩过）。
   // 解码器跟不上输入时 decodeQueueSize 会**无上限**增长：实测手机端攒到 1481 帧 ≈ 25 秒，
   // 表现就是"画面越来越卡、HUD 显示静止"，而 rtp/丢包/PLI 全都正常 —— 光看那些指标发现不了。
-  // 阈值按**时间**算（250ms 的帧数），不写死 30 帧：240fps 时 30 帧只有 125ms（太敏感），
-  // 30fps 时 30 帧是 1 秒（太迟钝）。到阈值就重建解码器并等到下一个关键帧，
-  // 队列立刻清空、画面追上实时，代价是最多冻半个 GOP。页面会据此判断"设备吃不下"并降档。
+  // 阈值按**时间**算（250ms 的帧数）：240fps 时 30 帧只有 125ms（太敏感），30fps 时 30 帧是 1 秒（太迟钝）。
+  //
+  // 2026-11-10 修正（线上事故）：上一版把 tsEma 当成"毫秒/帧"直接除，但它是 **RTP 时间戳差（90kHz）**：
+  // 240fps 下 tsEma ≈ 375，250/375 取整成 0，再被 Math.max(4,…) 兜成 4 帧 ——
+  // 于是 240fps 时每 16ms 就"队列过深"一次，解码器被无休止重建（实测 cfg 从 60 涨到 122 / 30 秒），
+  // 每次重建都要等关键帧 → 画面基本全黑。现在换算成毫秒（/90）并把结果钳在 8~120 帧，
+  // 另外加 2 秒重建限流：限流期间只丢帧等关键帧，绝不反复重建。
   {
     let q = 0;
     try { q = (decoder && decoder.decodeQueueSize) || 0; } catch (e) { q = 0; }
     S.queue = q | 0;
-    const _msPerFrame = (S.tsEma > 0 ? S.tsEma : 16);
-    const _maxQ = Math.max(4, Math.round(250 / _msPerFrame));
+    const _msPerFrame = (S.tsEma > 90 ? (S.tsEma / 90) : 16);
+    let _maxQ = Math.round(250 / _msPerFrame);
+    if (!(_maxQ > 0)) _maxQ = 30;
+    if (_maxQ < 8) _maxQ = 8;
+    if (_maxQ > 120) _maxQ = 120;
     if (q > _maxQ) {
+      const _nowR = Date.now();
+      if (_nowR - (S.lastResyncAt | 0) < 2000) {
+        // 重建限流：2 秒内只重建一次。这段时间里直接丢帧、等到下一个关键帧再恢复，
+        // 宁可画面停一下，也不能因为反复重建把整屏变成黑的。
+        S.dropped++;
+        waitKey = true;
+        return;
+      }
+      S.lastResyncAt = _nowR;
       S.resyncs = (S.resyncs || 0) + 1;
       post({ type: 'resync', queue: q, resyncs: S.resyncs, max: _maxQ });
       try { if (decoder) decoder.close(); } catch (e9) { }

@@ -1914,9 +1914,9 @@ async function rtc264Stats() {
           RTC264.drawAt = _now; RTC264.drawN = _nf;
           RTC264.dw = RTC264.dw || [];
           RTC264.dw.push(Math.max(0, _df));
-          if (RTC264.dw.length > 5) RTC264.dw.shift();
+          if (RTC264.dw.length > 10) RTC264.dw.shift();
         }
-        const _avgDraw = (RTC264.dw && RTC264.dw.length >= 5)
+        const _avgDraw = (RTC264.dw && RTC264.dw.length >= 8)
           ? (RTC264.dw.reduce(function (a, b) { return a + b; }, 0) / RTC264.dw.length) : 0;
         const _in = Number(RTC264.inFps) || 0;
         const _need = _in > 0 && _avgDraw > 0 && _avgDraw < _in * 0.85;
@@ -8411,7 +8411,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.6';
+export const PAGE_VER = '2026-11-10.7';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
