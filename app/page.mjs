@@ -3244,14 +3244,8 @@ overlay.addEventListener('pointerdown', (e) => {
   }, PA_LONG_MS);
 });
 
-function showMouseCur(x, y) {
-  const mc = document.getElementById('mcur');
-  if (!mc) return;
-  mc.style.display = 'block';
-  mc.style.left = x + 'px';
-  mc.style.top = y + 'px';
-  scheduleDotHide();
-}
+// 2026-11-10：删掉 showMouseCur —— 死代码（定义了但从没被调用过）。
+// mcur 元素现在只有隐藏逻辑（scheduleDotHide / hideMouseCur 在用），没有显示路径。
 function hideMouseCur() {
   const mc = document.getElementById('mcur');
   if (mc) mc.style.display = 'none';

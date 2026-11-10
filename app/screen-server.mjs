@@ -5020,9 +5020,41 @@ async function handler(req, res) {
       // 2026-11-09：这里也走实验模式的上下限（否则页面调 240fps/100Mbps 会被静默压回 60/40000）。
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(fpsCap, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(kbpsCap, Math.round(k)));
+      // 2026-11-10：防"高帧率 + 低码率"把 NVENC 弄崩。
+      // 实测 2560x1600@240fps + 30000kbps 时 ffmpeg 直接 exit -8（每帧只有 125 字节码率预算，
+      // 编码器拒绝），表现为黑屏、等很久不恢复、日志里反复 "ffmpeg exit 4294967256"。
+      // 这里给"每帧至少 900 字节"的码率下限：90fps 约需 65Mbps，240fps 约需 173Mbps；
+      // 上调不超过 kbpsCap（实验模式上限），也不会突破用户总预算太多。
+      {
+        const minPerFrameBytes = 900;
+        const needKbps = Math.round(H264_FPS * minPerFrameBytes * 8 / 1000);
+        if (H264_KBPS < needKbps) {
+          const bumped = Math.min(kbpsCap, needKbps);
+          if (bumped > H264_KBPS) {
+            H264_KBPS = bumped;
+          }
+        }
+      }
       if (Number.isFinite(w) && w >= 640) {
         H264_W = evenDown(Math.min(CAP_W, Math.round(w)));
         H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+      }
+      // 2026-11-10：像素率上限。实测 2560x1600@240fps 时 ffmpeg 反复 exit -8
+      // （同样的参数手动输出到 NUL 能连续跑 25 秒以上，差别是实际走 pipe:1 由 Node 解析 fMP4）。
+      // 原因是这一路的数据量超出了 Node 解析管道的能力 —— 管道写满后 ffmpeg 写失败就退出。
+      // 表现：黑屏、等很久不恢复、日志里连续 "ffmpeg exit 4294967256"。
+      // 这里按像素率封顶（约 2560x1600x120 ≈ 4.9 亿像素/秒，实测该档位稳定），
+      // 超出就降帧率，并记日志。
+      {
+        const PIXEL_BUDGET = 492000000;
+        const px = H264_W * H264_H;
+        if (px > 0 && H264_FPS * px > PIXEL_BUDGET) {
+          const maxFps = Math.max(10, Math.floor(PIXEL_BUDGET / px));
+          if (maxFps < H264_FPS) {
+            try { console.log('[guard] 像素率超限 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' -> 降到 ' + maxFps + 'fps'); } catch (e) { }
+            H264_FPS = maxFps;
+          }
+        }
       }
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       // （按**即将生效的**宽度判断原生路径，否则从 1920 调到 2560 会被误降成 30fps）
