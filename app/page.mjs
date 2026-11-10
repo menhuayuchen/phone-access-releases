@@ -5824,7 +5824,11 @@ bindImg(img);
     const render = (s, pairings) => {
       lastStatus = s;
       lastPairings = pairings || [];
-      lastPairCount = (p && Number(p.pairCount)) || 0;   // 2026-11-08：已配对数量（>1 要提醒清空重配）
+      // 2026-11-10 修：这里原来写的是 (p && Number(p.pairCount)) || 0，
+      // 但 p 只在 poll() 内部定义（那条语句还用了 p），render 里根本看不到它
+      // → 每次渲染都抛 "p is not defined"，整个「串流玩游戏」面板永远停在"正在检测…"。
+      // 已配对数量本来就该从传进来的 pairings 数出来。
+      lastPairCount = Array.isArray(pairings) ? pairings.length : 0;   // 已配对数量（>1 要提醒清空重配）
       if (s && s.installed && s.webUp) loadCreds();
       const sig = JSON.stringify([s.installed, s.webUp, s.credentialsSet, s.licensed, (pairings || []).map((p) => p.id), ssCreds ? 1 : 0]);
       if (sig === lastSig) return;
@@ -8541,7 +8545,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.12';
+export const PAGE_VER = '2026-11-10.13';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
