@@ -1361,6 +1361,12 @@ const WC264 = {
       // 这里只记一笔，画布保留最后一帧（比黑屏好看），新解码器配置好后第一帧就会覆盖它。
       this.cfg = m.cfg; this.spsChanges = m.spsChanges;
       try { console.log("wc264: 参数集变化 #" + m.spsChanges + "，正在重建解码器（cfg#" + m.cfg + "）"); } catch (e) { }
+    } else if (m.type === "resync") {
+      // 2026-11-10：Worker 发现解码队列堆积（画面越拖越远），主动重建解码器清空积压。
+      // 这里累计次数，rtc264Stats 里据此判断"这台设备吃不下当前帧率"并自动降档。
+      this.resyncs = m.resyncs || ((this.resyncs || 0) + 1);
+      this.lastQueue = m.queue || 0;
+      try { console.log("wc264: 解码队列堆积 " + (m.queue || '?') + " 帧，已重建解码器等关键帧（第 " + this.resyncs + " 次）"); } catch (e) { }
     } else if (m.type === "hello" || m.type === "tx-event" || m.type === "first-rtp" || m.type === "diag") {
       if (m.type === "diag" && this.lastErr.length < 400) { this.lastErr = (this.lastErr || "") + " {" + m.msg + "}"; }
       if (this.lastErr.length < 400) this.lastErr = (this.lastErr || "") + " [" + m.type + "]";
@@ -1876,6 +1882,41 @@ async function rtc264Stats() {
       }
     } catch (e) { }
     const bufMs = jbc > 0 ? Math.round((jb / jbc) * 1000) : 0;
+
+    // 2026-11-10：解码器扛不住当前帧率 → 自动降档（手机端实测：解码队列攒到 1481 帧 ≈25 秒，
+    // 画面越拖越卡、HUD 显示静止，而丢包/PLI 全是 0）。判定用两个信号：
+    //   ① Worker 因队列堆积主动重建过（resyncs 增长，说明积压已到 30 帧）；
+    //   ② 队列连续 3 次采样 >10 帧。
+    // 降档是把编码帧率减半（不低于 30），编码器重启后画面自然追上；60 秒冷却避免来回抖。
+    try {
+      const _w = window.__wc264;
+      if (_w && _w.on && _w.stats) {
+        const _now = Date.now();
+        const _rs = _w.resyncs | 0;
+        const _q = _w.stats.queue | 0;
+        if (_rs !== (_w._rsSeen | 0)) { _w._rsSeen = _rs; _w._rsAt = _now; }
+        _w._qOver = _q > 10 ? ((_w._qOver | 0) + 1) : 0;
+        const _busy = (_rs > 0 && _w._rsAt && _now - _w._rsAt < 8000) || (_w._qOver | 0) >= 3;
+        if (_busy && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 60000) {
+          RTC264.downshifting = true;
+          RTC264.lastDown = _now;
+          (async function () {
+            try {
+              const j = await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
+              const cur = Number(j && j.fps) || 60;
+              if (cur <= 30) return;                    // 已经最低档，不再降
+              const next = Math.max(30, Math.floor(cur / 2));
+              setStat('解码跟不上，帧率降到 ' + next + '…');
+              await fetch('/h264-quality', {
+                method: 'POST', headers: { 'content-type': 'application/json' },
+                body: JSON.stringify({ fps: next })
+              });
+              _w.resyncs = 0; _w._rsSeen = 0; _w._qOver = 0;
+            } catch (e2) { } finally { RTC264.downshifting = false; }
+          })();
+        }
+      }
+    } catch (e) { }
     // 2026-11-10：丢包 → 告诉 WebCodecs 接收端"参考链断了，等下一个关键帧再解"。
     // 我们自己的解码器看不到 RTP 序号（transform 拿到的是完整帧），网络丢包时它会把
     // 依赖丢失帧的那些 P 帧照旧解下去 —— 结果就是一整片花屏，直到下一个 IDR（GOP 0.5 秒）。
@@ -1934,10 +1975,30 @@ async function rtc264Stats() {
     //   · 刚连上的 2.5 秒内：解码器还没稳定，显示 …
     //   · 正常有帧：显示实际帧率
     //   · 帧率归零（画面没变化，编码器低频输出）：显示"静止"
+    // 2026-11-10 修：WebCodecs 生效时 **必须用我们自己画布的出帧率**。
+    // R.qFps 来自浏览器内置解码器的 framesDecoded，手机端它可能一直是 0（那份解码被饿着），
+    // 于是画面明明在动、HUD 却永远显示"静止"——用户会以为卡死了（实测踩过）。
+    let _fpsShow = R.qFps;
+    try {
+      const _w = window.__wc264;
+      if (_w && _w.on) {
+        const _now = Date.now();
+        if (_w._hudLastAt && _now - _w._hudLastAt > 200) {
+          const _d = (_w.frames | 0) - (_w._hudLastFrames | 0);
+          const _dt = (_now - _w._hudLastAt) / 1000;
+          if (_dt > 0 && _d >= 0) _w._hudFps = _d / _dt;
+          _w._hudLastFrames = _w.frames | 0;
+          _w._hudLastAt = _now;
+        } else if (!_w._hudLastAt) {
+          _w._hudLastAt = _now; _w._hudLastFrames = _w.frames | 0;
+        }
+        if (typeof _w._hudFps === 'number') _fpsShow = _w._hudFps;
+      }
+    } catch (e) { }
     const connMs = Date.now() - (R.playStart || 0);
     let fpsTxt;
     if (connMs < 2500) fpsTxt = '… fps';
-    else if (R.qFps > 0.05) fpsTxt = R.qFps.toFixed(1) + ' fps';
+    else if (_fpsShow > 0.05) fpsTxt = _fpsShow.toFixed(1) + ' fps';
     else fpsTxt = '静止';
     const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
     // 手机端 #stat 是隐藏的，HUD 才是用户看到的；HUD 只放「帧率 · 码率 · 缓冲」，
@@ -8241,7 +8302,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.2';
+export const PAGE_VER = '2026-11-10.3';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

@@ -31,6 +31,7 @@ const S = {
   cfg: 0,
   spsChanges: 0,
   queue: 0,
+  resyncs: 0,   // 因解码队列堆积而主动重建的次数（页面据此判断"这台设备吃不下当前码率"）
   // 2026-11-10 诊断：收到的 RTCEncodedVideoFrame.timestamp 间隔（单位是 **90kHz 刻度**，不是微秒）。
   // 90fps 正常约 1000 刻度/帧。这里只做观测，**不拿它判丢帧**（见下面 noteInTs 的说明）。
   tsDelta: 0,
@@ -335,6 +336,29 @@ function onEncodedFrame(data, isKey, inTs) {
   }
   if (waitKey) {
     if (!isKeyFrame) { S.dropped++; return; }
+  }
+
+  // 2026-11-10：解码队列保护（手机端实测踩过）。
+  // 解码器跟不上输入时 decodeQueueSize 会**无上限**增长：实测手机端攒到 1481 帧 ≈ 25 秒，
+  // 表现就是"画面越来越卡、HUD 显示静止"，而 rtp/丢包/PLI 全都正常 —— 光看那些指标发现不了。
+  // 这里到 30 帧（≈0.5 秒 @60fps）就主动重建解码器并等到下一个关键帧：
+  // 队列立刻清空、画面追上实时，代价是最多冻半个 GOP。页面那边会据此自动降帧率（见 rtc264Stats）。
+  {
+    let q = 0;
+    try { q = (decoder && decoder.decodeQueueSize) || 0; } catch (e) { q = 0; }
+    S.queue = q | 0;
+    if (q > 30) {
+      S.resyncs = (S.resyncs || 0) + 1;
+      post({ type: 'resync', queue: q, resyncs: S.resyncs });
+      try { if (decoder) decoder.close(); } catch (e9) { }
+      decoder = null;
+      decoderReady = false;
+      decoderIniting = false;
+      waitKey = true;
+      pendingKey = null;
+      S.dropped++;
+      return;
+    }
   }
 
   // 首帧时探测配置是否真的被支持（不支持的 codec 会静默卡住，不报错）
