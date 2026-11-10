@@ -927,7 +927,7 @@ try {
     'dsh-port.ps1', 'restart.ps1', 'restart.cmd',
     'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs',
     'package.json', 'pnpm-lock.yaml',
-    'capture.exe', 'capture.exe.bak', 'input.exe', 'audio.exe', 'sources.exe',
+    'capture.exe', 'input.exe', 'audio.exe', 'sources.exe',
     'lib\NAudio.Core.dll', 'lib\NAudio.Wasapi.dll', 'lib\NAudio.WinMM.dll',
     'icon-192.png', 'icon-512.png',
     'runtime\node.exe',
@@ -1601,7 +1601,7 @@ try {
         foreach ($oldExcl in @($script:InstallRoot, $inputDeployDir)) {
           if ($oldExcl) { try { Remove-MpPreference -ExclusionPath $oldExcl -ErrorAction SilentlyContinue } catch { } }
         }
-        $exclFiles = @('capture.exe', 'capture.exe.bak', 'input.exe', 'audio.exe', 'sources.exe', 'runtime\node.exe') |
+        $exclFiles = @('capture.exe', 'input.exe', 'audio.exe', 'sources.exe', 'runtime\node.exe') |
           ForEach-Object { Join-Path $script:InstallRoot $_ }
         $exclFiles += (Join-Path $inputElevDir 'input.exe')
         foreach ($ef in $exclFiles) {

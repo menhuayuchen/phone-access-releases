@@ -9,6 +9,11 @@
 //     靠 relay 候选也能连上；凭据每次启动随机生成，经 /offer 下发给页面；
 //  4. /health 给 Node 侧做会话/帧龄观测，用来按需启停 ffmpeg；
 //  5. HTTP 只监听 127.0.0.1（由 Node 同源代理），不再对外暴露信令端口。
+//
+// 编译（2026-11-10 起必须这样）：go build -trimpath -buildvcs=false -o rtc-h264.exe .
+//   `-trimpath` 不能省：不加的话 Go 会把构建机的绝对路径写进 exe（实测泄漏
+//   `C:/Users/<用户名>/.../go/src/...` 与 `D:/download/办共/...` 上千处），
+//   发布包里一搜就出来，属于隐私泄漏。
 package main
 
 import (

@@ -180,7 +180,6 @@ if ($IncludeInternalDocs) {
 # 生产目录里必须补进包的二进制与素材（相对路径保持不变）
 $prodFiles = @(
   'capture.exe',
-  'capture.exe.bak',
   'input.exe',
   'audio.exe',
   'sources.exe',
@@ -208,7 +207,7 @@ $requiredInStage = @(
   'install.ps1', 'install.cmd',
   'screen-server.mjs', 'page.mjs', 'rtc.mjs', 'decode.mjs', 'input.mjs', 'audio.mjs', 'sunshine-integration.ps1',
   'package.json', 'pnpm-lock.yaml',
-  'capture.exe', 'capture.exe.bak', 'input.exe', 'audio.exe', 'sources.exe',
+  'capture.exe', 'input.exe', 'audio.exe', 'sources.exe',
   'lib\NAudio.Core.dll', 'lib\NAudio.Wasapi.dll', 'lib\NAudio.WinMM.dll',
   # 2026-11-09：DXGI 抓屏所需的 SharpDX 依赖，缺一个 capture.exe 就起不来
   'SharpDX.dll', 'SharpDX.DXGI.dll', 'SharpDX.Direct3D11.dll', 'SharpDX.Mathematics.dll',
@@ -720,7 +719,7 @@ foreach ($f in $allStageFiles) {
   $name = $f.Name
   if ($f.Extension -in '.log', '.err', '.out') { [void]$forbiddenHits.Add($f.FullName); continue }
   if ($f.Extension -in '.pyc', '.pyo') { [void]$forbiddenHits.Add($f.FullName); continue }
-  if ($name -like '*.bak*' -and $name -ne 'capture.exe.bak') { [void]$forbiddenHits.Add($f.FullName); continue }
+  if ($name -like '*.bak*') { [void]$forbiddenHits.Add($f.FullName); continue }
   if ($name -like 'phone-qr*' -or $name -like 'screen-qr*' -or $name -eq 'qr-login.png' -or $name -eq 'qr-tailip.png' -or $name -eq 'tailnet-qr.png') {
     [void]$forbiddenHits.Add($f.FullName)
   }

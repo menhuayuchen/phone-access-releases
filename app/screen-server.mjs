@@ -240,7 +240,10 @@ const DEVICE = {
   name: 'good',
   caps: { maxFps: 0, maxKbps: 0, maxWidth: 0 },
   probes: {},
-  notes: []
+  notes: [],
+  // 2026-11-10：被审查压低之前的原值。审查可能误判（开机锁屏/远程桌面/采集被占），
+  // 误判后靠"真实出帧"把等级修回来，同时要把这里记的原值还回去 —— 否则客户要重启才恢复画质。
+  clamped: null
 };
 const DEVICE_CAPS = {
   0: null,                                             // good：用配置里的上限
@@ -255,9 +258,19 @@ function deviceCapsFor(level) {
 function deviceApplyCaps() {
   const c = (DEVICE.caps && DEVICE.caps.maxFps) ? DEVICE.caps : deviceCapsFor(DEVICE.level);
   let changed = false;
-  if (c.maxFps && H264_FPS > c.maxFps) { H264_FPS = c.maxFps; changed = true; }
-  if (c.maxKbps && H264_KBPS > c.maxKbps) { H264_KBPS = c.maxKbps; changed = true; }
+  if (!DEVICE.clamped) DEVICE.clamped = {};
+  if (c.maxFps && H264_FPS > c.maxFps) {
+    if (DEVICE.clamped.fps === undefined) DEVICE.clamped.fps = H264_FPS;
+    H264_FPS = c.maxFps;
+    changed = true;
+  }
+  if (c.maxKbps && H264_KBPS > c.maxKbps) {
+    if (DEVICE.clamped.kbps === undefined) DEVICE.clamped.kbps = H264_KBPS;
+    H264_KBPS = c.maxKbps;
+    changed = true;
+  }
   if (c.maxWidth && H264_W > c.maxWidth) {
+    if (DEVICE.clamped.width === undefined) DEVICE.clamped.width = H264_W;
     H264_W = evenDown(c.maxWidth);
     H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
     changed = true;
@@ -396,12 +409,30 @@ function h264MarkAvailable() {
   // 只修等级，不主动调高已经生效的画质（那是用户的选择），所以观感不会被突然改变。
   try {
     if (DEVICE && DEVICE.level >= 2) {
+      const oldCaps = DEVICE.caps || {};
       const lv = (H264_ENCODER === 'nvenc') ? 0 : 1;
       DEVICE.level = lv;
       DEVICE.name = (lv === 0 ? 'good' : 'basic');
       DEVICE.caps = deviceCapsFor(lv);
       DEVICE.notes = (DEVICE.notes || []).concat(['实际出帧成功，采集判定已自动修正为 ' + DEVICE.name]);
-      console.log('[device] 实际出帧成功：设备等级从 fallback 修正为 ' + DEVICE.name);
+      // 2026-11-10：把误判时压低的画质还回去 —— 只还"还没被用户/页面改过"的字段
+      // （当前值仍等于我们强制写进去的那个值才还原，避免覆盖用户的选择）。
+      const cl = DEVICE.clamped;
+      let restored = false;
+      try {
+        if (cl) {
+          if (cl.fps !== undefined && H264_FPS === oldCaps.maxFps) { H264_FPS = Math.min(fpsCap, cl.fps); restored = true; }
+          if (cl.kbps !== undefined && H264_KBPS === oldCaps.maxKbps) { H264_KBPS = Math.min(kbpsCap, cl.kbps); restored = true; }
+          if (cl.width !== undefined && H264_W === oldCaps.maxWidth) {
+            H264_W = Math.min(CAP_W, cl.width);
+            H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+            restored = true;
+          }
+          DEVICE.clamped = null;
+        }
+      } catch { }
+      console.log('[device] 实际出帧成功：设备等级从 fallback 修正为 ' + DEVICE.name
+        + (restored ? ('，画质已恢复为 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps') : ''));
     }
   } catch { }
 }
@@ -5309,6 +5340,8 @@ async function handler(req, res) {
       probes: DEVICE.probes,
       notes: DEVICE.notes,
       at: DEVICE.at,
+      // 被审查压低之前的原值（null = 没压过；出帧自愈后会清空）
+      clamped: DEVICE.clamped,
       // 当前实际生效的参数（可能已经被设备上限压过）
       applied: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS },
       ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }
