@@ -121,7 +121,14 @@
                     "enabled":  true,
                     "title":  "关于",
                     "note":  "",
-                    "showMachineCode":  true
+                    "showMachineCode":  true,
+                    "bili":  {
+                                 "_说明":  "作者 B 站主页（教程视频）。url 用直连 space 地址最稳：b23.tv 短链会多一次 302 且带分享会话参数、可能失效。enabled=false 就不显示这一块。",
+                                 "enabled":  true,
+                                 "name":  "白琉瑾",
+                                 "url":  "https://space.bilibili.com/3546961263200358",
+                                 "note":  "下载 / 安装 / 使用教程都在这里，有更新也会发视频。"
+                             }
                 },
     "_security说明":  "自用版的便利/安全取舍（2026-11-07）。unlockOnWake=true：关闭「唤醒时要求登录」并去掉屏保安全锁定，唤醒后直接回桌面，手机不用输 Windows 密码就能操作。代价：走到电脑前的人也能直接用（发布版由 mark-release.ps1 强制改成 false；缺省 false）。",
     "security":  {

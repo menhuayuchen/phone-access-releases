@@ -4354,6 +4354,27 @@ bindImg(img);
       + '</div></div>';
   }
 
+  // ---- 作者 B 站主页（2026-11-10 加）--------------------------------------------
+  // 教程视频（下载 / 安装 / 使用）都放在这里。用**直连**的 space 地址，不用 b23.tv 短链：
+  // 直连少一次 302 跳转（更快），也不带分享会话参数、不会过期。
+  // 内容全部来自 product.config.json 的 support.bili —— 以后改文案不用动代码。
+  function biliBlockHtml(lic) {
+    const b = (lic.support && lic.support.bili) || null;
+    if (!b || b.enabled === false) return '';
+    const url = String(b.url || '').trim();
+    if (!/^https:\/\/\S+$/i.test(url)) return '';
+    const name = String(b.name || '').trim() || 'B 站';
+    const note = String(b.note || '').trim();
+    return '<div style="margin:16px 0 0;padding-top:14px;border-top:1px solid #23252c">'
+      + '<div style="color:#8b9098;font-size:12px;margin-bottom:7px">教程视频</div>'
+      + '<a href="' + esc(url) + '" target="_blank" rel="noopener noreferrer" '
+      + 'style="display:inline-flex;align-items:center;gap:8px;background:#2f6feb;color:#fff;'
+      + 'text-decoration:none;border-radius:8px;padding:9px 14px;font-size:13px">'
+      + '打开 B 站主页（' + esc(name) + '）</a>'
+      + (note ? '<div style="color:#6b7078;font-size:11.5px;line-height:1.6;margin-top:8px">' + esc(note) + '</div>' : '')
+      + '</div>';
+  }
+
   // ---- 「分享给朋友」（2026-10-30 加）------------------------------------------
   // 和「支持/购买」放在同一个面板里：产品要推广，但**绝不能**把当前访问地址（带 k= 的钥匙）转出去。
   // 分享文案来自 product.config.json 的 share.text，{link} 会被替换成 share.link。
@@ -7393,6 +7414,7 @@ bindImg(img);
         ? '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">这台电脑已经装好许可证（可选项）。</div>'
         : '<div style="color:#6b7078;font-size:11.5px;margin-top:10px">许可证是可选项：不装不影响任何功能；需要时在「设置 → 许可证」里粘贴。</div>')
       + '<div style="margin-top:16px">' + supportHtml(lic, true) + '</div>'
+      + biliBlockHtml(lic)
       + '<div style="color:#4f5561;font-size:10.5px;margin-top:14px">页面版本 ' + PA_PAGE_VER
       + '（如果你刚更新过电脑端却还看到老问题，多半是手机缓存了旧页面：下拉刷新或「清除缓存」一次）</div>'
       + shareBlockHtml(lic);
@@ -8219,7 +8241,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.1';
+export const PAGE_VER = '2026-11-10.2';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
