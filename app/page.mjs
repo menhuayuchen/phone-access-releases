@@ -2340,7 +2340,29 @@ function rtc264Retry(why) {
 function rtc264Wanted() {
   let p = null;
   try { p = new URLSearchParams(location.search).get('rtc264'); } catch (e) { }
-  if (p === '0') return false;
+  if (p === '0') {
+    // 2026-11-10（用户报"两台设备设置不同 → 黑屏且不恢复，必须杀掉重进"）：
+    // 这个标记原来是**永久**的 —— 只要回落过一次，地址里的 rtc264=0 就一直留着
+    // （"添加到主屏幕"甚至带着它重启），页面永远走不回 WebRTC → 长久黑屏。
+    // 现在给它 10 分钟有效期：过期自动清掉、重新尝试 WebRTC。
+    const TTL = 10 * 60 * 1000;
+    let at = 0;
+    try { at = Number(sessionStorage.getItem('rtc264OffAt') || 0); } catch (e) { }
+    if (!at) {
+      at = Date.now();
+      try { sessionStorage.setItem('rtc264OffAt', String(at)); } catch (e) { }
+    }
+    if (Date.now() - at < TTL) return false;
+    try {
+      const u = new URL(location.href);
+      u.searchParams.delete('rtc264');
+      history.replaceState(null, '', u.toString());
+      sessionStorage.removeItem('rtc264OffAt');
+      setNote('已经过了 10 分钟，重新尝试 WebRTC 直连', 4000);
+    } catch (e) { }
+    return !!window.RTCPeerConnection;
+  }
+  try { sessionStorage.removeItem('rtc264OffAt'); } catch (e) { }
   // 2026-11-06 修正：**http（非安全上下文）也走 WebRTC264**。
   // 之前的判断是「http 下 WebRTC 连不上，直接走 WS」—— 实测是错的：
   //   http 下 RTCPeerConnection 正常、ICE 能收齐、<video> 能播 MediaStream；
@@ -7478,7 +7500,11 @@ bindImg(img);
       if (copyText(location.href)) { cu.textContent = '已复制'; setTimeout(() => { cu.textContent = '复制完整地址'; }, 1500); }
     });
     const rl = box.querySelector('#setReload');
-    if (rl) rl.addEventListener('click', () => location.reload());
+    // 2026-11-10：手动重连要连退避标记一起清掉，否则会一直停在 WS 回落路径上。
+    if (rl) rl.addEventListener('click', () => {
+      try { sessionStorage.removeItem('rtc264OffAt'); } catch (e) { }
+      location.reload();
+    });
 
     // 检查更新：客户主动点才发一次请求，平时不联网
     const ck = box.querySelector('#setCheckUpd');
@@ -8504,6 +8530,8 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
     var rc = document.getElementById('paReconnect');
     if (rc) rc.addEventListener('click', function (e) {
       e.preventDefault(); e.stopPropagation();
+      // 2026-11-10：重连先清掉 WebRTC 退避标记（否则会一直停在 WS 回落路径上）
+      try { sessionStorage.removeItem('rtc264OffAt'); } catch (err0) { }
       try { location.reload(); } catch (err) { }
     });
   } catch (e) { }
@@ -8513,7 +8541,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.11';
+export const PAGE_VER = '2026-11-10.12';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

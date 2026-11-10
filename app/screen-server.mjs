@@ -5298,6 +5298,14 @@ async function handler(req, res) {
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
     req.on('end', () => {
+      // 2026-11-10（用户报"两台设备设置不同 → 崩/长久黑屏"）：
+      // 先记下当前生效值，最后只有**真的变了**才重启编码器。
+      // 原来是无条件 kill+spawn：两台设备各调一次画质就互相打断一次，
+      // 谁先谁后都在重启，画面反复黑 1~2 秒，弱网下很容易把接收端拖进重试/回落。
+      const __before = {
+        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF,
+        mon: H264_MON, rect: JSON.stringify(H264_RECT || null), native: H264_NATIVE
+      };
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
       const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width), mon = Number(m.mon);
@@ -5372,9 +5380,21 @@ async function handler(req, res) {
       if (H264_RECT) H264_NATIVE = false;   // 选了窗口/局部区域时必须走裁剪滤镜
       // 重启编码器让新参数生效。RTC264 会话没有 WS 观众，也必须重启，
       // 否则调码率后编码器停着不回来（以前只在有 WS 观众时重启）。
-      if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
-      h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
-      if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
+      // 2026-11-10：但**只有参数真的变了才重启** —— 幂等。两台设备各自下发画质时，
+      // 后一台如果只是"重复告诉服务端它已经是这个档位"，就不该再打断前一台的画面。
+      const __after = {
+        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF,
+        mon: H264_MON, rect: JSON.stringify(H264_RECT || null), native: H264_NATIVE
+      };
+      let __same = true;
+      for (const kk of Object.keys(__before)) { if (__before[kk] !== __after[kk]) { __same = false; break; } }
+      if (__same) {
+        try { console.log('h264: 画质未变化，跳过重启（' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps）'); } catch (e) { }
+      } else {
+        if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
+        h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
+        if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
+      }
       // 2026-11-10：设备审查兜底 —— 手调也不能超过这台机器能承受的上限（只降不升）
       try { deviceApplyCaps(); } catch { }
       // 2026-11-10：把最终生效的画质落盘（当前生效值 = 用户/页面最后的选择，含设备审查封顶的结果）。
@@ -5384,7 +5404,7 @@ async function handler(req, res) {
       // 但页面"自动降档"发来的请求带 auto:true —— 那种临时降档**不能落盘**（否则一次瞬时卡顿
       // 会被永久记住，把客户冤枉地压成低画质；实测这台手机单独跑 121fps/54Mbps 完全正常）。
       try { if (m.auto !== true) saveH264QualityState(); } catch { }
-      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
+      qreply({ ok: true, changed: !__same, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
         device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
     });
     return;
