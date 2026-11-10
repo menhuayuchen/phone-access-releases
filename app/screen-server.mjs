@@ -5114,9 +5114,10 @@ async function handler(req, res) {
           + ' rtp=' + n(s.rtp) + ' dec=' + n(s.decoded) + ' drop=' + n(s.dropped)
           + ' cfg=' + n(s.cfg) + ' sps=' + n(s.spsChanges) + ' q=' + n(s.queue)
           + ' gaps=' + (n(s.gaps)) + ' ts=' + n(s.tsEma)
+          + ' lost=' + n(m.lost) + ' pli=' + n(m.pli)
           + ' canvas=' + n(m.cw) + 'x' + n(m.ch) + ' vid=' + n(m.vw) + 'x' + n(m.vh)
           + ' fps=' + n(m.fps) + ' mbps=' + n(m.mbps) + ' buf=' + n(m.buf) + 'ms'
-          + ' err=' + String(m.err || '').slice(0, 120)
+          + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));
       } catch { }
     });

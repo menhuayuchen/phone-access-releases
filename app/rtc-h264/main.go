@@ -38,7 +38,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const sidecarVersion = "0.5.1"   // 2026-11-10：丢帧置 needKey + gap 标记（上游丢帧也能让接收端等关键帧）
+const sidecarVersion = "0.5.2"   // 2026-11-10：丢帧置 needKey + gap 标记 + NACK 缓存 1024->4096
 
 // 2026-11-08 P1b：两轨共用同一个时钟原点（epoch）——视频按"帧到达侧车的时刻"、
 // 音频按"内容累计时间 + epoch 起点"。之前视频轨用 TrackLocalStaticSample，
@@ -926,12 +926,12 @@ func main() {
 		logf("register interceptors: %v", err)
 		os.Exit(1)
 	}
-	nackFactory, nerr := nack.NewResponderInterceptor(nack.ResponderSize(1024))
+	nackFactory, nerr := nack.NewResponderInterceptor(nack.ResponderSize(4096))
 	if nerr != nil {
 		logf("nack responder: %v", nerr)
 	} else {
 		ir.Add(nackFactory)
-		logf("NACK responder 已启用（缓存 1024 包，丢包可重传）")
+		logf("NACK responder 已启用（缓存 4096 包，丢包可重传）")
 	}
 	api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se), webrtc.WithInterceptorRegistry(ir))
 

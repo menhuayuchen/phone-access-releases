@@ -1392,6 +1392,43 @@ const WC264 = {
 try { window.__wc264 = WC264; } catch (e) { }
 try { window.__rtc264 = RTC264; } catch (e) { }   // 诊断/端到端测试用
 
+// ---- 丢包快速反应（2026-11-10）--------------------------------------------------
+// 为什么单独做一个 600ms 的轮询：原来丢包判断搭在 2 秒一次的统计里，等它发现，
+// 手机上花屏已经显示 1~2 秒了。这里只看 packetsLost/pliCount，一涨就通知 Worker
+// 停喂、等下一个关键帧（GOP 0.5 秒）。**不改任何编码参数，画质完全不受影响**，
+// 只是把"花一片"的时长尽可能压短。
+//
+// 注意：getStats 在安卓上不是免费的，所以 ①只在 WebCodecs 生效且页面可见时跑；
+// ②上一次没返回就跳过这一轮（用 _busy 防重入）；③只读 inbound-rtp 一行。
+let _wcLossTimer = null;
+function wc264WatchLoss() {
+  if (_wcLossTimer) return;
+  let busy = false;
+  _wcLossTimer = setInterval(function () {
+    if (busy) return;
+    const R = RTC264, w = window.__wc264;
+    if (!R.pc || document.hidden) return;
+    if (!w || !w.on || !w.worker) return;
+    busy = true;
+    R.pc.getStats().then(function (st) {
+      let lost = 0, pli = 0;
+      st.forEach(function (r) {
+        if (r.type === 'inbound-rtp' && r.kind === 'video') { lost = r.packetsLost || 0; pli = r.pliCount || 0; }
+      });
+      w.lost = lost; w.pli = pli;
+      if (w._lastLost === undefined) { w._lastLost = lost; busy = false; return; }
+      if (lost > w._lastLost) {
+        const d = lost - w._lastLost;
+        w._lastLost = lost;
+        w.gaps = (w.gaps || 0) + 1;
+        try { w.worker.postMessage({ type: 'gap' }); } catch (e) { }
+        try { console.log('wc264: 丢包 +' + d + '（累计 ' + lost + '）→ 停喂等关键帧'); } catch (e2) { }
+      }
+      busy = false;
+    }).catch(function () { busy = false; });
+  }, 600);
+}
+
 // ---- 码率自动（可选，默认关）------------------------------------------------
 // 设计：设置里「自动」按钮，默认不开启；开启后按 WebRTC 丢包自动升降码率
 // （6–20 Mbps），只在 WebRTC264 通道生效。手动码率永远优先——用户一选固定值就退出自动。
@@ -1643,6 +1680,7 @@ async function startRtc264() {
     // 放在 setRemoteDescription 之后（此时 receivers 已按 offer 创建）、setLocalDescription 之前。
     // 之前放在 ontrack 里太晚了 —— 那时 RTP 已经在往浏览器解码器送，transform 挂上去收不到流。
     try { tryStartWC264(pc); } catch (e0) { }
+    try { wc264WatchLoss(); } catch (e0b) { }
     const ans = await pc.createAnswer();
     await pc.setLocalDescription(ans);
     await new Promise(function (r) {
@@ -1696,7 +1734,7 @@ async function rtc264Stats() {
   try {
     const st = await pc.getStats();
     const cands = {};
-    let br = 0, fr = 0, fd = 0, path = '', jb = 0, jbc = 0, lost = 0;
+    let br = 0, fr = 0, fd = 0, path = '', jb = 0, jbc = 0, lost = 0, pli = 0;
     let bestPair = null, bestBytes = -1;
     st.forEach(function (r) { if (r.type === 'local-candidate' || r.type === 'remote-candidate') cands[r.id] = r; });
     st.forEach(function (r) {
@@ -1704,6 +1742,7 @@ async function rtc264Stats() {
         br = r.bytesReceived || 0; fr = r.framesReceived || 0; fd = r.framesDecoded || 0;
         jb = r.jitterBufferDelay || 0; jbc = r.jitterBufferEmittedCount || 0;
         lost = r.packetsLost || 0;
+        pli = r.pliCount || 0;
       }
       // 原来取「最后一条 succeeded 的 candidate-pair」，同时存在多条通路时会随机显示成中继/直连；
       // 现在优先取浏览器标记的 selected 通路，没标记就取实际流量最大的那条（2026-11-06 体检）。
@@ -1828,18 +1867,14 @@ async function rtc264Stats() {
     // 2026-11-10：丢包 → 告诉 WebCodecs 接收端"参考链断了，等下一个关键帧再解"。
     // 我们自己的解码器看不到 RTP 序号（transform 拿到的是完整帧），网络丢包时它会把
     // 依赖丢失帧的那些 P 帧照旧解下去 —— 结果就是一整片花屏，直到下一个 IDR（GOP 0.5 秒）。
-    // 浏览器自带管线遇到缺包会直接丢弃这些帧，我们绕过了它，所以得自己补这一刀：
-    // 把浏览器的 packetsLost 当"断链信号"，让 Worker 停喂直到下一个 IDR（最多冻 0.5 秒，不出花屏）。
+    // 浏览器自带管线遇到缺包会直接丢弃这些帧，我们绕过了它，所以得自己补这一刀。
+    //
+    // 注意：真正干活的是下面的 wc264WatchLoss()（600ms 一次，反应快得多）。
+    // 这里只做兜底同步（它 2 秒才跑一次，等它发现花屏早就显示 1~2 秒了），
+    // 所以不再重复计数、也不再重复发消息，只把基线对上，避免快速轮询那边误判。
     try {
       const _wc = window.__wc264;
-      if (_wc && _wc.on && _wc.worker) {
-        if (_wc._lastLost === undefined) _wc._lastLost = lost;
-        if (lost > _wc._lastLost) {
-          _wc._lastLost = lost;
-          _wc.gaps = (_wc.gaps || 0) + 1;
-          try { _wc.worker.postMessage({ type: 'gap' }); } catch (e0) { }
-        }
-      }
+      if (_wc && _wc.on) _wc._lastLost = lost;
     } catch (e) { }
     // 2026-11-10：缓冲自愈。Chrome/WebKit 接收端的 jitter buffer 在"零丢包、零抖动、速率匹配"
     // 的情况下仍会缓慢膨胀（实测 60fps 与 30fps 涨速一样，与帧率/分辨率/网络无关），
@@ -1954,7 +1989,11 @@ async function rtc264Stats() {
           fps: Math.round((R.qFps || 0) * 10) / 10,
           mbps: Math.round((R.qMbps || 0) * 10) / 10,
           buf: Math.round(_wcBufOverride >= 0 ? _wcBufOverride : bufMs),
-          err: String((_wd.lastErr || '')).slice(0, 120),
+          // 2026-11-10：丢包/PLI 才是"花屏"的直接线索（gaps 只是触发了几次停喂）。
+          // err 改成给**末尾**一段：lastErr 前面全是启动期的 diag，解码错误恰好会被截掉。
+          lost: (_wd.lost !== undefined ? _wd.lost : lost),
+          pli: pli,
+          err: String((_wd.lastErr || '')).slice(-160),
           ua: navigator.userAgent
         });
         fetch('/wc264-diag?k=' + encodeURIComponent(KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, cache: 'no-store' })
