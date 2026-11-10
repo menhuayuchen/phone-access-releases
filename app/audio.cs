@@ -328,12 +328,28 @@ internal sealed class AudioStats
             _sumSquares = 0.0;
         }
     }
+
+    // 2026-11-10：发送侧"补零"的采样数。
+    // 它直接等于"音频内容比真实时间慢了多少"：稳态下应该接近 0；
+    // 如果每秒涨 60 个采样，就是 1.25‰ 的漂移（每 800 秒偏 1 秒）。
+    private long _paddedSamples;
+
+    public void AddPadded(int samples)
+    {
+        if (samples <= 0) return;
+        lock (_sync) { _paddedSamples += samples; }
+    }
+
+    public long TakePadded()
+    {
+        lock (_sync) { long v = _paddedSamples; _paddedSamples = 0; return v; }
+    }
 }
 
 // Streaming linear-interpolation resampler, one instance per channel pair.
 internal sealed class LinearResampler
 {
-    private readonly double _step;
+    private double _step;   // 2026-11-10：改为可写，供 SetStep 吸收时钟漂移
     private float[] _left = new float[4096];
     private float[] _right = new float[4096];
     private int _count;
@@ -342,6 +358,13 @@ internal sealed class LinearResampler
     public LinearResampler(int sourceRate, int targetRate)
     {
         _step = (double)sourceRate / targetRate;
+    }
+
+    // 2026-11-10：允许运行中微调"输入/输出"比，用来吸收声卡采样时钟与系统时钟的频差。
+    // 只接受 ±0.5% 的范围：配置/测量出错也不会把音频拉变形。
+    public void SetStep(double step)
+    {
+        if (step > 0.995 && step < 1.005) _step = step;
     }
 
     public void Push(float[] left, float[] right, int frames)
@@ -411,6 +434,18 @@ internal sealed class PcmConverter
     private float[] _outRight = new float[4096];
     private byte[] _pcm = new byte[8192];
 
+    // 2026-11-10：48k 源也要过一层"时钟漂移吸收"重采样（step 极慢地逼近 rate/48000）。
+    // 实测这台机器的音频秒率与系统时钟差约 ±1.2‰，不吸收的话音频内容会每秒漂 ~10ms，
+    // 表现就是"越听越不同步、几分钟跳一下"。
+    private LinearResampler _driftResampler;
+    private double _driftStep = 1.0;
+    private double _driftRate = TargetRate;
+    private long _driftFrames;
+    private long _driftTicks;
+
+    public double DriftStep { get { return _driftStep; } }
+    public double DriftRate { get { return _driftRate; } }
+
     public PcmConverter(WaveFormat format, AudioRing ring)
     {
         _sourceChannels = format.Channels;
@@ -424,6 +459,8 @@ internal sealed class PcmConverter
         _ring = ring;
         if (_sourceRate != TargetRate)
             _resampler = new LinearResampler(_sourceRate, TargetRate);
+        else
+            _driftResampler = new LinearResampler(TargetRate, TargetRate);   // step 从 1.0 起，运行时极慢微调
     }
 
     public void Process(byte[] buffer, int bytesRecorded)
@@ -434,6 +471,17 @@ internal sealed class PcmConverter
 
         EnsureSourceBuffers(frames);
         Decode(buffer, frames);
+
+        if (_driftResampler != null)
+        {
+            MeasureDrift(frames);
+            int capD = (int)Math.Ceiling(frames * 1.01) + 16;
+            EnsureOutputBuffers(capD);
+            _driftResampler.Push(_left, _right, frames);
+            int producedD = _driftResampler.Process(_outLeft, _outRight, capD);
+            if (producedD > 0) EmitPcm(_outLeft, _outRight, producedD);
+            return;
+        }
 
         int outFrames;
         float[] outLeft;
@@ -455,16 +503,45 @@ internal sealed class PcmConverter
         }
 
         if (outFrames <= 0) return;
-        int byteCount = outFrames * TargetChannels * 2;
-        EnsurePcmBuffer(byteCount);
+        EmitPcm(outLeft, outRight, outFrames);
+    }
 
+    // 把 float 立体声写成 16bit PCM 塞进 ring。
+    private void EmitPcm(float[] left, float[] right, int frames)
+    {
+        int byteCount = frames * TargetChannels * 2;
+        EnsurePcmBuffer(byteCount);
         int p = 0;
-        for (int i = 0; i < outFrames; i++)
+        for (int i = 0; i < frames; i++)
         {
-            WritePcm16(_pcm, p, outLeft[i]); p += 2;
-            WritePcm16(_pcm, p, outRight[i]); p += 2;
+            WritePcm16(_pcm, p, left[i]); p += 2;
+            WritePcm16(_pcm, p, right[i]); p += 2;
         }
         _ring.Write(_pcm, 0, byteCount);
+    }
+
+    // 每 ~5 秒测一次"设备实际每秒投递多少帧"，用它把 step 极慢地逼近 rate/48000。
+    // 步长 5% → 时间常数约 100 秒：重采样比几乎是常数，不会有可听的"揉"痕迹。
+    private void MeasureDrift(int frames)
+    {
+        _driftFrames += frames;
+        long now = Stopwatch.GetTimestamp();
+        if (_driftTicks == 0) { _driftTicks = now; return; }
+        double elapsed = (now - _driftTicks) / (double)Stopwatch.Frequency;
+        if (elapsed < 5.0) return;
+
+        double rate = _driftFrames / elapsed;
+        if (rate > 40000.0 && rate < 56000.0)
+        {
+            _driftRate = _driftRate + (rate - _driftRate) * 0.05;
+            double target = _driftRate / TargetRate;
+            if (target < 0.995) target = 0.995;
+            if (target > 1.005) target = 1.005;
+            _driftStep = _driftStep + (target - _driftStep) * 0.05;
+            _driftResampler.SetStep(_driftStep);
+        }
+        _driftFrames = 0;
+        _driftTicks = now;
     }
 
     private void Decode(byte[] buffer, int frames)
@@ -556,7 +633,28 @@ internal sealed class AudioRunner
     // 现在只留 200ms 余量，并在发送前再裁到 120ms（见 SendLoop），延迟恒定不累积。
     private readonly AudioRing _ring = new AudioRing(TargetRate * TargetChannels * 2 / 5); // 200 ms
     private const int MaxRingBytes = TargetRate * TargetChannels * 2 * 12 / 100;           // 120 ms 上限
+    // 2026-11-10：Windows 默认定时器精度 15.6ms，Thread.Sleep(9) 实际会睡 15ms 以上，
+    // 10ms 的音频节拍就变成"睡 15ms → 一次补发 2~3 块"的突发；接收端 NetEq 为此要多缓冲，
+    // 也是一部分"声音比画面晚"的来源。开启 1ms 精度后节拍变平滑（实测块间隔中位数 15ms -> 10ms）。
+    [System.Runtime.InteropServices.DllImport("winmm.dll", EntryPoint = "timeBeginPeriod")]
+    private static extern uint TimeBeginPeriod(uint milliseconds);
+
+    private static void EnableTimerResolution()
+    {
+        try
+        {
+            uint ret = TimeBeginPeriod(1);
+            Logger.Write("timer: timeBeginPeriod(1) ret=" + ret);
+        }
+        catch (Exception ex)
+        {
+            Logger.Write("timer: timeBeginPeriod 失败（不影响功能）：" + ex.Message);
+        }
+    }
+
     private readonly AudioStats _stats = new AudioStats();
+    private volatile PcmConverter _converter;   // 只给统计行读 rate/step 用
+    private long _lastDroppedBytes;
     private readonly long _chunkTicks = (long)(Stopwatch.Frequency * ChunkMilliseconds / 1000.0);
     private volatile bool _running = true;
 
@@ -600,6 +698,7 @@ internal sealed class AudioRunner
                      + " bytes (" + ChunkMilliseconds + " ms), protocol=[uint32 LE len][pcm]");
         Logger.Write("audio: silence padding enabled; reconnect loop enabled; stats every 30s");
 
+        EnableTimerResolution();   // 2026-11-10：1ms 定时器精度，让 10ms 音频节拍平滑
         AudioRunner runner = new AudioRunner(pipeName);
         runner.Start();
 
@@ -751,7 +850,11 @@ internal sealed class AudioRunner
         {
             _ring.TrimTo(MaxRingBytes);   // 先裁掉积压，保证"听到的是刚刚的声音"
             int read = _ring.Read(packet, 4, ChunkBytes);
-            if (read < ChunkBytes) Array.Clear(packet, 4 + read, ChunkBytes - read);
+            if (read < ChunkBytes)
+            {
+                Array.Clear(packet, 4 + read, ChunkBytes - read);
+                _stats.AddPadded((ChunkBytes - read) / 4);   // 补了几个采样的静音 = 内容落后了多少
+            }
 
             _stats.AddChunk(packet, 4, ChunkBytes);
 
@@ -871,6 +974,7 @@ internal sealed class AudioRunner
                 ManualResetEvent stopped = new ManualResetEvent(false);
 
                 PcmConverter converter = new PcmConverter(format, _ring);
+                _converter = converter;
                 capture.DataAvailable += delegate (object sender, WaveInEventArgs e)
                 {
                     try
@@ -948,9 +1052,20 @@ internal sealed class AudioRunner
             double rms;
             long errors;
             _stats.TakeWindow(out chunks, out rms, out errors);
+            long padded = _stats.TakePadded();
+            long droppedNow = _ring.DroppedBytes;
+            long dropDelta = droppedNow - _lastDroppedBytes;
+            _lastDroppedBytes = droppedNow;
+            PcmConverter conv = _converter;
+            double convStep = conv != null ? conv.DriftStep : 1.0;
+            double convRate = conv != null ? conv.DriftRate : 0.0;
             Logger.Write("rms=" + rms.ToString("0.0000", CultureInfo.InvariantCulture)
                          + " chunks=" + chunks
-                         + " err=" + errors);
+                         + " err=" + errors
+                         + " rate=" + convRate.ToString("0.0", CultureInfo.InvariantCulture)
+                         + " step=" + convStep.ToString("0.000000", CultureInfo.InvariantCulture)
+                         + " pads=" + padded
+                         + " dropB=" + dropDelta);
         }
     }
 }
