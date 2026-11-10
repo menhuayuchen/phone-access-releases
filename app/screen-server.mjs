@@ -168,9 +168,13 @@ const H264_ENABLED = cfgH264.enabled !== false && fileExists(FFMPEG_EXE);
 // 2026-11-09 自用实验版：解除帧率/码率上限。实测本机 ddagrab 能抓 210fps、NVENC 理论 1000+fps。
 // 安全：只认 h264.experiment.enabled===true；发布版由 mark-release.ps1 强制关掉，客户拿不到这条路径。
 const expCfg = (cfgH264 && cfgH264.experiment && typeof cfgH264.experiment === 'object') ? cfgH264.experiment : {};
-const expOn = expCfg.enabled === true;
-const fpsCap = expOn ? Math.min(240, Math.max(10, Number(expCfg.fps) || 240)) : 60;
-const kbpsCap = expOn ? Math.min(200000, Math.max(2000, Number(expCfg.kbps) || 100000)) : 40000;
+// 2026-11-10（1.0.21）：画质上限不再按"自用/发布"分流 —— 两条轨道读同一份配置。
+// 客户机器扛不住的问题改由下面的**设备审查**（DEVICE）兜底：硬件不够就自动封顶，
+// 而不是靠"发布版偷偷把上限降到 60fps/40000kbps"。
+// 发布通道依旧不挂 /exp/* 实验接口（那是另一件事，跟画质上限无关）。
+// 注意 cap 仍然保留，供下面各处 clamp 用。
+const fpsCap = Math.min(240, Math.max(10, Number(expCfg.fps) || 240));
+const kbpsCap = Math.min(200000, Math.max(2000, Number(expCfg.kbps) || 100000));
 let H264_FPS = Math.max(10, Math.min(fpsCap, Number(cfgH264.fps) || 30));
 let H264_KBPS = Math.max(2000, Math.min(kbpsCap, Number(cfgH264.kbps) || 12000));
 let H264_RECT = null;
@@ -221,6 +225,152 @@ if (H264_ENABLED && H264_ENCODER === 'nvenc') {
 H264_NATIVE = H264_ZEROCOPY && H264_W >= CAP_W && H264_W >= 2560;
 console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）') + ' 零拷贝=' + (H264_ZEROCOPY ? '可用' : '不可用（走过滤器）'));
 
+// ---- 设备审查（2026-11-10，1.0.21）-----------------------------------------
+// 为什么要有：1.0.21 起发布版和自用版用**同一套**画质上限（帧率/码率/分辨率）。
+// "客户机器扛不住"不能再靠发布版偷偷降档来兜，必须由这台机器自己判断能跑多高：
+//   · 没有可用的硬件编码 → 只能软件编码，帧率/码率/宽度都要往下压，否则一开清晰模式就卡死；
+//   · 桌面复制采集不可用（虚拟机 / 远程桌面 / 锁屏 / 旧显卡驱动）→ 干脆别启动编码器，
+//     让页面走低频画面；否则就是反复 ffmpeg 秒退、黑屏、等很久才恢复（这个坑踩过很多次）。
+// 原则：**只降档、不阻断**。所有探针都有超时、全部包在 try 里，任何一条探不通只会降档，
+// 绝不会让服务起不来；审查本身抛异常就按 good 处理、什么都不改。
+const DEVICE = {
+  at: 0,
+  done: false,
+  level: 0,                 // 0=good（硬件编码+采集都可用） 1=basic（只能软件编码） 2=fallback（采集/组件不可用）
+  name: 'good',
+  caps: { maxFps: 0, maxKbps: 0, maxWidth: 0 },
+  probes: {},
+  notes: []
+};
+const DEVICE_CAPS = {
+  0: null,                                             // good：用配置里的上限
+  1: { maxFps: 30, maxKbps: 12000, maxWidth: 1600 },   // 软件编码：3600 万像素/秒、12Mbps、1600 宽
+  2: { maxFps: 30, maxKbps: 8000, maxWidth: 1280 }     // 采集不可用 / 缺组件
+};
+function deviceCapsFor(level) {
+  if (level <= 0) return { maxFps: fpsCap, maxKbps: kbpsCap, maxWidth: CAP_W };
+  return DEVICE_CAPS[level] || DEVICE_CAPS[2];
+}
+// 把当前画质压回设备能承受的范围（只在超限时动，返回是否改过）
+function deviceApplyCaps() {
+  const c = (DEVICE.caps && DEVICE.caps.maxFps) ? DEVICE.caps : deviceCapsFor(DEVICE.level);
+  let changed = false;
+  if (c.maxFps && H264_FPS > c.maxFps) { H264_FPS = c.maxFps; changed = true; }
+  if (c.maxKbps && H264_KBPS > c.maxKbps) { H264_KBPS = c.maxKbps; changed = true; }
+  if (c.maxWidth && H264_W > c.maxWidth) {
+    H264_W = evenDown(c.maxWidth);
+    H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+    changed = true;
+  }
+  if (changed) {
+    try { console.log('[device] 画质已按设备能力封顶：' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps（设备等级 ' + DEVICE.name + '）'); } catch { }
+  }
+  return changed;
+}
+// 采集探针：只验证"能不能抓到并编出一帧"，走的是**生产同款过滤器路径**（hwdownload+scale+NvENC），
+// 低分辨率（640 宽）跑 3 帧，6 秒硬超时。
+// 踩过的坑：一开始写 `-frames:v 1 -f null -` 不带编码器，本机这版 ffmpeg 把 wrapped_avframe 编码器
+// 裁掉了，于是 null 输出选不到编码器 → 探针**永远失败** → 所有客户都被判成"采集不可用"。
+// 所以这里必须显式指定编码器。
+function deviceProbeDdagrab() {
+  return new Promise((resolve) => {
+    if (!H264_ENABLED) return resolve({ ok: false, why: '清晰模式未启用或缺编码组件' });
+    const enc = (H264_ENCODER === 'nvenc')
+      ? ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-b:v', '2000K']
+      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-b:v', '2000K'];
+    const args = ['-hide_banner', '-loglevel', 'error', '-nostdin',
+      '-f', 'lavfi', '-i', 'ddagrab=framerate=30:draw_mouse=0:output_idx=0',
+      '-filter_complex', '[0:v]hwdownload,format=bgra,scale=640:-2[v]', '-map', '[v]',
+      '-pix_fmt', 'nv12', ...enc, '-frames:v', '3', '-f', 'null', '-'];
+    let fin = false;
+    let child = null;
+    let timer = null;
+    const done = (v) => {
+      if (fin) return;
+      fin = true;
+      try { if (timer) clearTimeout(timer); } catch { }
+      resolve(v);
+    };
+    try {
+      child = execFile(FFMPEG_EXE, args, { windowsHide: true, timeout: 6000 }, (err, so, se) => {
+        if (err) done({ ok: false, why: String((se || err.message || '')).trim().slice(0, 160) || 'ffmpeg 采集失败' });
+        else done({ ok: true, why: '' });
+      });
+    } catch (e) { done({ ok: false, why: String((e && e.message) || e) }); }
+    timer = setTimeout(() => {
+      try { if (child) child.kill(); } catch { }
+      done({ ok: false, why: '采集探针超时（6s）' });
+    }, 6500);
+    try { timer.unref(); } catch { }
+  });
+}
+async function deviceAudit() {
+  try {
+    const p = {
+      os: process.platform + ' ' + os.release(),
+      cores: (os.cpus() || []).length,
+      ramGB: Math.round(((os.totalmem() || 0) / 1073741824) * 10) / 10,
+      ffmpeg: fileExists(FFMPEG_EXE),
+      nvenc: H264_ENCODER === 'nvenc',
+      zerocopy: !!H264_ZEROCOPY,
+      captureW: CAP_W,
+      captureH: CAP_H,
+      ddagrab: null
+    };
+    let level = 0;
+    const notes = [];
+    if (!p.ffmpeg) {
+      level = 2;
+      notes.push('缺少编码组件（bin/ffmpeg.exe），清晰模式已停用');
+    } else if (!p.nvenc) {
+      level = (p.cores > 0 && p.cores < 4) ? 2 : 1;
+      notes.push('没有可用的显卡硬件编码，改用软件编码：帧率/码率/分辨率已自动限制');
+    }
+    if (level < 2) {
+      const dd = await deviceProbeDdagrab();
+      p.ddagrab = dd.ok;
+      p.ddagrabWhy = dd.why || '';
+      // 探针失败时如果编码器正在跑，说明是"抢 ddagrab"而不是机器不行，不据此降档
+      const busy = !!(h264 && h264.proc);
+      if (!dd.ok && !busy) {
+        level = 2;
+        notes.push('桌面复制采集不可用（' + (dd.why || '未知原因') + '），清晰模式已自动停用');
+      } else if (!dd.ok && busy) {
+        p.ddagrab = null;
+        notes.push('采集探针被运行中的编码器占用，本次未判定（不降档）');
+      }
+    }
+    const forced = Number(process.env.PA_DEVICE_LEVEL);
+    if (Number.isFinite(forced) && forced >= 0 && forced <= 2) {
+      level = Math.round(forced);
+      notes.push('PA_DEVICE_LEVEL 指定等级 ' + level);
+    }
+    DEVICE.at = Date.now();
+    DEVICE.done = true;
+    DEVICE.level = level;
+    DEVICE.name = (level === 0 ? 'good' : (level === 1 ? 'basic' : 'fallback'));
+    DEVICE.caps = deviceCapsFor(level);
+    DEVICE.probes = p;
+    DEVICE.notes = notes;
+    try {
+      console.log('[device] 审查完成：' + DEVICE.name + ' ' + JSON.stringify({ nvenc: p.nvenc, ffmpeg: p.ffmpeg, ddagrab: p.ddagrab, cores: p.cores, ramGB: p.ramGB })
+        + (notes.length ? ' 说明：' + notes.join('；') : ''));
+    } catch { }
+    deviceApplyCaps();
+    if (level >= 2) {
+      try { h264MarkUnavailable('设备审查：' + (notes[0] || '这台电脑的采集/编码能力不足')); } catch { }
+    }
+  } catch (e) {
+    DEVICE.at = Date.now();
+    DEVICE.done = true;
+    DEVICE.level = 0;
+    DEVICE.name = 'good';
+    DEVICE.caps = deviceCapsFor(0);
+    DEVICE.notes = ['设备审查异常，已跳过（按 good 处理）：' + String((e && e.message) || e)];
+    try { console.log('[device] ' + DEVICE.notes[0]); } catch { }
+  }
+}
+
 // 2026-11-08（虚拟机实测后修正）：**不要**用启动探测给清晰模式判死刑 ——
 // 锁屏、远程桌面、刚开机时 ddagrab 都会短暂失败，一探就禁用会误伤正常机器（本机复现过）。
 // 改成按真实运行结果判定：
@@ -241,6 +391,19 @@ function h264MarkAvailable() {
   H264_CAPABLE = true;
   H264_REASON = '';
   H264_DISABLED_UNTIL = 0;
+  // 2026-11-10（1.0.21）：设备审查可能误判（探针那一刻采集被占用/锁屏/远程桌面）。
+  // 只要真实出过帧，就说明采集+编码确实能用 —— 把等级修正回来，别让客户一直被压在 30fps。
+  // 只修等级，不主动调高已经生效的画质（那是用户的选择），所以观感不会被突然改变。
+  try {
+    if (DEVICE && DEVICE.level >= 2) {
+      const lv = (H264_ENCODER === 'nvenc') ? 0 : 1;
+      DEVICE.level = lv;
+      DEVICE.name = (lv === 0 ? 'good' : 'basic');
+      DEVICE.caps = deviceCapsFor(lv);
+      DEVICE.notes = (DEVICE.notes || []).concat(['实际出帧成功，采集判定已自动修正为 ' + DEVICE.name]);
+      console.log('[device] 实际出帧成功：设备等级从 fallback 修正为 ' + DEVICE.name);
+    }
+  } catch { }
 }
 function h264TemporarilyUnavailable() { return H264_DISABLED_UNTIL > Date.now(); }
 
@@ -5078,8 +5241,10 @@ async function handler(req, res) {
       // 宽屏高分辨率下 60fps 容易超出解码器等级/带宽能力：>1920 宽时自动降到 30fps
       // （按**即将生效的**宽度判断原生路径，否则从 1920 调到 2560 会被误降成 30fps）
       const willNative = H264_W >= CAP_W && H264_W >= 2560 && H264_MON === 0 && !H264_RECT;
-      // 实验模式跳过"宽屏自动降 30fps"（那是对客户机解码能力的保护，自用版不需要）。
-      if (!expOn && !willNative && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;   // 原生零拷贝路径允许 2560@60
+      // 2026-11-10（1.0.21）：这条保护原来按"自用/发布"分流，现在改成按**设备审查**的结果：
+      // 只有被判定为 basic/fallback 的弱机器才降 30fps；good 的设备（硬件编码可用）
+      // 和自用版一样不受这条限制。原生零拷贝路径本来就能跑 2560@60。
+      if (DEVICE.level >= 1 && !willNative && H264_W > 1920 && H264_FPS > 30) H264_FPS = 30;
       // 2026-11-10 修：这里原来只看宽度，不看启动时的零拷贝能力探测结果 ——
       // 于是每次把宽度调到 2560（选"超清"）都会重新打开零拷贝路径，而这台机器上它
       // 必定 -40 秒退 2 次才回退，白等 2~4 秒黑屏、期间断帧还会把手机的 WebCodecs 接收端拖死。
@@ -5090,7 +5255,10 @@ async function handler(req, res) {
       if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
       h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
       if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
-      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON });
+      // 2026-11-10：设备审查兜底 —— 手调也不能超过这台机器能承受的上限（只降不升）
+      try { deviceApplyCaps(); } catch { }
+      qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
+        device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
     });
     return;
   }
@@ -5123,6 +5291,30 @@ async function handler(req, res) {
     });
     return;
   }
+  // 2026-11-10（1.0.21）：设备审查结果（给页面显示"这台电脑能跑多高"、给售后排查用）。
+  // 只读快照，不触发重新探测；需要重新探测就重启服务（或带 ?refresh=1，内部限速 60 秒一次）。
+  if (url.pathname === '/device-check') {
+    let refreshed = false;
+    if (url.searchParams.get('refresh') === '1' && Date.now() - DEVICE.at > 60000) {
+      try { deviceAudit(); refreshed = true; } catch { }
+    }
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({
+      ok: true,
+      done: DEVICE.done,
+      refreshed: refreshed,
+      level: DEVICE.level,
+      name: DEVICE.name,
+      caps: DEVICE.caps,
+      probes: DEVICE.probes,
+      notes: DEVICE.notes,
+      at: DEVICE.at,
+      // 当前实际生效的参数（可能已经被设备上限压过）
+      applied: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS },
+      ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }
+    }));
+    return;
+  }
   if (url.pathname === '/h264-status') {
     // 2026-11-08 修：冷却期结束后必须允许重试。原来 capable=false 会一直挂着，
     // 页面看到 false 就永远不启动清晰模式（死锁：只有出帧才会变 true）。
@@ -5152,6 +5344,8 @@ async function handler(req, res) {
       wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,
       // 2026-11-10：Node 侧 feed 缓冲满丢掉的帧数（这些帧会带 gap 标志让侧车等关键帧）
       feedDrops: rtc264FeedDrops,
+      // 2026-11-10（1.0.21）：设备审查等级（good/basic/fallback）与它的画质上限
+      device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, notes: DEVICE.notes },
       lastError: h264.lastError
     }));
     return;
@@ -6032,6 +6226,12 @@ for (const host of hosts) {
     console.log(`screen-server: ${proto}://${host}:${port}/`);
   });
 }
+
+// 2026-11-10（1.0.21）：启动后 1.2 秒跑一次设备审查（异步，绝不阻塞监听）。
+// 为什么要等 1.2 秒：探针要独占总线的 ddagrab，如果观众正好在这时连上、编码器起来了，
+// 两边会抢桌面复制（本机实测会 -40 秒退）。审查内部还有"编码器在跑就不降档"的保护，
+// 两道加起来保证不会因为审查本身把画面搞坏。
+setTimeout(() => { try { deviceAudit(); } catch { } }, 1200).unref?.();
 
 // 离线模式：备用监听绑 0.0.0.0（所有网卡）——电脑换网络/开热点/USB 共享后新 IP 立刻能用，
 // 不用等守护重启。只绑 8661/8662 这种备用端口：8660 必须保持"回环+tailnet 走 http、局域网 IP 走 https"，

@@ -1767,14 +1767,26 @@ async function rtc264Stats() {
     if (!R.firstVideo) { clearTimeout(R.noVideoTimer); R.noVideoTimer = 0; }
       R.firstVideo = true; R.attempts = 0;
       if (R.watchdog) { clearTimeout(R.watchdog); R.watchdog = null; }
-      // 首次出画面后给一次流量提醒（每台设备只提示一次）：清晰模式默认 20Mbps ≈ 8.9GB/时
+      // 首次出画面后给一次流量提醒（每台设备只提示一次）。
+      // 2026-11-10：GB/时 不再写死 8.9 —— 发布版和自用版用同一套码率上限，默认码率也可能被改到
+      // 50/100 Mbps，写死的数字会变成假话。这里按**实际生效的码率**算。
       if (!R.flowHinted) {
         R.flowHinted = true;
         try {
           if (localStorage.getItem('hint.flow') !== '1') {
             localStorage.setItem('hint.flow', '1');
             setTimeout(function () {
-              try { setNote('提示：清晰模式很费流量（约 8.9GB/小时）；用手机流量时建议调低画质，或点「流畅」', 9000); } catch (e) { }
+              // 问服务端当前实际生效的码率，别猜
+              fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })
+                .then(function (r) { return r.json(); })
+                .then(function (j) {
+                  const k = Number(j && j.kbps) || 20000;
+                  const gb = Math.round((k * 3600) / 8 / 1024 / 1024 * 10) / 10;
+                  try { setNote('提示：清晰模式很费流量（约 ' + gb + ' GB/小时）；用手机流量时建议调低画质，或点「流畅」', 9000); } catch (e) { }
+                })
+                .catch(function () {
+                  try { setNote('提示：清晰模式很费流量；用手机流量时建议调低画质，或点「流畅」', 9000); } catch (e) { }
+                });
             }, 6000);
           }
         } catch (e) { }
@@ -4756,25 +4768,37 @@ bindImg(img);
     const wSel = box.querySelector('#hqW');
     const fpsSel = box.querySelector('#hqFps');
     const kSel = box.querySelector('#hqKbps');
-    const qfCb = box.querySelector('#hqQf');
     const winCb = box.querySelector('#hqWin');
     const autoBtn = box.querySelector('#hqAuto');
     const msg = box.querySelector('#hqMsg');
     if (!wSel || !fpsSel || !kSel) return;
     const setMsg = (s, c) => { if (msg) { msg.textContent = s; msg.style.color = c || '#868c96'; } };
   // 2026-11-08：显示清晰模式可用性（虚拟机/远程桌面不支持时说明原因，避免点了没反应）
+  // 2026-11-10（1.0.21）：同时显示**设备审查**结果 —— 硬件编码不够的机器会被自动限制画质，
+  // 提前说清楚，免得用户以为"调不高是坏了"。
   (async () => {
     try {
-      const hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json();
       const capEl = box.querySelector('#hqCap');
       if (!capEl) return;
+      let hs = null, dv = null;
+      try { hs = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { }
+      try { dv = await (await fetch('/device-check?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { }
+      let txt = '';
+      let color = '#6b7078';
       if (hs && hs.capable === false && Number(hs.retryInMs) > 0) {
-        capEl.textContent = '清晰模式：暂时不可用 —— ' + (hs.reason || '桌面复制采集不可用') + (hs.retryInMs > 0 ? ('（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）') : '');
-        capEl.style.color = '#ffb454';
+        txt = '清晰模式：暂时不可用 —— ' + (hs.reason || '桌面复制采集不可用') + (hs.retryInMs > 0 ? ('（约 ' + Math.ceil(hs.retryInMs / 1000) + ' 秒后自动重试）') : '');
+        color = '#ffb454';
       } else if (hs && hs.capable === true) {
-        capEl.textContent = '清晰模式：可用' + (hs.encoder ? '（编码器 ' + hs.encoder + '）' : '');
-        capEl.style.color = '#8CE58C';
+        txt = '清晰模式：可用' + (hs.encoder ? '（编码器 ' + hs.encoder + '）' : '');
+        color = '#8CE58C';
       }
+      if (dv && dv.done && Number(dv.level) > 0) {
+        const c = dv.caps || {};
+        txt += (txt ? '；' : '') + '这台电脑已按设备能力限制画质：最高 ' + (c.maxWidth || '?') + ' 宽 / ' + (c.maxFps || '?') + ' fps / '
+          + (c.maxKbps ? (Math.round(c.maxKbps / 1000) + ' Mbps') : '?') + (dv.notes && dv.notes[0] ? ('（' + dv.notes[0] + '）') : '');
+        color = '#ffb454';
+      }
+      if (txt) { capEl.textContent = txt; capEl.style.color = color; }
     } catch (e) { }
   })();
     const paintAuto = () => {
@@ -4822,20 +4846,10 @@ bindImg(img);
         }
         fpsSel.value = String(j.fps);
         kSel.value = String(j.kbps);
-        if (qfCb) qfCb.checked = !!j.qf;
         if (!j.width || !j.height) setMsg('高清通道未启用');
         updateFlow();
       } catch (e) { }
     })();
-    // 画质优先：p4+hq、VBR+CQ；切换后重启一次编码器生效（页面会重连，约 1 秒）
-    if (qfCb) qfCb.addEventListener('change', async () => {
-      setMsg('正在应用画质优先设置…');
-      try {
-        await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ qf: !!qfCb.checked }) });
-        setMsg(qfCb.checked ? '画质优先已开：文字更锐，延迟约 +1 帧，流量会波动' : '已切回低延迟模式', '#8CE58C');
-        if (state.mode === 'h264') restartH264();
-      } catch (e) { setMsg('应用失败', '#ff6b6b'); }
-    });
     // 单窗口采集（实验）
     if (winCb) {
       try { winCb.checked = win264On(); } catch (e) { }
@@ -7009,16 +7023,14 @@ bindImg(img);
     body += setSection('画质与流量',
       '<div style="display:flex;gap:14px;flex-wrap:wrap;color:#c9ccd1;font-size:12.5px;align-items:center">'
       + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560（原生·需设备支持）</option></select></label>'
-      + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option><option value="90">90</option><option value="120">120</option><option value="240">240（实验·极限）</option></select></label>'
+      + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option><option value="90">90</option><option value="120">120</option><option value="240">240（需设备支持）</option></select></label>'
       + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps（≈3.4 GB/时）</option><option value="12000">12 Mbps（≈5.3 GB/时）</option><option value="15000">15 Mbps（≈6.7 GB/时）</option><option value="20000">20 Mbps（≈8.9 GB/时）</option><option value="30000">30 Mbps（≈13.4 GB/时）</option><option value="50000">50 Mbps（≈22.5 GB/时）</option><option value="80000">80 Mbps（≈36 GB/时）</option><option value="100000">100 Mbps（≈45 GB/时）</option></select></label>'
       + '<button id="hqAuto" title="按网络自动调码率：丢包就降、稳定再升" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer">自动</button>'
       + '</div>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
-      + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。50/80/100 Mbps 属于自用实验档：只建议在局域网/Tailscale 直连时用，4G 一定卡。</div>'
+      + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。50/80/100 Mbps 属于高负载档：只建议在局域网/Tailscale 直连时用，4G 一定卡。</div>'
       + '<div id="hqFlow" style="font-size:12.5px;color:#8CE58C;margin-top:8px"></div>'
       + '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
-      + '<input type="checkbox" id="hqQf"> 画质优先（文字更锐；延迟约 +1 帧，流量会波动）</label>'
-      + '<label style="display:flex;align-items:center;gap:8px;margin-top:8px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
       + '<input type="checkbox" id="hqWin"> 单窗口采集（实验：只传选中的窗口，被挡住也能抓；约 10–30fps）</label>'
       + '<div id="hqMsg" style="font-size:12.5px;color:#868c96;margin-top:8px"></div>'
   + '<div id="hqCap" style="font-size:11.5px;color:#6b7078;margin-top:6px;line-height:1.6"></div>');
@@ -8207,7 +8219,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-08.3';
+export const PAGE_VER = '2026-11-10.1';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
