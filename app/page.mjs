@@ -5157,6 +5157,32 @@ bindImg(img);
       return (bps / 1024).toFixed(0) + ' KB/s';
     };
     const setMsg = (t, c) => { if (msg) { msg.textContent = t; msg.style.color = c || '#868c96'; } };
+    // 2026-11-10：保存位置的两个按钮（用户反馈"找不到文件在哪 / 为什么不能改路径"）
+    const dirOpenBtn = box.querySelector('#fileDirOpen');
+    if (dirOpenBtn) dirOpenBtn.addEventListener('click', async () => {
+      try {
+        const j = await (await fetch('/files/open', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' })).json();
+        if (j && j.ok) setMsg('已在你电脑上打开这个文件夹', '#8CE58C');
+        else setMsg((j && j.message) || '打不开文件夹', '#ff6b6b');
+      } catch (e) { setMsg('电脑没响应（网络断了？）', '#ff6b6b'); }
+    });
+    const dirChangeBtn = box.querySelector('#fileDirChange');
+    if (dirChangeBtn) dirChangeBtn.addEventListener('click', async () => {
+      const curEl = box.querySelector('#fileDirPath');
+      const cur = (curEl && curEl.textContent !== '读取中…') ? curEl.textContent : '';
+      const input = prompt('手机传过来的文件，存到电脑哪个文件夹？\n\n· 要填绝对路径（例如 D:\\手机传文件）\n· 目录不存在会自动创建', cur);
+      if (input === null) return;
+      const p = String(input).trim();
+      if (!p) return;
+      try {
+        const j = await (await fetch('/files/dir', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ dir: p }) })).json();
+        if (j && j.ok) {
+          if (curEl) curEl.textContent = j.dir;
+          setMsg('保存位置已改为：' + j.dir, '#8CE58C');
+          load();
+        } else setMsg((j && j.message) || '改不了这个路径', '#ff6b6b');
+      } catch (e) { setMsg('网络断了', '#ff6b6b'); }
+    });
     // 取消支持（2026-11-06）：所有在飞的 XHR 都登记在这里，点「取消」一次性 abort。
     const liveXhr = new Set();
     let cancelReq = false;
@@ -5202,6 +5228,9 @@ bindImg(img);
       let j = null;
       try { j = await fetch('/files?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { j = null; }
       if (!j || !j.ok) { listEl.innerHTML = '<span style="color:#ff6b6b">读取文件列表失败</span>'; return; }
+      // 2026-11-10：把"存到电脑哪个文件夹"显示出来（原来只显示文件名，用户根本找不到）
+      const dirEl = box.querySelector('#fileDirPath');
+      if (dirEl && j.dir) dirEl.textContent = j.dir;
       if (!j.files.length) { listEl.innerHTML = '<span style="color:#6b7078">还没有从手机传过文件</span>'; return; }
       listEl.innerHTML = j.files.map((f) => {
         const d = new Date(f.at);
@@ -5421,7 +5450,7 @@ bindImg(img);
           : '已取消：已传的分片保留 3 天，重新选同名文件可续传（上面「丢弃」可清掉）', '#ffb454');
         if (prog) prog.textContent = '已取消';
       } else if (!failCount) {
-        setMsg('完成：' + okCount + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）', '#8CE58C');
+        setMsg('完成：' + okCount + ' 个文件，共 ' + fmt(doneBytes) + '，' + secs.toFixed(1) + ' 秒（平均 ' + fmtSpeed(doneBytes / secs) + '）· 存在电脑的「保存到」那个文件夹里，可点「在电脑上打开」', '#8CE58C');
         pick.value = '';
         if (prog) prog.textContent = '平均 ' + fmtSpeed(doneBytes / secs);
       } else {
@@ -7228,7 +7257,19 @@ bindImg(img);
       + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">电脑上的文件（点「下载」存到手机）</div>'
       + '<div id="pcList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:6px">列表只显示最近 5 个；全部文件在电脑的「下载\\PhoneAccess」文件夹里。</div>'
-      + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">手机传到电脑的文件（存在「下载\\PhoneAccess」）</div>'
+      + '<div style="margin-top:14px;color:#c9ccd1;font-size:12.5px;font-weight:600">手机传到电脑的文件</div>'
+      // 2026-11-10（用户反馈"找不到文件在哪 / 为什么不能改路径"）：把保存位置直接摆出来，
+      // 并给「在电脑上打开」「更改位置」两个按钮。
+      + '<div id="fileDirBox" style="margin-top:7px;display:flex;gap:7px;flex-wrap:wrap;align-items:center;'
+      + 'background:#14151a;border:1px solid #24262e;border-radius:9px;padding:8px 10px">'
+      + '<span style="color:#8b9098;font-size:11.5px;flex:0 0 auto">保存到</span>'
+      + '<span id="fileDirPath" style="flex:1 1 140px;min-width:120px;color:#c9ccd1;font-size:11.5px;'
+      + 'word-break:break-all;font-family:ui-monospace,Consolas,monospace">读取中…</span>'
+      + '<button id="fileDirOpen" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:7px;'
+      + 'padding:4px 9px;font-size:11.5px;cursor:pointer;white-space:nowrap">在电脑上打开</button>'
+      + '<button id="fileDirChange" style="background:#1f2a3a;color:#bcd4ff;border:1px solid #2d4a6e;border-radius:7px;'
+      + 'padding:4px 9px;font-size:11.5px;cursor:pointer;white-space:nowrap">更改位置</button>'
+      + '</div>'
       + '<div id="fileList" style="margin-top:7px;color:#868c96;font-size:12px">正在读取…</div>');
 
     // 高性能模式（Sunshine/Moonlight）——2026-11-03 S3：电脑装好 Sunshine 后，手机装 Moonlight 用 PIN 配对。
@@ -8472,7 +8513,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.10';
+export const PAGE_VER = '2026-11-10.11';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

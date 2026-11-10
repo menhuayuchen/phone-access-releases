@@ -2645,8 +2645,24 @@ function writeSystemClipboard(text) {
 //   · 文件名做白名单清洗（去目录/控制字符/保留名/结尾点和空格），长度上限 120；
 //   · 上传大小上限 32MB，超过直接断开；文件名重名自动加 (1)(2)…
 //   · 走默认鉴权（必须密钥/cookie），和画面接口同一套。
-const UPLOAD_DIR = join(process.env.USERPROFILE || HERE, 'Downloads', 'PhoneAccess');
-const STAGING_DIR = join(UPLOAD_DIR, '.staging');   // 并行分片上传的暂存区（用完即删）
+// 2026-11-10：接收目录改成**可配置**（用户要求"能改路径"）。默认仍是 下载\PhoneAccess。
+// 状态存在安装目录的 files-dir.json；手机端「传文件 → 保存到 → 更改位置」改的就是它。
+// 运行时所有用到的地方都现读 UPLOAD_DIR（下面是 let，不要改成 const）；
+// 请求处理器里的 STAGING_DIR 是每请求现算的，会跟着变。
+const DEFAULT_UPLOAD_DIR = join(process.env.USERPROFILE || HERE, 'Downloads', 'PhoneAccess');
+const UPLOAD_DIR_STATE = join(HERE, 'files-dir.json');
+let UPLOAD_DIR = DEFAULT_UPLOAD_DIR;
+try {
+  const s = JSON.parse(readFileSync(UPLOAD_DIR_STATE, 'utf8').replace(/^\uFEFF/, ''));
+  if (s && typeof s.dir === 'string' && /^([A-Za-z]:[\\/]|\\\\)/.test(s.dir)) UPLOAD_DIR = s.dir;
+} catch { }
+const STAGING_DIR = join(UPLOAD_DIR, '.staging');   // 启动清理用；请求处理器里另有每请求现算的
+function saveUploadDir() {
+  try { writeFileSync(UPLOAD_DIR_STATE, JSON.stringify({ dir: UPLOAD_DIR, at: Date.now() }), 'utf8'); } catch { }
+}
+function validAbsDir(p) {
+  return typeof p === 'string' && p.length > 2 && p.length < 220 && /^([A-Za-z]:[\\/]|\\\\)/.test(p);
+}
 // 启动时清理超过 7 天的残留分片会话（20GB 级上传中断会占很大空间）
 try {
   for (const d of readdirSync(STAGING_DIR)) {
@@ -3625,7 +3641,48 @@ async function handler(req, res) {
       } catch { }
     };
     const __all = listUploads().slice().sort((x, y) => (y.at || 0) - (x.at || 0));
-     return freply(200, { ok: true, dir: UPLOAD_DIR, maxBytes: UPLOAD_MAX, files: __all.slice(0, 5), total: __all.length });
+     return freply(200, { ok: true, dir: UPLOAD_DIR, defaultDir: DEFAULT_UPLOAD_DIR, maxBytes: UPLOAD_MAX, files: __all.slice(0, 5), total: __all.length });
+  }
+  // 2026-11-10（用户要求"能改路径"）：
+  //   POST /files/dir  {dir}  -> 改手机文件的接收目录（绝对路径；建目录并试写一次再接受）
+  //   POST /files/open        -> 在电脑上用资源管理器打开这个目录
+  if (url.pathname === '/files/dir' && req.method === 'POST') {
+    let body = '';
+    req.on('data', (c) => { body += c; if (body.length > 16 * 1024) req.destroy(); });
+    req.on('end', () => {
+      const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+      let j = {};
+      try { j = JSON.parse(body || '{}'); } catch { }
+      const want = String(j.dir || '').trim().replace(/[\\/]+$/, '');
+      if (!validAbsDir(want)) return jr(400, { ok: false, message: '要填绝对路径，例如 D:\\手机传文件（不支持相对路径）' });
+      try { mkdirSync(want, { recursive: true }); } catch (e) {
+        return jr(500, { ok: false, message: '建不了这个目录：' + ((e && e.message) || e) });
+      }
+      try {
+        const probe = join(want, '.pa-write-test');
+        writeFileSync(probe, '1'); unlinkSync(probe);
+      } catch (e) {
+        return jr(500, { ok: false, message: '这个目录写不进去（权限或只读）：' + ((e && e.message) || e) });
+      }
+      UPLOAD_DIR = want;
+      saveUploadDir();
+      try { mkdirSync(join(UPLOAD_DIR, '.staging'), { recursive: true }); } catch { }
+      console.log('upload: 接收目录改为 ' + UPLOAD_DIR);
+      return jr(200, { ok: true, dir: UPLOAD_DIR });
+    });
+    return;
+  }
+  if (url.pathname === '/files/open' && req.method === 'POST') {
+    const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+    try { mkdirSync(UPLOAD_DIR, { recursive: true }); } catch { }
+    try {
+      const ch = spawn('explorer.exe', [UPLOAD_DIR], { detached: true, stdio: 'ignore', windowsHide: false });
+      ch.on('error', () => { });
+      ch.unref();
+      return jr(200, { ok: true, dir: UPLOAD_DIR });
+    } catch (e) {
+      return jr(500, { ok: false, message: '打不开：' + ((e && e.message) || e) });
+    }
   }
   if (url.pathname === '/file' && req.method === 'POST') {
     const freply = (code, obj) => {
