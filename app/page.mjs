@@ -665,6 +665,10 @@ function applyView() {
     vid.style.transform = tf;
     const cvEl = document.getElementById('wccv');
     if (cvEl) { cvEl.style.transformOrigin = '0 0'; cvEl.style.transform = tf; }
+    // 2026-11-10：WebCodecs 自研接收端的 canvas 也要跟着缩放，
+    // 否则双指放大后画面不动、坐标映射（toScreen/toPage 会按 view.scale 反算）却按放大算了，点哪都偏。
+    const cvEl2 = document.getElementById('wc264c');
+    if (cvEl2) { cvEl2.style.transformOrigin = '0 0'; cvEl2.style.transform = tf; }
   } catch (e) {}
   if (viewReset) viewReset.style.display = 'none';   // 改用右侧 +/−/⟳ 按钮，左侧恢复按钮不再显示
 }
@@ -902,6 +906,16 @@ let stopped = document.hidden, lowTimer = null, pc = null, ws = null, statsTimer
 // 视频类模式（WebRTC 流畅 / H.264 高清）：坐标换算都按 <video> 的实际像素算
 const isVideoMode = () => (state.mode === 'raw' || state.mode === 'h264');
 function videoSourceSize() {
+  // 2026-11-10：WebCodecs 接收端启用时，<video> 拿不到解码权（RTP 被 transform 拦走），
+  // vid.videoWidth 恒为 0，后面的分支也拿不到真实尺寸，最后会掉到 16x9 兜底。
+  // 而实际画面是 16:10（1920x1200）—— contentBox 按 16:9 算宽，比真实画面宽 11%，
+  // 结果就是触屏点哪都偏、越靠边越偏（中间几乎不偏）。这里优先用 canvas 的真实尺寸。
+  try {
+    if (window.__wc264 && window.__wc264.on && window.__wc264.canvas &&
+        window.__wc264.canvas.width > 0 && window.__wc264.canvas.height > 0) {
+      return { w: window.__wc264.canvas.width, h: window.__wc264.canvas.height };
+    }
+  } catch (e) { }
   if (state.mode === 'h264') {
     // 2026-11-06 触屏偏移的真正根因：<video> 里只要有画面（不管走 track 还是 MSE/WebCodecs 喂流），
     // videoWidth/videoHeight 就是**最终解码尺寸**，一律优先用它。
@@ -1295,7 +1309,11 @@ const WC264 = {
       if (!c) {
         c = document.createElement("canvas");
         c.id = "wc264c";
-        c.style.cssText = "position:absolute;inset:0;width:100%;height:100%;background:#000;display:block;z-index:3;";
+        // 2026-11-10：必须加 object-fit:contain。
+        // 原来只有 width:100%;height:100%，canvas 会被拉伸铺满（变形），
+        // 而 <video> 一直是 contain（保持比例+黑边），坐标映射也按 contain 算 ——
+        // 两者不一致就是"触屏有偏移"和"画面显示不一样"的直接原因。
+        c.style.cssText = "position:absolute;inset:0;width:100%;height:100%;object-fit:contain;background:#000;display:block;z-index:3;";
         const st = document.getElementById("stage") || document.body;
         st.appendChild(c);
       }
