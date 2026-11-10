@@ -193,6 +193,34 @@ let side264 = null, conn264 = null, conn264Retry = 0;
 
 let H264_W = evenDown(Math.max(640, Math.min(CAP_W, Number(cfgH264.width) || CAP_W)));
 let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+
+// 2026-11-10：上次生效的画质落盘 / 恢复。
+// 线上实测的问题：服务一重启就回到 product.config.json 的默认画质（这台机器是 90fps/50Mbps），
+// 而手机端只能解 ~30fps —— 每次升级/部署/崩溃自愈都把客户重新喂爆（解码队列堆积 → 反复冻）。
+// 现在：POST /h264-quality 生效后写盘，启动时优先恢复；配置默认值只在"从没调过"时用。
+const H264Q_STATE = join(HERE, 'h264-quality.state.json');
+function saveH264QualityState() {
+  try {
+    writeFileSync(H264Q_STATE, JSON.stringify({ width: H264_W, fps: H264_FPS, kbps: H264_KBPS, at: Date.now() }), 'utf8');
+  } catch { }
+}
+function loadH264QualityState() {
+  try {
+    const s = JSON.parse(readFileSync(H264Q_STATE, 'utf8').replace(/^\uFEFF/, ''));
+    let used = false;
+    const f = Number(s && s.fps), k = Number(s && s.kbps), w = Number(s && s.width);
+    if (Number.isFinite(f) && f >= 10) { H264_FPS = Math.max(10, Math.min(fpsCap, Math.round(f))); used = true; }
+    if (Number.isFinite(k) && k >= 2000) { H264_KBPS = Math.max(2000, Math.min(kbpsCap, Math.round(k))); used = true; }
+    if (Number.isFinite(w) && w >= 640) {
+      H264_W = evenDown(Math.max(640, Math.min(CAP_W, Math.round(w))));
+      H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+      used = true;
+    }
+    if (used) { try { console.log('h264: 恢复上次画质 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps（来自 h264-quality.state.json）'); } catch { } }
+  } catch { }
+}
+// 启动时立刻恢复（deviceAudit 1.2 秒后还会按设备能力再封一次顶，只降不升）
+loadH264QualityState();
 // 原生分辨率：ddagrab 直喂 NVENC（零拷贝，不经过滤器）。2026-11-07 实测踩坑：
 // 这台机器（当前显卡 + 当前 ffmpeg）做不了 d3d11→nv12 的自动转换，零拷贝路径直接
 // `-40 Function not implemented`，ffmpeg 秒退重试，画面全黑（2560 宽时必现，1920 走过滤器所以正常）。
@@ -5292,6 +5320,11 @@ async function handler(req, res) {
       if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
       // 2026-11-10：设备审查兜底 —— 手调也不能超过这台机器能承受的上限（只降不升）
       try { deviceApplyCaps(); } catch { }
+      // 2026-11-10：把最终生效的画质落盘（当前生效值 = 用户/页面最后的选择，含设备审查封顶的结果）。
+      // 起因（线上实测）：服务一重启，H264_FPS/KBPS 就从 product.config.json 重读回默认（90fps/50Mbps），
+      // 而手机端只能解 ~30fps —— 每次升级/部署/崩溃自愈都会把客户重新喂爆，队列堆积、反复冻。
+      // 落盘后启动时优先恢复上次生效值，默认值只在从来没有调过画质时使用。
+      try { saveH264QualityState(); } catch { }
       qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
         device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
     });
