@@ -5049,9 +5049,15 @@ async function handler(req, res) {
         const PIXEL_BUDGET = 492000000;
         const px = H264_W * H264_H;
         if (px > 0 && H264_FPS * px > PIXEL_BUDGET) {
-          const maxFps = Math.max(10, Math.floor(PIXEL_BUDGET / px));
+          const rawMax = Math.max(10, Math.floor(PIXEL_BUDGET / px));
+          // 2026-11-10：降档必须对齐页面的标准档位（30/60/90/120/240）。
+          // 原来直接取 rawMax —— 例如 1920x1200 算出 213，而 <select> 里没有 213 这个 option，
+          // 页面拿到 213 后 fpsSel.value 匹配不到任何项，下拉框就显示成空白。
+          const STEPS = [30, 60, 90, 120, 240];
+          let maxFps = 10;
+          for (const st of STEPS) { if (st <= rawMax) maxFps = st; }
           if (maxFps < H264_FPS) {
-            try { console.log('[guard] 像素率超限 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' -> 降到 ' + maxFps + 'fps'); } catch (e) { }
+            try { console.log('[guard] 像素率超限 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' -> 降到 ' + maxFps + 'fps（原始上限 ' + rawMax + '）'); } catch (e) { }
             H264_FPS = maxFps;
           }
         }
