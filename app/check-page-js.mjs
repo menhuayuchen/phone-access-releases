@@ -11,6 +11,17 @@ const m = src.match(/const PAGE_HTML = String\.raw`([\s\S]*?)`;\s*\n/);
 if (!m) { console.error('FAIL: 找不到 PAGE_HTML 模板'); process.exit(2); }
 const html = m[1];
 
+// 2026-11-10 新增断言：模板里只要混进一个反引号，正则就会在**那里**提前收尾，
+// 后面的页面 JS 全被当成模块代码 → 服务直接起不来（ReferenceError: xxx is not defined），
+// 而上面那条正则和 node --check 都不会报错。所以要求截出来的 HTML 必须真的以 </html> 收尾。
+if (!/<\/html>\s*$/.test(html)) {
+  console.error('FAIL: PAGE_HTML 被提前截断（末尾不是 </html>）—— 模板字符串里混进了反引号？');
+  const bt = [...src.matchAll(/`/g)].map((x) => x.index);
+  console.error('  全文反引号位置:', bt.join(', '), '（应当只有开头和结尾两个）');
+  console.error('  截断处上下文:', JSON.stringify(html.slice(-160)));
+  process.exit(3);
+}
+
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map((x) => x[1]);
 console.log('内嵌 <script> 数:', scripts.length);
 let bad = 0;

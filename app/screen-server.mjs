@@ -3089,7 +3089,8 @@ async function handler(req, res) {
   // 它只是 RTP 解包 + VideoDecoder 的代码，不含任何密钥或主机信息。
   const PUBLIC_PATHS = new Set(['/health', '/sw.js', '/wc264-worker.js', '/ca.crt', '/icon-192.png', '/icon-512.png']);
   // 临时诊断：记录每个需要鉴权的请求路径（确认 /wc264-worker.js 到底走到这里没有）
-  if (url.pathname.indexOf('wc264') >= 0) { console.log('[diag] wc264 request path=' + JSON.stringify(url.pathname) + ' inPublic=' + PUBLIC_PATHS.has(url.pathname)); }
+  // 2026-11-10：/wc264-diag 每 30 秒一次，别让它把日志刷满，单独排除。
+  if (url.pathname.indexOf('wc264') >= 0 && url.pathname !== '/wc264-diag') { console.log('[diag] wc264 request path=' + JSON.stringify(url.pathname) + ' inPublic=' + PUBLIC_PATHS.has(url.pathname)); }
   // 浏览器取 manifest 时不发 cookie，页面里现签一个短时 token 例外
   const manifestOk = url.pathname === '/manifest.json' && manifestTokenOk(url);
   if (!PUBLIC_PATHS.has(url.pathname) && !isBrandingAsset && !manifestOk && !authorized(req, url)) {
@@ -5090,6 +5091,34 @@ async function handler(req, res) {
       h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
       if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
       qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON });
+    });
+    return;
+  }
+  // 2026-11-10：手机端 WebCodecs 接收端自报健康度。
+  // 为什么需要：花屏/冻屏这类问题只有手机端能看到真相（__wc264.stats），
+  // 而安卓 Chrome 的 console 不好取。页面每 30 秒 POST 一次，这里压成一行写进 screen-server.log，
+  // 出问题时直接 grep `[wc264-diag]` 就能看到手机那边的 rtp/decoded/dropped/cfg/spsChanges/gaps。
+  // 只记数字和尺寸，不记画面内容、不记密钥。
+  if (url.pathname === '/wc264-diag') {
+    if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
+    let b = '';
+    req.on('data', (c) => { b += c; if (b.length > 2048) req.destroy(); });
+    req.on('end', () => {
+      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end('{"ok":true}'); } catch { }
+      const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0);
+      let m = {};
+      try { m = JSON.parse(b || '{}'); } catch { }
+      const s = (m.stats && typeof m.stats === 'object') ? m.stats : {};
+      try {
+        console.log('[wc264-diag] on=' + (m.on ? 1 : 0) + ' hw=' + String(m.hw || '-')
+          + ' rtp=' + n(s.rtp) + ' dec=' + n(s.decoded) + ' drop=' + n(s.dropped)
+          + ' cfg=' + n(s.cfg) + ' sps=' + n(s.spsChanges) + ' q=' + n(s.queue)
+          + ' gaps=' + (n(s.gaps)) + ' ts=' + n(s.tsEma)
+          + ' canvas=' + n(m.cw) + 'x' + n(m.ch) + ' vid=' + n(m.vw) + 'x' + n(m.vh)
+          + ' fps=' + n(m.fps) + ' mbps=' + n(m.mbps) + ' buf=' + n(m.buf) + 'ms'
+          + ' err=' + String(m.err || '').slice(0, 120)
+          + ' ua=' + String(m.ua || '').slice(0, 90));
+      } catch { }
     });
     return;
   }

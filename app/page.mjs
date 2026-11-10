@@ -1307,8 +1307,16 @@ const WC264 = {
       w.onerror = function (e) { self_.lastErr = "worker:" + (e && e.message); };
       for (let i = 0; i < rxs.length; i++) { rxs[i].transform = new RTCRtpScriptTransform(w); }
       this.worker = w;
-      // 告诉 Worker 当前的编码帧率，用于合成均匀时间戳
-      try { const _fps = (typeof H264_FPS !== "undefined" && H264_FPS) ? H264_FPS : 60; w.postMessage({ type: "fps", fps: _fps }); } catch (e) { }
+      // 告诉 Worker 当前的编码帧率：合成时间戳和"时间戳跳档=缺帧"的判定都要用它。
+      // 注意 H264_FPS 这个变量在页面里**并不存在**（历史遗留，typeof 永远 undefined），
+      // 所以以前一直按 60 在算 —— 90fps 的流上，缺口判定和帧间隔全错。现在直接问服务端要。
+      try {
+        w.postMessage({ type: "fps", fps: 60 });
+        fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })
+          .then(function (r) { return r.json(); })
+          .then(function (j) { if (j && j.fps) { try { w.postMessage({ type: "fps", fps: Number(j.fps) }); } catch (e0) { } } })
+          .catch(function () { });
+      } catch (e) { }
       let c = document.getElementById("wc264c");
       if (!c) {
         c = document.createElement("canvas");
@@ -1911,7 +1919,48 @@ async function rtc264Stats() {
     RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · ' + fpsTxt
       + (mbpsTxt ? ' · ' + mbpsTxt : '')
       + ' · 缓' + ((_wcBufOverride >= 0 ? _wcBufOverride : bufMs)) + 'ms' + (_wcBufOverride >= 0 ? '(WC)' : '') + autoqTag() + _fitTag;
-    setStat(RTC264.hudText + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB');
+    // 2026-11-10：把 WebCodecs 接收端的健康度也放进来（桌面排查用，手机上看不到 #stat）：
+    //   cfg=解码器重建次数 缺=时间戳跳档/丢包断链次数 丢=被丢弃的帧数（启动阶段+断链等待）
+    let _wcDiag = '';
+    try {
+      const _wd = window.__wc264;
+      if (_wd && _wd.on && _wd.stats) {
+        _wcDiag = ' · WC cfg' + (_wd.stats.cfg | 0)
+          + ' 断链' + (_wd.stats.gaps | 0)
+          + ' 丢' + (_wd.stats.dropped | 0)
+          + ' ts' + (_wd.stats.tsEma | 0) + '/' + (_wd.stats.tsMax | 0) + 't';
+      }
+    } catch (e) { }
+    setStat(RTC264.hudText + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB' + _wcDiag);
+
+    // 2026-11-10：每 30 秒把接收端健康度报给服务端，压成一行写进 screen-server.log。
+    // 花屏/冻屏只有手机端能看到真相，而安卓 Chrome 的 console 不好取 —— 出问题时
+    // 直接在电脑上 grep「[wc264-diag]」就能看到手机那边的 rtp/decoded/dropped/cfg/gaps。
+    // 注意：这段在 PAGE_HTML 的模板字符串里，**注释里也不能出现反引号**（会把模板截断，
+    // 整个服务起不来：ReferenceError: xxx is not defined）。check-page-js.mjs 已加断言防这个。
+    // 只报数字和尺寸，不含画面内容与密钥；失败一律吞掉，绝不影响播放。
+    try {
+      const _now = Date.now();
+      if (!window.__diagNextAt || _now > window.__diagNextAt) {
+        window.__diagNextAt = _now + 30000;
+        const _wd = window.__wc264 || {};
+        const _cv = _wd.canvas || null;
+        const body = JSON.stringify({
+          on: !!_wd.on,
+          hw: _wd.hw || '',
+          stats: _wd.stats || null,
+          cw: _cv ? _cv.width : 0, ch: _cv ? _cv.height : 0,
+          vw: vid.videoWidth || 0, vh: vid.videoHeight || 0,
+          fps: Math.round((R.qFps || 0) * 10) / 10,
+          mbps: Math.round((R.qMbps || 0) * 10) / 10,
+          buf: Math.round(_wcBufOverride >= 0 ? _wcBufOverride : bufMs),
+          err: String((_wd.lastErr || '')).slice(0, 120),
+          ua: navigator.userAgent
+        });
+        fetch('/wc264-diag?k=' + encodeURIComponent(KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, cache: 'no-store' })
+          .catch(function () { });
+      }
+    } catch (e) { }
   } catch (e) { }
 }
 function serverUp264() {
