@@ -44,7 +44,9 @@ try {
   # 只覆盖站点文件，不动 videos/
   Copy-Item (Join-Path $siteDir 'index.html') $tmp -Force
   Copy-Item (Join-Path $siteDir 'theme.css') $tmp -Force
-  foreach ($sub in @('light-screen', 'about')) {
+  Copy-Item (Join-Path $siteDir 'og.png') $tmp -Force
+  Copy-Item (Join-Path $siteDir 'assets') $tmp -Recurse -Force
+  foreach ($sub in @('light-screen', 'about', 'versions')) {
     $dst = Join-Path $tmp $sub
     New-Item -ItemType Directory -Path $dst -Force | Out-Null
     Copy-Item (Join-Path $siteDir "$sub\*") $dst -Recurse -Force

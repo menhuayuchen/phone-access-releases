@@ -5,101 +5,229 @@
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>轻器 · 一个人做的小工具</title>
 <meta name="description" content="轻器：一个人做的小工具集合。第一个产品「轻屏」——手机浏览器打开就能用电脑，Windows 远程桌面，不用装 App、不经过第三方服务器，完全免费。">
+<meta name="theme-color" content="#0F0F0E">
+<meta name="color-scheme" content="light">
 <meta property="og:title" content="轻器 · 一个人做的小工具">
 <meta property="og:description" content="不注册、不弹广告、能不经过服务器就不经过。做得不够成熟，但尽量直接、免费。">
 <meta property="og:type" content="website">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' rx='14' fill='%238CE68C'/%3E%3Crect x='20' y='18' width='24' height='28' rx='4' fill='%2315161a'/%3E%3C/svg%3E">
+<meta property="og:site_name" content="轻器">
+<meta property="og:url" content="https://menhuayuchen.github.io/phone-access-releases/">
+<meta property="og:image" content="https://menhuayuchen.github.io/phone-access-releases/og.png">
+<meta name="twitter:card" content="summary_large_image">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2305070A'/%3E%3Crect x='11' y='11' width='19' height='19' fill='%23EEEEEC'/%3E%3Crect x='34' y='11' width='19' height='19' fill='%23EEEEEC' opacity='.3'/%3E%3Crect x='11' y='34' width='19' height='19' fill='%23EEEEEC' opacity='.3'/%3E%3Crect x='34' y='34' width='19' height='19' fill='%230BD8B6'/%3E%3C/svg%3E">
 <link rel="stylesheet" href="theme.css">
 </head>
 <body id="top">
+<a class="skip" href="#main">跳到主要内容</a>
 
 <header class="nav">
-  <div class="wrap">
-    <a class="logo" href="./"><i></i>轻器</a>
+  <div class="wrap nav__in">
+    <a class="brand" href="./">
+      <svg class="brand__m" viewBox="0 0 20 20" aria-hidden="true"><rect x=".5" y=".5" width="8" height="8" fill="currentColor"/><rect x="11.5" y=".5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x=".5" y="11.5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x="11.5" y="11.5" width="8" height="8" fill="#0BD8B6"/></svg>
+      轻器
+    </a>
     <nav class="links">
       <a href="#products">产品</a>
       <a href="#why">为什么做</a>
+      <a href="versions/">更新记录</a>
       <a href="about/">关于 / 授权</a>
     </nav>
+    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>轻屏 v1.0.21</span>
   </div>
+  <div class="nav__prog" data-progress></div>
 </header>
 
-<div class="wrap">
-  <div class="hero">
-    <h1>轻器 · <em>一个人做的小工具</em></h1>
-    <p class="lead">
-      不注册、不弹广告、能不经过服务器就不经过。<br>
-      做得不算成熟，但尽量直接、免费、把源码留在明处。
-    </p>
-    <div class="actions">
-      <a class="btn btn-main" href="light-screen/">看看「轻屏」</a>
-      <a class="btn btn-ghost" href="about/">关于作者与授权</a>
+<main id="main">
+
+<section class="hero">
+  <div class="wrap">
+    <div class="fig fig--dark"><span>FIG.01</span><span class="fig__line"></span><span>轻器 / LIGHTWARE</span></div>
+
+    <div class="hero__top">
+      <h1 class="word" data-glyph-host>
+        <span class="word__txt">轻器<span class="word__cursor" aria-hidden="true"></span></span>
+        <canvas data-glyph data-text="轻器" data-text-b="轻屏" aria-hidden="true"></canvas>
+        <span class="word__osd" data-osd aria-hidden="true">LED —</span>
+      </h1>
+
+      <div class="hero__panel">
+        <div class="panel">
+          <div class="panel__bar">
+            <span class="panel__live"><i class="dot" aria-hidden="true"></i>实测 · 局域网</span>
+            <span class="panel__fps"><span data-tick="60|55.4|64.2|1">60.0</span> fps</span>
+          </div>
+          <div class="panel__scanwrap">
+            <canvas class="panel__scan" data-scan aria-hidden="true"></canvas>
+          </div>
+          <div class="panel__foot">
+            <b>WebRTC264 直连</b>
+            <span>1920×1200</span>
+            <span><span data-tick="11.5|9.8|13.4|1">11.5</span> Mbps</span>
+          </div>
+        </div>
+        <p class="panel__cap">FIG.02 — 画面帧扫描示意 · 数值为局域网典型值</p>
+      </div>
+    </div>
+
+    <div class="hero__bottom">
+      <div>
+        <p class="tagline">一个人做的小工具</p>
+        <p class="lead">不注册、不弹广告、能不经过服务器就不经过。<br>做得不算成熟，但尽量直接、免费、把源码留在明处。</p>
+        <div class="actions">
+          <a class="btn btn--main" href="light-screen/" data-magnet>看看「轻屏」</a>
+          <a class="btn btn--line" href="about/" data-magnet>关于作者与授权</a>
+        </div>
+      </div>
+      <div>
+        <p class="meta-line mono">只做 WINDOWS · 全部免费<br>POLYFORM NONCOMMERCIAL 1.0.0</p>
+      </div>
+    </div>
+  </div>
+  <div class="ruler ruler--dark" aria-hidden="true"></div>
+</section>
+
+<div class="strip">
+  <div class="wrap">
+    <div class="strip__grid">
+      <div class="strip__c"><b><span data-tick="60|58.6|60.4|1">60.0</span></b><span>fps · 硬件编码</span></div>
+      <div class="strip__c"><b>~10</b><span>ms · 局域网缓冲</span></div>
+      <div class="strip__c"><b>20 GB</b><span>单文件 · 断点续传</span></div>
+      <div class="strip__c"><b>0<em> 台</em></b><span>第三方服务器</span></div>
+      <div class="strip__c"><b>¥0</b><span>没有专业版</span></div>
     </div>
   </div>
 </div>
 
-<section id="products">
+<section class="sec" id="products">
   <div class="wrap">
-    <h2>产品</h2>
-    <p class="sub">现在只有一个，以后会慢慢加。每个都是能单独用、不绑账号的东西。</p>
-    <div class="grid">
-      <div class="card">
-        <h3>轻屏 <span class="tag green">免费</span></h3>
-        <p>
-          Windows 远程桌面。手机上用浏览器打开就能看电脑屏幕、点鼠标、打字、听声音，还能传大文件。
-          <b style="color:var(--fg)">不用装 App</b>、默认走自己的加密网（Tailscale），
-          <b style="color:var(--fg)">不经过任何远控厂商的服务器</b>。
-        </p>
-        <p class="note" style="margin-top:10px">60fps 硬件编码 + WebRTC 直连 · 局域网缓冲常在 10ms 上下 · 完全免费</p>
-        <a class="more" href="light-screen/">了解轻屏 →</a>
-      </div>
-      <div class="card" style="opacity:.62">
-        <h3>下一个 <span class="tag amber">在做</span></h3>
-        <p>还在折腾里。想第一时间知道，去 <a href="about/">关于页</a> 找联系方式，或者盯着这个页面。</p>
-      </div>
+    <div class="sec-head">
+      <div class="fig"><span>FIG.03</span><span class="fig__line"></span><span>产品</span></div>
+      <h2>现在只有一个，以后会慢慢加</h2>
+      <p class="sub">每个都是能单独用、不绑账号的东西。</p>
     </div>
-  </div>
-</section>
-
-<section id="why">
-  <div class="wrap">
-    <h2>为什么做这些</h2>
-    <p class="sub">三条原则，也是我挑工具用的时候最在意的三点。</p>
-    <ul class="feat">
-      <li><b>能不装就不装</b>手机上是浏览器就能用的东西，不该为了看一次屏幕去装一个 App。</li>
-      <li><b>能不过服务器就不过</b>画面、文件通过点对点加密通道走，不经过我的服务器 —— 我也看不到你的内容。</li>
-      <li><b>免费就真的免费</b>不搞"免费额度"、不塞广告、不要你注册账号。愿意支持就提意见、报问题。</li>
+    <ul class="goods">
+      <li>
+        <a class="goods__row" href="light-screen/">
+          <div>
+            <h3 class="goods__name">轻屏 <span class="badge">免费</span></h3>
+            <p class="goods__desc">
+              Windows 远程桌面。手机上用浏览器打开就能看电脑屏幕、点鼠标、打字、听声音，还能传大文件。
+              <b>不用装 App</b>、默认走自己的加密网（Tailscale），<b>不经过任何远控厂商的服务器</b>。
+            </p>
+          </div>
+          <div class="goods__side">
+            <span>WINDOWS 10 / 11</span>
+            <span>v1.0.21 · 92.3 MB</span>
+            <span class="goods__go">了解轻屏 →</span>
+          </div>
+        </a>
+      </li>
+      <li>
+        <div class="goods__row goods__row--off">
+          <div>
+            <h3 class="goods__name">下一件 <span class="badge badge--warn">在做</span></h3>
+            <p class="goods__desc">还在折腾里。想第一时间知道，去<a href="about/">关于页</a>找联系方式，或者盯着这个页面。</p>
+          </div>
+          <div class="goods__side"><span>待定</span></div>
+        </div>
+      </li>
     </ul>
   </div>
 </section>
 
-<section>
+<section class="sec" id="why">
   <div class="wrap">
-    <div class="free">
-      <p class="big">全部免费</p>
-      <p class="note" style="margin:8px 0 0">
-        没有专业版、没有体验期、没有收款码。作者一个人维护，能力有限（只做 Windows、稳定性比不上大厂），
-        但会认真看每个反馈。
-      </p>
-      <ul>
-        <li>允许拿去改、拿去自己用、拿去分享给朋友</li>
-        <li><b style="color:var(--fg)">不允许未经作者同意用于商业用途</b>（协议：PolyForm Noncommercial 1.0.0）</li>
-        <li>需要商用授权、或者想定制功能，去 <a href="about/">关于页</a></li>
-      </ul>
+    <div class="sec-head">
+      <div class="fig"><span>FIG.04</span><span class="fig__line"></span><span>原则</span></div>
+      <h2>三条原则</h2>
+      <p class="sub">也是我挑工具用的时候最在意的三点。</p>
     </div>
+    <ol class="principles">
+      <li class="principle">
+        <span class="principle__n" aria-hidden="true">01</span>
+        <h3 class="principle__t">能不装就不装</h3>
+        <p class="principle__d">手机上是浏览器就能用的东西，不该为了看一次屏幕去装一个 App。</p>
+      </li>
+      <li class="principle">
+        <span class="principle__n" aria-hidden="true">02</span>
+        <h3 class="principle__t">能不过服务器就不过</h3>
+        <p class="principle__d">画面、文件通过点对点加密通道走，不经过我的服务器 —— 我也看不到你的内容。</p>
+      </li>
+      <li class="principle">
+        <span class="principle__n" aria-hidden="true">03</span>
+        <h3 class="principle__t">免费就真的免费</h3>
+        <p class="principle__d">不搞「免费额度」、不塞广告、不要你注册账号。愿意支持就提意见、报问题。</p>
+      </li>
+    </ol>
   </div>
 </section>
 
-<footer>
+<section class="band" id="free">
   <div class="wrap">
-    <div>© 2026 轻器 · 一个人做的小工具</div>
-    <div>
-      <a href="light-screen/">轻屏</a> ·
-      <a href="about/">关于 / 授权</a> ·
-      <a href="about/#license">协议全文</a>
+    <div class="fig fig--dark"><span>FIG.05</span><span class="fig__line"></span><span>授权</span></div>
+    <h2 class="band__h">全部<em>免费</em></h2>
+    <p class="band__lead">没有专业版、没有体验期、没有收款码。作者一个人维护，能力有限（只做 Windows、稳定性比不上大厂），但会认真看每个反馈。</p>
+    <ul class="band__grid">
+      <li><span class="mono">允许</span>拿去改、拿去自己用、拿去分享给朋友</li>
+      <li><span class="mono mono--warn">不允许</span>未经作者同意用于商业用途（协议：PolyForm Noncommercial 1.0.0）</li>
+      <li><span class="mono">商谈</span>需要商用授权、或者想定制功能，去<a href="about/">关于页</a></li>
+    </ul>
+  </div>
+</section>
+
+</main>
+
+<footer class="foot">
+  <div class="wrap">
+    <div class="foot__top">
+      <a class="brand" href="./">
+        <svg class="brand__m" viewBox="0 0 20 20" aria-hidden="true"><rect x=".5" y=".5" width="8" height="8" fill="currentColor"/><rect x="11.5" y=".5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x=".5" y="11.5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x="11.5" y="11.5" width="8" height="8" fill="#0BD8B6"/></svg>
+        轻器
+      </a>
+      <p class="mono" style="margin:0">一个人的小工具铺 · 自 2026</p>
+    </div>
+    <div class="foot__grid">
+      <div>
+        <h2 class="foot__h">当前版本</h2>
+        <ul>
+          <li class="mono">轻屏 v1.0.21</li>
+          <li class="mono">96,764,760 B</li>
+          <li class="mono">2026-11-08</li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="foot__h">页面</h2>
+        <ul>
+          <li><a href="light-screen/">轻屏</a></li>
+          <li><a href="about/">关于 / 授权</a></li>
+          <li><a href="versions/">更新记录</a></li>
+          <li><a href="about/#license">协议全文</a></li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="foot__h">协议</h2>
+        <ul>
+          <li class="mono">PolyForm NC 1.0.0</li>
+          <li class="mono">源码可见</li>
+          <li class="mono">商用需授权</li>
+        </ul>
+      </div>
+      <div>
+        <h2 class="foot__h">这件东西</h2>
+        <ul>
+          <li class="mono">手写 HTML / CSS</li>
+          <li class="mono">原生脚本 · 无依赖</li>
+          <li class="mono">无追踪 · 无第三方请求</li>
+        </ul>
+      </div>
+    </div>
+    <div class="foot__bot">
+      <span>© 2026 轻器 · 一个人做的小工具</span>
+      <span>字体来自你的系统</span>
     </div>
   </div>
 </footer>
 
+<script src="app.js" defer></script>
 </body>
 </html>
