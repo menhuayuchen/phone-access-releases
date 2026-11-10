@@ -417,14 +417,18 @@ function h264MarkAvailable() {
       DEVICE.notes = (DEVICE.notes || []).concat(['实际出帧成功，采集判定已自动修正为 ' + DEVICE.name]);
       // 2026-11-10：把误判时压低的画质还回去 —— 只还"还没被用户/页面改过"的字段
       // （当前值仍等于我们强制写进去的那个值才还原，避免覆盖用户的选择）。
+      // 注意：还原的上界必须是**自愈后的新设备上限** DEVICE.caps，不是配置上限 ——
+      // 无硬件编码的机器自愈目标是 basic(30fps/12Mbps/1600 宽)，用配置上限(240/100000)
+      // 会把它还原成 90fps/50Mbps 软编，正好是设备审查要阻止的事（审查员验出来的）。
+      const nc = DEVICE.caps || deviceCapsFor(lv);
       const cl = DEVICE.clamped;
       let restored = false;
       try {
         if (cl) {
-          if (cl.fps !== undefined && H264_FPS === oldCaps.maxFps) { H264_FPS = Math.min(fpsCap, cl.fps); restored = true; }
-          if (cl.kbps !== undefined && H264_KBPS === oldCaps.maxKbps) { H264_KBPS = Math.min(kbpsCap, cl.kbps); restored = true; }
+          if (cl.fps !== undefined && H264_FPS === oldCaps.maxFps) { H264_FPS = Math.min(nc.maxFps, cl.fps); restored = true; }
+          if (cl.kbps !== undefined && H264_KBPS === oldCaps.maxKbps) { H264_KBPS = Math.min(nc.maxKbps, cl.kbps); restored = true; }
           if (cl.width !== undefined && H264_W === oldCaps.maxWidth) {
-            H264_W = Math.min(CAP_W, cl.width);
+            H264_W = evenDown(Math.min(nc.maxWidth, cl.width));
             H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
             restored = true;
           }
