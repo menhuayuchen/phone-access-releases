@@ -1911,6 +1911,10 @@ async function rtc264Stats() {
                 method: 'POST', headers: { 'content-type': 'application/json' },
                 body: JSON.stringify({ fps: next })
               });
+              // 2026-11-10：记住这个值，服务端重启/配置重读后由 h264QualityBind 初始化时拉回来，
+              // 否则又会被喂回 90fps → 队列再次堆积 → 反复冻（本次线上故障的真正循环）。
+              try { localStorage.setItem('hqFps', String(next)); } catch (e) { }
+              try { const _fs = document.getElementById('hqFps'); if (_fs) _fs.value = String(next); } catch (e) { }
               _w.resyncs = 0; _w._rsSeen = 0; _w._qOver = 0;
             } catch (e2) { } finally { RTC264.downshifting = false; }
           })();
@@ -4928,6 +4932,26 @@ bindImg(img);
         }
         fpsSel.value = String(j.fps);
         kSel.value = String(j.kbps);
+        // 2026-11-10：把"这台设备/这条线路吃得下的画质"记住并**在这次页面加载时拉回去**。
+        // 起因：手机端解码只有 ~30fps（1200p 走不上硬件解码），自动降档把帧率降到 30 之后，
+        // 只要服务端重启（升级/部署/崩溃自愈），H264_FPS/KBPS 会从配置重读回默认（90fps / 50Mbps）
+        // → 又喂不动、又在丢包 → 又堆队列 → 又冻。这里初始化时比对一次，只降不升；
+        // 用户手动改高走 apply()，那里会把新值写进同一份存储（手动选择永远优先）。
+        try {
+          const wantF = Number(localStorage.getItem('hqFps') || 0);
+          const wantK = Number(localStorage.getItem('hqKbps') || 0);
+          const post = {};
+          if (wantF >= 30 && Number(j.fps) > wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
+          if (wantK >= 2000 && Number(j.kbps) > wantK) { post.kbps = wantK; kSel.value = String(wantK); }
+          if (post.fps || post.kbps) {
+            fetch('/h264-quality', {
+              method: 'POST', headers: { 'content-type': 'application/json' },
+              body: JSON.stringify(post)
+            }).catch(function () { });
+            setMsg('这台设备之前定在 ' + (post.fps || j.fps) + 'fps / '
+              + Math.round((post.kbps || j.kbps) / 1000) + 'Mbps，已自动拉回（可在下面手动改）', '#ffb454');
+          }
+        } catch (e) { }
         if (!j.width || !j.height) setMsg('高清通道未启用');
         updateFlow();
       } catch (e) { }
@@ -4961,6 +4985,8 @@ bindImg(img);
         })).json();
         if (j && j.ok) {
           try { fpsSel.value = String(j.fps); wSel.value = String(j.width); kSel.value = String(j.kbps); } catch (e) { }
+          // 2026-11-10：用户手动选的画质也要记住（自动降档用同一个键，手动选择即覆盖它）
+          try { localStorage.setItem('hqFps', String(j.fps)); localStorage.setItem('hqKbps', String(j.kbps)); } catch (e) { }
           updateFlow();
           setMsg('已生效：' + j.width + '×' + j.height + ' · ' + j.fps + 'fps · ' + Math.round(j.kbps / 1000) + 'Mbps', '#8CE58C');
           updateFlow();
@@ -8302,7 +8328,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.3';
+export const PAGE_VER = '2026-11-10.4';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
