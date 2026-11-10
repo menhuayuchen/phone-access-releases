@@ -31,7 +31,37 @@ const S = {
   cfg: 0,
   spsChanges: 0,
   queue: 0,
+  // 2026-11-10 诊断：收到的 RTCEncodedVideoFrame.timestamp 间隔（单位是 **90kHz 刻度**，不是微秒）。
+  // 90fps 正常约 1000 刻度/帧。这里只做观测，**不拿它判丢帧**（见下面 noteInTs 的说明）。
+  tsDelta: 0,
+  tsMin: 0,
+  tsMax: 0,
+  tsEma: 0,
+  tsN: 0,
 };
+
+// RTCEncodedVideoFrame.timestamp 实测是 90kHz 刻度，而且时间戳是侧车**按帧到达时刻**打的，
+// 所以相邻帧的差值反映的是 Node→侧车的投递抖动，不是编码器的出帧节奏：
+// 本机实测 delta 在 1~9576 刻度之间乱跳（正常帧间隔约 1000）。
+// 于是"delta 变大就等于丢了帧"这个判据完全不成立 —— 试过一版，10 秒里误判 86 次、
+// 白丢 520 帧（每次误判要等下一个 IDR 才恢复）。**不要再用它判断丢帧。**
+// 真正可靠的丢帧信号只有两个：
+//   ① 浏览器的 getStats().packetsLost（网络丢包，主线程 postMessage 'gap' 过来）；
+//   ② 侧车自己丢帧时置 needKey（在 Go 里做，见 docs 交接文档）。
+let inTsLast = 0, inTsInit = false, inTsEma = 0;
+function noteInTs(ts) {
+  if (typeof ts !== 'number' || !(ts > 0)) return;
+  if (!inTsInit) { inTsInit = true; inTsLast = ts; return; }
+  const d = ts - inTsLast;
+  inTsLast = ts;
+  if (d <= 0) { inTsEma = 0; return; }   // 编码器重启 / 时间戳回退
+  S.tsDelta = d;
+  S.tsN++;
+  if (!S.tsMin || d < S.tsMin) S.tsMin = d;
+  if (d > S.tsMax) S.tsMax = d;
+  inTsEma = inTsEma === 0 ? d : (inTsEma * 0.9 + d * 0.1);
+  S.tsEma = Math.round(inTsEma);
+}
 
 let decoder = null;
 let decoderReady = false;
@@ -242,8 +272,9 @@ function submitFrame(buf, isKeyFrame) {
 }
 
 // ---------- 一帧 ----------
-function onEncodedFrame(data, isKey) {
+function onEncodedFrame(data, isKey, inTs) {
   S.rtp++;
+  noteInTs(inTs);   // 只做观测，不参与丢帧判断（原因见 noteInTs 上方注释）
   if (!data || data.byteLength === 0) return;
   const u8 = new Uint8Array(data);
 
@@ -344,7 +375,7 @@ function handleRtpTransform(event) {
     .pipeThrough(new TransformStream({
       transform: (frame, controller) => {
         try {
-          onEncodedFrame(frame.data, frame.type === 'key');
+          onEncodedFrame(frame.data, frame.type === 'key', frame.timestamp);
         } catch (e) {
           S.lastErr = 'onFrame: ' + String((e && e.message) || e);
         }
