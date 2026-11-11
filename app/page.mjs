@@ -1288,6 +1288,130 @@ function tryStartWC264(pc) {
   };
   attempt();
 }
+// ---- 2026-11-11：展示节奏调度（frame pacing）--------------------------------
+// 问题（已量化，见 screen-server 的 feedCad 与 diag 的 cad=）：
+//   编码器产帧是**成簇**的 —— 本机实测 120fps 下相邻帧到达间隔 p50=5.2ms、p90=15.4ms、
+//   max=52ms（理论 8.33ms）。而原来是"解码出一帧就立刻 drawImage"，于是 120Hz 屏上必然
+//   出现"有的 vsync 挤两帧、有的空一帧" → 用户看到的那一点点**间断感**。
+//   这也解释了为什么 240fps 反而更顺：帧更密，每个 vsync 都必有新帧。
+// 做法：解码帧进小队列，按 worker 合成的**均匀时间戳**用 requestAnimationFrame 逐帧呈现。
+//   成簇到达被缓成均匀播放；代价约 1~2 帧延迟（120fps 下 8~16ms）。
+//   积压超上限丢最旧的（宁可跳帧也不能越拖越久）；连续欠载时把缓冲从 2 帧加到最多 4 帧。
+const PQ = { q: [], playing: false, ts0: 0, base: 0, target: 2, raf: 0, drawn: 0, under: 0, over: 0, lastUnder: 0, lastPeriod: 8333, di: [], lastDrawAt: 0 };
+try { window.__pq = PQ; } catch (e) { }
+
+function pqStop() {
+  const q = PQ.q;
+  PQ.q = [];
+  for (let i = 0; i < q.length; i++) { try { q[i].frame.close(); } catch (e) { } }
+  PQ.playing = false; PQ.ts0 = 0; PQ.base = 0;
+  if (PQ.raf) { try { cancelAnimationFrame(PQ.raf); } catch (e) { } PQ.raf = 0; }
+}
+
+function pqPeriodUs() {
+  const q = PQ.q;
+  if (q.length >= 2) {
+    const d = q[q.length - 1].ts - q[q.length - 2].ts;
+    if (d > 500 && d < 200000) { PQ.lastPeriod = d; return d; }
+  }
+  return PQ.lastPeriod;
+}
+
+function pqSchedule() {
+  if (PQ.raf) return;
+  try { PQ.raf = requestAnimationFrame(pqTick); } catch (e) { }
+}
+
+function pqPush(frame, ts) {
+  const w = window.__wc264;
+  if (!w || !w.canvas || !w.ctx) { try { frame.close(); } catch (e) { } return; }
+  const q = PQ.q;
+  // 时间戳不再递增（重连 / 换档 / 解码器重建）→ 清空并重新锚定
+  if (q.length && !(ts > q[q.length - 1].ts)) {
+    for (let i = 0; i < q.length; i++) { try { q[i].frame.close(); } catch (e) { } }
+    PQ.q = []; PQ.playing = false;
+  }
+  PQ.q.push({ frame: frame, ts: ts });
+  const cap = PQ.target + 4;
+  while (PQ.q.length > cap) {
+    const old = PQ.q.shift();
+    PQ.over++;
+    try { old.frame.close(); } catch (e) { }
+  }
+  pqSchedule();
+}
+
+function pqTick() {
+  PQ.raf = 0;
+  const w = window.__wc264;
+  if (!w || !w.on || !w.canvas || !w.ctx) { pqStop(); return; }
+  let q = PQ.q;
+  if (!q.length) { PQ.playing = false; PQ.lastDrawAt = 0; return; }   // 队列空：等下一帧重锚（rAF 停摆）
+  const period = pqPeriodUs();
+  const now = performance.now();
+  if (!PQ.playing) {
+    // 起播（或欠载后恢复）：把播放时钟**压后 target 帧**再开始，让缓冲先建立起来。
+    // 这是"平滑"的关键 —— 锚到队首 (base=now) 等于零缓冲，成簇到达会立刻照抄成抖动。
+    PQ.ts0 = q[0].ts;
+    PQ.base = now + Math.max(1, PQ.target) * period / 1000;
+    PQ.playing = true;
+  }
+  // 延迟控制按**时间**而不是按帧数：rAF 240Hz 时 8.3ms 一帧的内容完全画得完，
+  // 按帧数裁只会白扔本来来得及显示的帧（实测只画出 99/120）。
+  while (PQ.q.length > 12) {
+    const old = PQ.q.shift();
+    PQ.over++;
+    try { old.frame.close(); } catch (e) { }
+  }
+  q = PQ.q;
+  if (!q.length) { PQ.playing = false; PQ.lastDrawAt = 0; return; }
+  let playTs = PQ.ts0 + (now - PQ.base) * 1000;
+  const newest = q[q.length - 1].ts;
+  // 缓冲过深（时钟落后太多）→ 追到"最新帧 - target 帧"：保持固定缓冲，又不让延迟越拖越久。
+  // 注意**不能**反向对齐（playTs < 队首时就锚到队首）—— 那会把缓冲清零，抖回去。
+  if (playTs < newest - (PQ.target + 3) * period) {
+    playTs = newest - PQ.target * period;
+    PQ.ts0 = q[0].ts;
+    PQ.base = now - (playTs - PQ.ts0) / 1000;
+  }
+  let pick = -1;
+  for (let i = 0; i < q.length; i++) { if (q[i].ts <= playTs) pick = i; else break; }
+  if (pick < 0) { pqSchedule(); return; }               // 还没到点：保持当前画面，不重画
+  for (let i = 0; i < pick; i++) { try { q[i].frame.close(); } catch (e) { } }
+  const it = q[pick];
+  q.splice(0, pick + 1);
+  try {
+    const c = w.canvas, x = w.ctx, f = it.frame;
+    if (c.width !== f.displayWidth || c.height !== f.displayHeight) { c.width = f.displayWidth; c.height = f.displayHeight; }
+    x.drawImage(f, 0, 0);
+    w.frames++; w.lastFrameAt = Date.now();
+    // 出帧 = 活着：清连续失败计数并解除冷却（原逻辑不变，只是改由调度器在呈现时更新）
+    if (w.restarts) w.restarts = 0;
+    w.gaveUp = false;
+    PQ.drawn++;
+    // 2026-11-11：呈现间隔采样（只留最近 240 个）。这是"画得匀不匀"的客观证据，
+    // 修复前在 120fps 内容上会出现大量 ~4ms 和 ~16ms 的间条（即用户看到的间断）。
+    try {
+      const _pd = performance.now();
+      if (PQ.lastDrawAt) {
+        const _pi = _pd - PQ.lastDrawAt;
+        if (_pi > 0 && _pi < 500) { PQ.di.push(Math.round(_pi * 10) / 10); if (PQ.di.length > 240) PQ.di.shift(); }
+      }
+      PQ.lastDrawAt = _pd;
+    } catch (e) { }
+  } catch (e) { }
+  try { it.frame.close(); } catch (e) { }
+  // 欠载：画完就空了且已落后于播放时钟 → 说明到达比播放慢，加大缓冲
+  if (!PQ.q.length) {
+    if ((playTs - it.ts) > pqPeriodUs() * 1.5) {
+      PQ.under++;
+      const t = Date.now();
+      if (t - PQ.lastUnder > 1000) { PQ.lastUnder = t; if (PQ.target < 4) PQ.target++; }
+    }
+  }
+  pqSchedule();
+}
+
 const WC264 = {
   on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0,
   // 2026-11-11：初值给"现在"，不要给 0。
@@ -1359,21 +1483,8 @@ const WC264 = {
   onMsg(m) {
     if (!m) return;
     if (m.type === "frame") {
-      const f = m.frame;
-      try {
-        const c = this.canvas, x = this.ctx;
-        if (c && x) {
-          if (c.width !== f.displayWidth || c.height !== f.displayHeight) { c.width = f.displayWidth; c.height = f.displayHeight; }
-          x.drawImage(f, 0, 0);
-          this.frames++;
-          this.lastFrameAt = Date.now();
-          // 2026-11-11：出帧 = 活着。把"连续失败"计数清零并解除冷却。
-          // 原来 restarts 是**终身计数**：一晚上遇到 3 次网络抖动之后就永久放弃 WebCodecs，
-          // 之后再卡也不会自愈（违反 10287a02：任何 false 状态都必须有恢复路径）。
-          if (this.restarts) this.restarts = 0;
-          this.gaveUp = false;
-        }
-      } catch (e) { } finally { try { f.close(); } catch (e2) { } }
+      // 2026-11-11：不再"一到就画" —— 交给展示节奏调度（见 PQ 上方注释）。
+      pqPush(m.frame, m.ts);
     } else if (m.type === "stats") {
       this.stats = m.stats;
     } else if (m.type === "reconfig") {
@@ -1410,6 +1521,8 @@ const WC264 = {
         });
       }
     } catch (e) { }
+    // 2026-11-11：调度器里的解码帧是所有权对象，必须在这里 close 掉，否则会泄漏 GPU 纹理
+    try { pqStop(); } catch (e0) { }
     try { if (this.worker) this.worker.terminate(); } catch (e) { }
     this.worker = null; this.on = false; this.stats = null;
     if (this.canvas) { try { this.canvas.remove(); } catch (e) { } this.canvas = null; this.ctx = null; }
