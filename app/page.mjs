@@ -1550,7 +1550,19 @@ function syncWin264() {
 function rtc264Mode() {
   try { return new URLSearchParams(location.search).get('rtc264') === 'relay' ? 'relay' : 'all'; } catch (e) { return 'all'; }
 }
-function stopRtc264() {
+function stopRtc264(why) {
+  // 2026-11-11：把"谁关掉了连接"上报到服务端。
+  // 为什么需要：侧车日志只能看到 pc-closed，看不到**是谁**、因为什么触发的。
+  // 为了查"每 30 秒重连一次"这个问题，之前只能靠猜；现在服务端日志里直接会有
+  // [rtc264-stop] 原因=...，一眼定位。
+  try {
+    if (why) {
+      fetch('/wc264-diag?k=' + encodeURIComponent(KEY), {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ stop: String(why).slice(0, 180) }), cache: 'no-store', keepalive: true
+      }).catch(function () { });
+    }
+  } catch (e) { }
   // 2026-11-10：重连必须把 WebCodecs 接收端一起停掉、并摘掉 transform。
   // 否则 WC264.on 一直是 true，重连后 start() 直接 return，新 PC 挂不上 transform，
   // 表现：画面停在最后一帧、「缓」一路涨到几万毫秒（实测 21886ms）。
@@ -1589,7 +1601,7 @@ function stopRtc264() {
   }
 }
 async function startRtc264() {
-  stopRtc264();
+  stopRtc264('restart');
   const R = RTC264;
   // 2026-11-11（C 方案）：建会话前先问服务端"我该走哪一路"。
   // 只在没有/超过 20 秒没问过时才问（重连循环里不必每次都问）。
@@ -2404,7 +2416,7 @@ function rtc264Retry(why) {
   if (R.busy) return;
   try { console.log('rtc264: retry(' + why + ') attempts=' + R.attempts); } catch (e) { }
   R.busy = true;
-  stopRtc264();
+  stopRtc264('retry:' + why);
   R.busy = false;
   clearTimeout(R.retryTimer);
   // 先分辨是"电脑端在重启"还是"链路不通"：
@@ -2477,7 +2489,7 @@ function rtc264Wanted() {
 }
 function rtc264Fallback(why) {
   try { console.log('rtc264 fallback: ' + why); } catch (e) { }
-  stopRtc264();
+  stopRtc264('fallback:' + why);
   try {
     const u = new URL(location.href);
     u.searchParams.set('rtc264', '0');      // 记住这次失败，别在重连循环里反复试 WebRTC
@@ -2496,7 +2508,7 @@ document.addEventListener('visibilitychange', function () {
   startRtc264();
 });
 async function startH264() {
-  stopRtc264();                       // 从 WebRTC264 切回来时先收掉 RTC 会话，避免两路同时解码
+  stopRtc264('switch-to-h264');                       // 从 WebRTC264 切回来时先收掉 RTC 会话，避免两路同时解码
   try { syncWin264(); } catch (e) { }  // 单窗口采集开关：切到清晰模式时把当前窗口/全屏重新告诉服务端
   try { sendCaptureArgs(true); } catch (e) { }   // 显示器序号 + 裁剪矩形（副屏必须切 output_idx）
   let st = null;
@@ -2707,7 +2719,7 @@ async function startH264() {
   connectWs();
 }function restartH264() { if (h264Supported()) startH264(); else startMjpeg(); }
 function startMjpeg() {
-  stopRtc264();                       // 降级到低频画面时不要留着 WebRTC264 会话
+  stopRtc264('switch-to-mjpeg');                       // 降级到低频画面时不要留着 WebRTC264 会话
   try { setNote('已切到低频画面(诊断)', 6000); } catch (e) { }
   try { setNote('已切到低频画面', 4000); } catch (e) { }
   // MJPEG 流已退役（2026-11-04）：浏览器不支持 WebCodecs 或高清失败时，
@@ -3016,7 +3028,7 @@ btnCrisp.addEventListener('click', async () => {
 });
 
 btnSmooth.addEventListener('click', async () => {
-  stopRtc264();
+  stopRtc264('user-smooth');
   stopH264();
   state.mode = 'raw'; btnSmooth.classList.add('on'); btnCrisp.classList.remove('on');
   applyRect();

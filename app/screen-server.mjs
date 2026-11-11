@@ -2916,6 +2916,37 @@ const capFile = viewersFile.replace(/[^\\/]*$/, '') + 'capture.interval';
 const modeCtlFile = viewersFile.replace(/[^\\/]*$/, '') + 'capture.mode';
 const sourceState = { mode: 'mjpeg', monitor: -1, window: 0, width: 0 };
 const sourcesCache = { out: '', at: 0 };   // /sources 的 600ms 缓存（页面每 2 秒轮询）
+// 2026-11-11（关键修正）：/sources 原来是 execFileSync —— **同步阻塞事件循环**，
+// 而这个接口是页面**每 2 秒**轮询一次的。sources.exe 枚举窗口遇到卡死的程序能跑好几秒
+// （timeout 给了 8 秒），期间整个 Node 进程停摆：
+//   · 音频命名管道读不动 → audio.exe 写超时 2000ms → 丢掉 586KB PCM（约 3 秒声音）并补静音，
+//     侧车还得把音频时间戳"贴回真实时间" → 用户听到的就是**发糊/断续**；
+//   · 视频 feed 也停 → 侧车那边断帧；
+//   · 页面的 /h264-status 探针超时 → 判"冻结" → rtc264Retry → **侧车日志每 30 秒一次 pc-closed**。
+// 现在改成异步 + 后台刷新：请求立刻返回上一次结果，刷新在后台跑，绝不阻塞事件循环。
+let sourcesRefreshing = false;
+function refreshSourcesAsync() {
+  if (sourcesRefreshing) return Promise.resolve(false);
+  sourcesRefreshing = true;
+  return new Promise((resolve) => {
+    try {
+      execFile(join(HERE, 'sources.exe'), { encoding: 'utf8', timeout: 8000, windowsHide: true }, (err, stdout) => {
+        sourcesRefreshing = false;
+        if (!err && typeof stdout === 'string' && stdout.trim()) {
+          sourcesCache.out = stdout;
+          sourcesCache.at = Date.now();
+          resolve(true);
+        } else {
+          if (err) console.log('screen-server: [sources] 枚举失败（沿用旧缓存）: ' + String((err && err.message) || err));
+          resolve(false);
+        }
+      });
+    } catch (e) {
+      sourcesRefreshing = false;
+      resolve(false);
+    }
+  });
+}
 // capture.exe 抓不到被遮挡的窗口时，会写这个文件请求"把窗口提到前面"
 const raiseReq = join(HERE, 'raise-window.txt');
 let raising = false;
@@ -6553,6 +6584,13 @@ async function handler(req, res) {
       const n = (v) => (Number.isFinite(Number(v)) ? Math.round(Number(v)) : 0);
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
+      // 2026-11-11：页面每次主动关掉 PeerConnection 都会上报原因。
+      // 侧车日志只能看到 pc-closed，看不到是谁/为什么触发 —— 查"每 30 秒重连"时
+      // 只能靠猜。现在这里直接记一条，一眼定位。
+      if (m && m.stop) {
+        try { console.log('[rtc264-stop] 原因=' + String(m.stop).slice(0, 180)); } catch { }
+        return;
+      }
       const s = (m.stats && typeof m.stats === 'object') ? m.stats : {};
       try {
         console.log('[wc264-diag] on=' + (m.on ? 1 : 0) + ' hw=' + String(m.hw || '-')
@@ -6832,16 +6870,22 @@ async function handler(req, res) {
   }
 
   if (url.pathname === '/sources') {
+    // 这里**绝对不能**同步枚举窗口：页面每 2 秒轮询一次，一旦阻塞事件循环，
+    // 音频管道读不动（听感发糊/断续）、视频 feed 停、页面探针超时判冻结后重连。
+    // 详见 refreshSourcesAsync 上面的注释。
     try {
-      // 页面每 2 秒轮询一次，这里缓存 600ms，避免每次都真的去枚举一遍窗口
       const nowTs = Date.now();
-      if (!sourcesCache.out || nowTs - sourcesCache.at > 600) {
-        // windowsHide 必须写：本机默认终端是 Windows Terminal，服务在没有控制台的
-        // 形态下运行时（隔离测试实例），每轮询一次就在这里弹一个终端窗口
-        // —— 页面 2 秒轮一次、缓存只有 600ms，等于 2 秒闪一次，还抢前台。
-        sourcesCache.out = execFileSync(join(HERE, 'sources.exe'), { encoding: 'utf8', timeout: 8000, windowsHide: true });
-        sourcesCache.at = nowTs;
+      if (!sourcesCache.out) {
+        // 冷启动还没有缓存：异步等一次（只会发生在页面刚打开时）
+        refreshSourcesAsync().then(() => {
+          try {
+            res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+            res.end(sourcesCache.out || '{"ok":true,"items":[],"windows":[],"monitors":[]}');
+          } catch { }
+        });
+        return;
       }
+      if (nowTs - sourcesCache.at > 600) { try { refreshSourcesAsync(); } catch { } }   // 后台刷新，请求不等
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(sourcesCache.out);
     } catch (e) { res.writeHead(503, { 'content-type': 'text/plain' }); res.end('sources failed: ' + e.message); }
@@ -7621,6 +7665,26 @@ setTimeout(() => {
 // 2026-11-11：节点密钥到期巡检。默认 180 天，到期那天手机端所有入口会突然打不开。
 // 客户不会主动跑自检，所以这里每 6 小时自己看一眼，剩 ≤14 天就往日志里写一条醒目告警。
 // **只写日志、不进 /health**（/health 是 supervisor 的存活判据，不能因为告警被判死）。
+// 2026-11-11：事件循环卡顿探针。
+// 音频管道、视频 feed、/h264-status 都会在事件循环停摆时一起出问题，而"停摆"本身
+// 从日志里根本看不出来 —— 只有 audio.exe 的 write timeout 是间接证据，且它还会
+// 丢 PCM（听感发糊/断续）+ 让侧车把音频时间戳贴回真实时间（音画跳几秒）。
+// 这里直接量：每 500ms 看一次实际间隔，超 300ms 就记一条（限流 5 秒，避免刷屏）。
+let _loopLagTickAt = Date.now();
+let _loopLagLastLog = 0;
+let _loopLagMax = 0;
+setInterval(() => {
+  const now = Date.now();
+  const lag = now - _loopLagTickAt - 500;
+  _loopLagTickAt = now;
+  if (lag > _loopLagMax) _loopLagMax = lag;
+  if (lag > 300 && now - _loopLagLastLog > 5000) {
+    _loopLagLastLog = now;
+    console.log('[lag] 事件循环卡了 ' + lag + 'ms（音频管道/视频 feed 会跟着停；本轮最大 ' + _loopLagMax + 'ms）');
+    _loopLagMax = lag;
+  }
+}, 500).unref?.();
+
 function logKeyExpiryWarning() {
   tailscaleSummary().then((sum) => {
     try {
