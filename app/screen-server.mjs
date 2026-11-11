@@ -1321,9 +1321,14 @@ if (CFG264.enabled) setInterval(poll264, 5000);
 const S2_PORT = RTC264_PORT + 10;
 const S2_FEED_PORT = RTC264_FEED_PORT + 10;
 const S2_AUDIO_PORT = RTC264_AUDIO_PORT + 10;
-const S2_MAX_W = 1920;          // 第二路封顶，别让两条 2560 一起把显卡/CPU 拉爆
-const S2_MAX_FPS = 90;
-const S2_MAX_KBPS = 40000;
+// 2026-11-11 修正：第二路上限不再硬压到 1920/90 —— 那会让"第二台设备"选不了 2560/120，
+// 用户看到的就是"画质选项被搞坏了"。现在上限跟主路同尺寸、帧率留一档余量；
+// 真正的保护换成下面的"两路合计像素预算"。
+const S2_MAX_W = 2560;
+const S2_MAX_FPS = 120;
+const S2_MAX_KBPS = 50000;
+// 两路合计的像素预算（主路 2560x1600@120 ≈ 4.9 亿；再给第二路留约 2 亿）
+const S2_PIXEL_BUDGET = 800000000;
 const S2 = {
   side: null, spawning: false,
   feed: null, feedRetry: 0,
@@ -1591,6 +1596,8 @@ function s2StopAll(why) {
   }
   S2.status.ok = false;
   S2.status.sessions = 0;
+  S2.ownerClient = '';
+  S2.ownerAt = 0;
 }
 
 function s2Poll() {
@@ -1620,25 +1627,59 @@ function s2Poll() {
 if (CFG264.enabled) setInterval(s2Poll, 5000);
 
 // 给页面用：决定这台设备走哪一路（1=主路共享，2=自己的第二路）
-function s2PickStream(w, fps, kbps) {
-  const near = (a, b) => !!a && !!b && Math.abs(a.w - b.w) <= 32 && Math.abs(a.fps - b.fps) <= 2 && Math.abs(a.kbps - b.kbps) <= Math.max(2000, a.kbps * 0.1);
+// 主路归属：谁先来（或谁是主设备）就归谁；断线 90 秒后才释放
+const PRIMARY_OWNER = { client: '', at: 0 };
+function primaryOwnerAlive() {
+  if (!PRIMARY_OWNER.client) return false;
+  const busy = (Number(rtc264Status.sessions) > 0) || (h264.clients.size > 0);
+  if (busy) return Date.now() - PRIMARY_OWNER.at < 10 * 60 * 1000;      // 有人在看：10 分钟内算它的
+  return Date.now() - PRIMARY_OWNER.at < 20 * 1000;                     // 没人在看：20 秒后释放（否则接手设备会长时间改不了档）
+}
+function s2BudgetFps(w, fps) {
+  // 两路合计像素预算：主路当前的像素率 + 第二路请求的像素率不能超预算
+  const px2 = Math.max(1, w * evenDown(Math.max(360, Math.round(w * CAP_H / CAP_W))));
+  const usedByPrimary = Math.max(1, H264_W * H264_H) * Math.max(1, H264_FPS);
+  const room = Math.max(1, S2_PIXEL_BUDGET - usedByPrimary);
+  const maxFps = Math.max(15, Math.floor(room / px2));
+  const STEPS = [30, 60, 90, 120, 240];
+  let f = 15;
+  for (const s of STEPS) { if (s <= Math.min(S2_MAX_FPS, maxFps)) f = s; }
+  return Math.min(S2_MAX_FPS, Math.max(15, f));
+}
+// 2026-11-11（第二轮修正）：按**设备认领**分配，而不是"有没有人在看"。
+// 上一版实测出两个坑：①两台设备都被分到第二路（于是共用一份画质、还只能选到 1920/90）
+// ②第二路自己的低上限把 2560/120/240 "吃掉"，表现就是"画质设置被搞坏了"。
+function s2PickStream(clientId, w, fps, kbps) {
+  const cid = String(clientId || '').slice(0, 40);
   const want = {
-    w: evenDown(Math.max(640, Math.min(S2_MAX_W, Math.round(Number(w) || 1280)))),
-    fps: Math.max(10, Math.min(S2_MAX_FPS, Math.round(Number(fps) || 30))),
-    kbps: Math.max(2000, Math.min(kbpsCap, Math.round(Number(kbps) || 12000)))
+    w: evenDown(Math.max(640, Math.min(S2_MAX_W, Math.round(Number(w) || H264_W)))),
+    fps: Math.max(10, Math.min(S2_MAX_FPS, Math.round(Number(fps) || H264_FPS))),
+    kbps: Math.max(2000, Math.min(kbpsCap, Math.round(Number(kbps) || H264_KBPS)))
   };
-  const primary = { w: H264_W, fps: H264_FPS, kbps: H264_KBPS };
-  // 2026-11-11 修：原来这里还带了"最近 8 秒内有过 health 响应"这一条 —— 服务刚起来时它恒为真，
-  // 于是第一台设备也被判成"已有人在看"、被分到第二路（实测发生过）。有没有别人在看，只能看真实会话数。
-  const busy = (Number(rtc264Status.sessions) > 0) || (Number(S2.status.sessions) > 0) || (h264.clients.size > 0);
-  // 第一台设备：直接用主路（顺便把主路调成它要的档位由调用方负责）
-  if (!busy) return { stream: 1, reason: 'first' };
-  if (near(want, primary)) return { stream: 1, reason: 'same-as-primary' };
-  if (S2.profile && near(want, S2.profile) && (S2.side || S2.spawning)) return { stream: 2, reason: 'existing-second' };
-  // 第三台及以后、或者机器扛不住 → 共享主路
-  if (DEVICE.level !== 0) return { stream: 1, reason: 'device-too-weak' };
-  const p = s2ApplyProfile(want.w, want.fps, want.kbps);
-  return { stream: 2, reason: 'new-second', profile: p };
+  // 主路：没有主人 / 主人就是自己 / 主人早就断了 → 归你
+  if (!cid || !primaryOwnerAlive() || PRIMARY_OWNER.client === cid) {
+    PRIMARY_OWNER.client = cid || PRIMARY_OWNER.client;
+    PRIMARY_OWNER.at = Date.now();
+    return { stream: 1, reason: 'primary-owner', owner: true, profile: null };
+  }
+  // 第二路：这台设备自己的
+  if (S2.ownerClient === cid) {
+    S2.ownerAt = Date.now();
+    return { stream: 2, reason: 'my-second', owner: false, profile: S2.profile || null };
+  }
+  // 第二路空着 → 给这台设备单开
+  if (DEVICE.level === 0 && (!S2.ownerClient || (Date.now() - (S2.ownerAt || 0) > 90 * 1000))) {
+    const fps2 = s2BudgetFps(want.w, want.fps);
+    const p = s2ApplyProfile(want.w, Math.min(want.fps, fps2), want.kbps);
+    S2.ownerClient = cid;
+    S2.ownerAt = Date.now();
+    return { stream: 2, reason: 'new-second', owner: false, profile: p };
+  }
+  // 第三台及以后 / 弱机 / 第二路被别人占着 → 共享主路（但**不许改**主路档位）
+  return { stream: 1, reason: 'share-primary', owner: false, profile: null };
+}
+function s2OwnerIsPrimary(cid) {
+  return !!cid && PRIMARY_OWNER.client === cid && primaryOwnerAlive();
 }
 
 
@@ -5682,9 +5723,9 @@ async function handler(req, res) {
       try { m = JSON.parse(b || '{}'); } catch { }
       try {
         // 页面在启动阶段还不知道自己想要多宽（宽度只在设置面板里选），不传就用主路当前宽度
-        const r = s2PickStream(Number(m.width) > 0 ? Number(m.width) : H264_W, Number(m.fps), Number(m.kbps));
-        console.log('rtc264: 分配线路 stream=' + r.stream + '（' + r.reason + '）请求 ' + m.width + 'x' + m.fps + '@' + m.kbps);
-        jr(200, { ok: true, stream: r.stream, reason: r.reason, profile: r.profile || null, primary: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS } });
+        const r = s2PickStream(String(m.client || ''), Number(m.width), Number(m.fps), Number(m.kbps));
+        console.log('rtc264: 分配线路 stream=' + r.stream + '（' + r.reason + '）client=' + String(m.client || '-') + ' 请求 ' + m.width + 'x' + m.fps + '@' + m.kbps);
+        jr(200, { ok: true, stream: r.stream, owner: r.owner === true, reason: r.reason, profile: r.profile || null, ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }, primary: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS } });
       } catch (e) {
         jr(200, { ok: true, stream: 1, reason: 'error:' + String((e && e.message) || e) });
       }
@@ -5708,6 +5749,14 @@ async function handler(req, res) {
       };
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
+      // C 方案：共享主路的设备（不是主路主人）不许改主路档位，否则会把别人的画面改掉。
+      // 这里**不能**只看 sessions>0 —— 没有真实会话时（对方刚刷新/刚断开）也会被钻空子改掉主路档位。
+      // 只要不是主人就拒绝；主人空闲 20 秒会自动释放（primaryOwnerAlive）。
+      if (Number(m.stream) !== 2 && m.client && !s2OwnerIsPrimary(String(m.client))) {
+        qreply({ ok: true, changed: false, shared: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS,
+          message: '当前与他人共享主路画质，这台设备的档位不会影响别人' });
+        return;
+      }
       // C 方案：带 stream:2 的请求只改第二路，绝不动主路（否则又把第一台设备打断）
       if (Number(m.stream) === 2) {
         const p = s2ApplyProfile(Number(m.width), Number(m.fps), Number(m.kbps));

@@ -1579,9 +1579,13 @@ async function startRtc264() {
       const wantK = Number((function () { try { return localStorage.getItem('hqKbps'); } catch (e) { return 0; } })() || 0);
       const pk = await (await fetch('/h264-stream-pick', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fps: wantF || 0, kbps: wantK || 0 })
+        body: JSON.stringify({ fps: wantF || 0, kbps: wantK || 0, client: paClientId() })
       })).json();
-      if (pk && pk.ok) { R.stream = (Number(pk.stream) === 2) ? 2 : 1; R.streamAt = Date.now(); }
+      if (pk && pk.ok) {
+        R.stream = (Number(pk.stream) === 2) ? 2 : 1;
+        R.ownsPrimary = pk.owner === true;      // 只有主路主人能改主路档位
+        R.streamAt = Date.now();
+      }
     }
   } catch (e) { }
   const my = rtc264Gen;
@@ -2351,6 +2355,16 @@ function rtc264Retry(why) {
 }
 // B 方案默认开启：没写参数就走 WebRTC264；?rtc264=0 强制旧 WS 通道；?rtc264=1/relay 强制开启/中继测试。
 // h264.rtcEnabled 由 /h264-status 下发（配置开启 + 侧车 exe 存在才算可用）。
+// 2026-11-11（C 方案）：这台设备的稳定 id（同一浏览器持久），用于"谁是主路主人"的认领。
+// 没有它就只能按"有没有人在看"猜，实测会把两台设备分到同一路。
+function paClientId() {
+  try {
+    let v = localStorage.getItem('pa-client');
+    if (!v) { v = 'c' + Math.random().toString(36).slice(2, 12); localStorage.setItem('pa-client', v); }
+    return v;
+  } catch (e) { return 'c-nostore'; }
+}
+
 function rtc264Wanted() {
   let p = null;
   try { p = new URLSearchParams(location.search).get('rtc264'); } catch (e) { }
@@ -5104,13 +5118,15 @@ bindImg(img);
             const pickBody = {
               width: Number(wSel.value) || j.width,
               fps: wantF >= 30 ? wantF : Number(j.fps),
-              kbps: wantK >= 2000 ? wantK : Number(j.kbps)
+              kbps: wantK >= 2000 ? wantK : Number(j.kbps),
+              client: paClientId()
             };
             const pk = await (await fetch('/h264-stream-pick', {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pickBody)
             })).json();
             if (pk && pk.ok) {
               RTC264.stream = (Number(pk.stream) === 2) ? 2 : 1;
+              RTC264.ownsPrimary = pk.owner === true;
               try { window.__paStream = RTC264.stream; } catch (e) { }
               if (RTC264.stream === 2) {
                 setMsg('这台设备用独立画质（' + pickBody.fps + 'fps / ' + Math.round(pickBody.kbps / 1000) + 'Mbps），不影响别人', '#8CE58C');
@@ -5121,9 +5137,13 @@ bindImg(img);
           const post = { stream: Number(mine) };
           if (mine === '1') {
             // 只有主路的主人才能改全局档位
-            if (wantF >= 30 && Number(j.fps) !== wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
-            if (wantK >= 2000 && Number(j.kbps) !== wantK) { post.kbps = wantK; kSel.value = String(wantK); }
-            if (!post.fps && !post.kbps) delete post.stream;
+            if (RTC264.ownsPrimary === false) {
+              delete post.stream;   // 共享主路：不下发，避免改到别人的画面
+            } else {
+              if (wantF >= 30 && Number(j.fps) !== wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
+              if (wantK >= 2000 && Number(j.kbps) !== wantK) { post.kbps = wantK; kSel.value = String(wantK); }
+              if (!post.fps && !post.kbps) delete post.stream;
+            }
           } else {
             // 第二路：把自己要的档位直接下发到第二路
             if (wantF >= 30) { post.fps = wantF; fpsSel.value = String(wantF); }
@@ -5165,6 +5185,12 @@ bindImg(img);
       if (el && k) el.textContent = (AUTOQ.on ? '自动当前约 ' : '当前码率约 ') + (k / 1000).toFixed(0) + ' Mbps，满速约 ' + ((k * 3600) / 8 / 1024 / 1024).toFixed(1) + ' GB/小时（按编码码率估算，实际以流量为准）';
     };
     const apply = async () => {
+      // 2026-11-11（C 方案）：共享主路（不是主人）时改档位不会生效，直接说清楚，
+      // 免得用户以为"设置坏了/选不了"。
+      if (RTC264.stream !== 2 && RTC264.ownsPrimary === false) {
+        setMsg('当前和另一台设备共享主路画质：档位由它决定，改这里不会生效。等它断开后会自动归你。', '#ffb454');
+        return;
+      }
       setMsg('正在应用…');
       // 2026-11-10（独立审查建议）：只有用户**真的改了帧率**才把新值写成"我的选择"。
       // 否则他在"自动降档后的低帧率"状态下去改码率，会把降档值永久写成自己的选择。
@@ -5173,7 +5199,7 @@ bindImg(img);
         const j = await (await fetch('/h264-quality', {
           method: 'POST', headers: { 'content-type': 'application/json' },
           // C 方案：第二路的设备改画质时带 stream:2 —— 服务端只改第二路，不会打断第一台
-          body: JSON.stringify({ width: Number(wSel.value), fps: Number(fpsSel.value), kbps: Number(kSel.value), stream: Number(RTC264.stream || 1) })
+          body: JSON.stringify({ width: Number(wSel.value), fps: Number(fpsSel.value), kbps: Number(kSel.value), stream: Number(RTC264.stream || 1), client: paClientId() })
         })).json();
         if (j && j.ok) {
           try { fpsSel.value = String(j.fps); wSel.value = String(j.width); kSel.value = String(j.kbps); } catch (e) { }
@@ -8627,7 +8653,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-10.13';
+export const PAGE_VER = '2026-11-11.1';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
