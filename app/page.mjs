@@ -1437,6 +1437,25 @@ setInterval(function () {
   } catch (e) { }
 }, 1000);
 
+// 2026-11-11：手机端**真实刷新节奏**探针。
+// 用途：用户报"解码 120 但屏幕只画 60"时，一锤定音区分两种情况：
+//   · raf=60  → 浏览器/系统只给了 60Hz（屏幕刷新率设置、Chrome 限制），与我们无关；
+//   · raf=120 而 drawn=60 → 是我们渲染太重（画布 drawImage + 合成）跟不上。
+// 只做计数，代价可忽略；随 [wc264-diag] 每 30 秒上报一次。
+let _rafCount = 0, _rafHz = 0, _rafLastAt = performance.now();
+(function rafProbe() {
+  function tick() {
+    _rafCount++;
+    const n = performance.now();
+    if (n - _rafLastAt >= 1000) {
+      _rafHz = Math.round(_rafCount * 1000 / (n - _rafLastAt));
+      _rafCount = 0; _rafLastAt = n;
+    }
+    try { requestAnimationFrame(tick); } catch (e) { }
+  }
+  try { requestAnimationFrame(tick); } catch (e) { }
+})();
+
 const WC264 = {
   on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0,
   // 2026-11-11：初值给"现在"，不要给 0。
@@ -2432,6 +2451,13 @@ async function rtc264Stats() {
           vw: vid.videoWidth || 0, vh: vid.videoHeight || 0,
           fps: Math.round((R.qFps || 0) * 10) / 10,
           mbps: Math.round((R.qMbps || 0) * 10) / 10,
+          // 2026-11-11：手机端刷新节奏与呈现节奏。用来判断"解码 120 但只画 60"是
+          // 屏幕/浏览器上限（raf=60）还是我们渲染跟不上（raf=120 而 drawn=60）。
+          raf: _rafHz,
+          drawnHz: Math.round((_wd._hudDrawFps || 0) * 10) / 10,
+          decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
+          dpr: Math.round((window.devicePixelRatio || 0) * 100) / 100,
+          scr: (window.screen ? (screen.width + 'x' + screen.height) : ''),
           buf: Math.round(_wcBufOverride >= 0 ? _wcBufOverride : bufMs),
           // 2026-11-10：丢包/PLI 才是"花屏"的直接线索（gaps 只是触发了几次停喂）。
           // err 改成给**末尾**一段：lastErr 前面全是启动期的 diag，解码错误恰好会被截掉。

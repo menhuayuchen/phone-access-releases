@@ -6636,6 +6636,10 @@ async function handler(req, res) {
           + ' lost=' + n(m.lost) + ' pli=' + n(m.pli)
           + ' canvas=' + n(m.cw) + 'x' + n(m.ch) + ' vid=' + n(m.vw) + 'x' + n(m.vh)
           + ' fps=' + n(m.fps) + ' mbps=' + n(m.mbps) + ' buf=' + n(m.buf) + 'ms'
+          // 2026-11-11：手机端刷新节奏 vs 呈现节奏。判断"解码 120 只画 60"归谁。
+          + ' raf=' + n(m.raf) + 'Hz 解=' + (Math.round((Number(m.decHz) || 0) * 10) / 10)
+          + ' 画=' + (Math.round((Number(m.drawnHz) || 0) * 10) / 10)
+          + ' dpr=' + String(m.dpr || '') + ' 屏=' + String(m.scr || '')
           + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));
       } catch { }
