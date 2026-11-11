@@ -4919,7 +4919,11 @@ bindImg(img);
       const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
       rows.push(setKv('本机地址', '<span style="color:#aeb3bb">' + escHtml(addr) + (s.dnsName ? ' · ' + escHtml(s.dnsName) : '') + '</span>'));
       rows.push(setKv('在线节点', '<span style="color:#aeb3bb">' + (s.onlinePeers || 0) + ' / ' + (s.peerTotal || 0) + '</span>'));
-      rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.7;margin-top:2px">Tailscale 免费账号大约只能加 5 台设备（电脑、手机各算一台）；新设备加不进来时，先删掉不用的旧设备或升级套餐。</div>');
+      // 2026-11-11 修正：原来写"免费账号只能加 5 台设备"是错的（那是很久以前的老额度）。
+      // 官方定价页（tailscale.com/pricing，2026-11 查）个人版 Personal：$0、**设备不限台数**、
+      // 最多 6 个用户账号、50 个「打了标签的资源」、临时资源每月 1000 分钟。
+      // 普通电脑/手机不计入"标记资源"，所以日常根本不会撞上限 —— 别再吓用户去删设备。
+      rows.push('<div style="color:#6b7078;font-size:11px;line-height:1.7;margin-top:2px">Tailscale 个人版是免费的：你自己的设备<b>不限台数</b>（最多 6 个用户账号），电脑、手机随便加，不用删设备。</div>');
       // 远程 HTTPS 入口（tailscale serve）：一键开启，省得客户自己去后台折腾
       if (s.httpsUrl) {
         // 已开启：给「复制 / 直接打开」两个动作，省得客户手动抄地址
