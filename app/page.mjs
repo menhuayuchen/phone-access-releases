@@ -1301,7 +1301,7 @@ function tryStartWC264(pc) {
 // 为什么改：第一版用合成时间戳当播放时钟，而它的步长来自 fpsHint；实测切档（120→90 自动降档）
 // 时 worker 还按旧步长累加，播放时钟整体跑偏，只能靠"追上/对齐"硬纠正，纠正瞬间又造成新抖动
 // （实测 240 个采样里 82 个是超长间隔）。到达速率本身就是内容帧率最可靠的来源，1 秒内自动跟随。
-const PQ = { q: [], playing: false, raf: 0, drawn: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0 };
+const PQ = { q: [], playing: false, raf: 0, drawn: 0, arrived: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0 };
 try { window.__pq = PQ; } catch (e) { }
 
 function pqStop() {
@@ -1341,6 +1341,7 @@ function pqPush(frame, ts) {
   }
   PQ.lastArr = now;
   PQ.q.push(frame);
+  PQ.arrived++;   // 到达计数（= 解码帧率）。HUD 用它算"流有多少帧"，不拿画到屏幕的帧数冒充
   // 安全上限：积压太多说明播放侧跟不上（例如页面切后台），丢最旧的，别让延迟无上限增长
   while (PQ.q.length > 8) {
     const old = PQ.q.shift();
@@ -2329,26 +2330,46 @@ async function rtc264Stats() {
     // R.qFps 来自浏览器内置解码器的 framesDecoded，手机端它可能一直是 0（那份解码被饿着），
     // 于是画面明明在动、HUD 却永远显示"静止"——用户会以为卡死了（实测踩过）。
     let _fpsShow = R.qFps;
+    let _drawFps = 0;
     try {
       const _w = window.__wc264;
+      const _pq = window.__pq;
       if (_w && _w.on) {
         const _now = Date.now();
+        const _arr = _pq ? (_pq.arrived | 0) : (_w.frames | 0);
+        const _drw = _pq ? (_pq.drawn | 0) : (_w.frames | 0);
         if (_w._hudLastAt && _now - _w._hudLastAt > 200) {
-          const _d = (_w.frames | 0) - (_w._hudLastFrames | 0);
           const _dt = (_now - _w._hudLastAt) / 1000;
-          if (_dt > 0 && _d >= 0) _w._hudFps = _d / _dt;
-          _w._hudLastFrames = _w.frames | 0;
+          const _dA = _arr - (_w._hudLastArrived | 0);
+          const _dD = _drw - (_w._hudLastDrawn | 0);
+          // 2026-11-11：HUD 的帧率必须区分两件事 ——
+          //   _hudFps     = **解码/接收**帧率（编码器实际给了多少帧，用户设置的那个数字）
+          //   _hudDrawFps = **实际呈现**帧率（受屏幕刷新率上限约束）
+          // 上一版改成"出帧由调度器驱动"之后，HUD 拿画到屏幕的帧数冒充帧率，
+          // 于是 60Hz 屏上永远显示 60，用户改 120/240 都像没生效（实际是屏幕吃不下）。
+          if (_dt > 0 && _dA >= 0) _w._hudFps = _dA / _dt;
+          if (_dt > 0 && _dD >= 0) _w._hudDrawFps = _dD / _dt;
+          _w._hudLastArrived = _arr;
+          _w._hudLastDrawn = _drw;
           _w._hudLastAt = _now;
         } else if (!_w._hudLastAt) {
-          _w._hudLastAt = _now; _w._hudLastFrames = _w.frames | 0;
+          _w._hudLastAt = _now;
+          _w._hudLastArrived = _arr;
+          _w._hudLastDrawn = _drw;
         }
-        if (typeof _w._hudFps === 'number') _fpsShow = _w._hudFps;
+        if (typeof _w._hudFps === 'number') { _fpsShow = _w._hudFps; _drawFps = _w._hudDrawFps || 0; }
       }
     } catch (e) { }
     const connMs = Date.now() - (R.playStart || 0);
     let fpsTxt;
     if (connMs < 2500) fpsTxt = '… fps';
-    else if (_fpsShow > 0.05) fpsTxt = _fpsShow.toFixed(1) + ' fps';
+    else if (_fpsShow > 0.05) {
+      fpsTxt = _fpsShow.toFixed(1) + ' fps';
+      // 2026-11-11：屏幕刷新率低于内容帧率时（比如 60Hz 屏在播 120fps 的流），
+      // 把"实际呈现"也标出来，否则用户看到 HUD 一直是 60、会以为自己设置的 120 没生效。
+      // 差得不多就不加，免得 HUD 变长。
+      if (_drawFps > 0.5 && (_fpsShow - _drawFps) > _fpsShow * 0.15) fpsTxt += '·显示' + _drawFps.toFixed(0);
+    }
     else fpsTxt = '静止';
     const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
     // 手机端 #stat 是隐藏的，HUD 才是用户看到的；HUD 只放「帧率 · 码率 · 缓冲」，
