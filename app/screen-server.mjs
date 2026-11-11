@@ -1442,7 +1442,9 @@ function sleepStateGet() {
 async function screenOff() {
   if (!backlightOff) {
     const cur = await psBrightnessGet();
-    backlightSaved = (cur >= 0) ? cur : 80;      // 读不到就按 80 恢复
+    // 这块 HDR 屏的 WMI 亮度读数不可靠（屏幕亮着也可能读成 0）。
+    // 所以 0 不能当"原值"用，否则"关背光→恢复"会恢复成 0，屏幕永远是黑的。
+    backlightSaved = (cur > 0) ? cur : (backlightSaved > 0 ? backlightSaved : 80);
   }
   const ok = await psBrightnessSet(0);
   if (!ok) return { ok: false, message: '这台电脑的屏幕不支持调背光（外接显示器常见），改用下面的「防窥屏」遮罩' };
