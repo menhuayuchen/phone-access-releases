@@ -1564,13 +1564,26 @@ function stopRtc264() {
   try { vid.srcObject = null; } catch (e) { }
   if (sid) {
     try {
-      fetch('/rtc264/close', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: sid }) }).catch(function () { });
+      fetch('/rtc264/close?stream=' + (RTC264.stream || 1), { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: sid }) }).catch(function () { });
     } catch (e) { }
   }
 }
 async function startRtc264() {
   stopRtc264();
   const R = RTC264;
+  // 2026-11-11（C 方案）：建会话前先问服务端"我该走哪一路"。
+  // 只在没有/超过 20 秒没问过时才问（重连循环里不必每次都问）。
+  try {
+    if (!R.streamAt || Date.now() - R.streamAt > 20000) {
+      const wantF = Number((function () { try { return localStorage.getItem('hqFps'); } catch (e) { return 0; } })() || R.inFps || 0);
+      const wantK = Number((function () { try { return localStorage.getItem('hqKbps'); } catch (e) { return 0; } })() || 0);
+      const pk = await (await fetch('/h264-stream-pick', {
+        method: 'POST', headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ fps: wantF || 0, kbps: wantK || 0 })
+      })).json();
+      if (pk && pk.ok) { R.stream = (Number(pk.stream) === 2) ? 2 : 1; R.streamAt = Date.now(); }
+    }
+  } catch (e) { }
   const my = rtc264Gen;
   const mode = rtc264Mode();
   R.startedAt = Date.now();
@@ -1599,7 +1612,8 @@ async function startRtc264() {
     noVideoFallback('no-video-8s');
   }, 8000);
   try {
-    const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER), { method: 'POST', cache: 'no-store' });
+    // 2026-11-11（C 方案）：带上"我走哪一路"，服务端据此把 offer 转发给主路或第二路侧车
+    const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER) + '&stream=' + (RTC264.stream || 1), { method: 'POST', cache: 'no-store' });
     if (!resp.ok) throw new Error('offer ' + resp.status);
     const offer = await resp.json();
     if (my !== rtc264Gen) return;
@@ -1695,7 +1709,7 @@ async function startRtc264() {
       setTimeout(r, 2500);
     });
     if (my !== rtc264Gen) return;
-    const ar = await (await fetch('/rtc264/answer', {
+    const ar = await (await fetch('/rtc264/answer?stream=' + (RTC264.stream || 1), {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ sid: R.sid, type: pc.localDescription.type, sdp: pc.localDescription.sdp })
     })).json();
@@ -5082,16 +5096,48 @@ bindImg(img);
         try {
           const wantF = Number(localStorage.getItem('hqFps') || 0);
           const wantK = Number(localStorage.getItem('hqKbps') || 0);
-          const post = {};
-          if (wantF >= 30 && Number(j.fps) !== wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
-          if (wantK >= 2000 && Number(j.kbps) !== wantK) { post.kbps = wantK; kSel.value = String(wantK); }
+          // 2026-11-11（C 方案）：先问服务端"我该走哪一路"。
+          //   第一台设备 / 档位和主路一致 → 主路（stream=1，可以改全局档位）
+          //   第二台设备档位不同          → 给它单开一路（stream=2，只改自己那一路）
+          //   第三台以后 / 弱机器 / 起不来 → 共享主路（stream=1）
+          try {
+            const pickBody = {
+              width: Number(wSel.value) || j.width,
+              fps: wantF >= 30 ? wantF : Number(j.fps),
+              kbps: wantK >= 2000 ? wantK : Number(j.kbps)
+            };
+            const pk = await (await fetch('/h264-stream-pick', {
+              method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pickBody)
+            })).json();
+            if (pk && pk.ok) {
+              RTC264.stream = (Number(pk.stream) === 2) ? 2 : 1;
+              try { window.__paStream = RTC264.stream; } catch (e) { }
+              if (RTC264.stream === 2) {
+                setMsg('这台设备用独立画质（' + pickBody.fps + 'fps / ' + Math.round(pickBody.kbps / 1000) + 'Mbps），不影响别人', '#8CE58C');
+              }
+            }
+          } catch (e) { RTC264.stream = 1; }
+          const mine = String(RTC264.stream || 1);
+          const post = { stream: Number(mine) };
+          if (mine === '1') {
+            // 只有主路的主人才能改全局档位
+            if (wantF >= 30 && Number(j.fps) !== wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
+            if (wantK >= 2000 && Number(j.kbps) !== wantK) { post.kbps = wantK; kSel.value = String(wantK); }
+            if (!post.fps && !post.kbps) delete post.stream;
+          } else {
+            // 第二路：把自己要的档位直接下发到第二路
+            if (wantF >= 30) { post.fps = wantF; fpsSel.value = String(wantF); }
+            if (wantK >= 2000) { post.kbps = wantK; kSel.value = String(wantK); }
+          }
           if (post.fps || post.kbps) {
             fetch('/h264-quality', {
               method: 'POST', headers: { 'content-type': 'application/json' },
               body: JSON.stringify(post)
             }).catch(function () { });
-            setMsg('已按你上次选的画质对齐：' + (post.fps || j.fps) + 'fps / '
-              + Math.round((post.kbps || j.kbps) / 1000) + 'Mbps（可在下面手动改）', '#ffb454');
+            if (RTC264.stream !== 2) {
+              setMsg('已按你上次选的画质对齐：' + (post.fps || j.fps) + 'fps / '
+                + Math.round((post.kbps || j.kbps) / 1000) + 'Mbps（可在下面手动改）', '#ffb454');
+            }
           }
         } catch (e) { }
         if (!j.width || !j.height) setMsg('高清通道未启用');
@@ -5126,7 +5172,8 @@ bindImg(img);
       try {
         const j = await (await fetch('/h264-quality', {
           method: 'POST', headers: { 'content-type': 'application/json' },
-          body: JSON.stringify({ width: Number(wSel.value), fps: Number(fpsSel.value), kbps: Number(kSel.value) })
+          // C 方案：第二路的设备改画质时带 stream:2 —— 服务端只改第二路，不会打断第一台
+          body: JSON.stringify({ width: Number(wSel.value), fps: Number(fpsSel.value), kbps: Number(kSel.value), stream: Number(RTC264.stream || 1) })
         })).json();
         if (j && j.ok) {
           try { fpsSel.value = String(j.fps); wSel.value = String(j.width); kSel.value = String(j.kbps); } catch (e) { }

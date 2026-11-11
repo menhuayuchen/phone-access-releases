@@ -201,7 +201,9 @@ let H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
 const H264Q_STATE = join(HERE, 'h264-quality.state.json');
 function saveH264QualityState() {
   try {
-    writeFileSync(H264Q_STATE, JSON.stringify({ width: H264_W, fps: H264_FPS, kbps: H264_KBPS, at: Date.now() }), 'utf8');
+    // 存 H264_REQ（用户显式选择），不是被设备审查压过的生效值
+    const q = H264_REQ || { width: H264_W, fps: H264_FPS, kbps: H264_KBPS };
+    writeFileSync(H264Q_STATE, JSON.stringify({ width: q.width, fps: q.fps, kbps: q.kbps, at: Date.now() }), 'utf8');
   } catch { }
 }
 function loadH264QualityState() {
@@ -221,6 +223,10 @@ function loadH264QualityState() {
 }
 // 启动时立刻恢复（deviceAudit 1.2 秒后还会按设备能力再封一次顶，只降不升）
 loadH264QualityState();
+// 2026-11-11：把"用户显式选择的档位"和"实际生效的档位"分开。
+// 设备审查/临时限制只压生效值；落盘的永远是用户的选择 —— 否则一次熄屏误判
+// 就会把用户的 2560x1600@120 永久覆盖成 1280x800@30（实测已经发生过）。
+let H264_REQ = { width: H264_W, fps: H264_FPS, kbps: H264_KBPS };
 // 原生分辨率：ddagrab 直喂 NVENC（零拷贝，不经过滤器）。2026-11-07 实测踩坑：
 // 这台机器（当前显卡 + 当前 ffmpeg）做不了 d3d11→nv12 的自动转换，零拷贝路径直接
 // `-40 Function not implemented`，ffmpeg 秒退重试，画面全黑（2560 宽时必现，1920 走过滤器所以正常）。
@@ -303,6 +309,22 @@ function deviceApplyCaps() {
     H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
     changed = true;
   }
+  // 2026-11-11：设备恢复正常（比如屏幕被点亮/从锁屏恢复）→ 把临时封顶撤掉，
+  // 自动回到用户自己选的档位，而不是永远停在低档。
+  if (DEVICE.level === 0 && DEVICE.clamped && Object.keys(DEVICE.clamped).length) {
+    try {
+      const q = H264_REQ || {};
+      if (q.fps && q.fps > H264_FPS) { H264_FPS = Math.max(10, Math.min(fpsCap, Math.round(q.fps))); changed = true; }
+      if (q.kbps && q.kbps > H264_KBPS) { H264_KBPS = Math.max(2000, Math.min(kbpsCap, Math.round(q.kbps))); changed = true; }
+      if (q.width && q.width > H264_W) {
+        H264_W = evenDown(Math.max(640, Math.min(CAP_W, Math.round(q.width))));
+        H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
+        changed = true;
+      }
+      DEVICE.clamped = {};
+      console.log('[device] 设备已恢复，画质回到你选的档位：' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
+    } catch { }
+  }
   if (changed) {
     try { console.log('[device] 画质已按设备能力封顶：' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps（设备等级 ' + DEVICE.name + '）'); } catch { }
   }
@@ -373,7 +395,14 @@ async function deviceAudit() {
       p.ddagrabWhy = dd.why || '';
       // 探针失败时如果编码器正在跑，说明是"抢 ddagrab"而不是机器不行，不据此降档
       const busy = !!(h264 && h264.proc);
-      if (!dd.ok && !busy) {
+      // 2026-11-11：熄屏/锁屏/刚唤醒时，桌面复制会报 access denied 或直接超时 ——
+      // 这是**临时**状态，不是设备能力不足。这种情况绝不降档（以前会永久压成 fallback，
+      // 用户的 2560x1600@120 就这么被覆盖掉了）。改成：记一笔、顺手点亮屏幕、稍后重试。
+      const transient = !dd.ok && /access denied|denied|not permitted|超时|timeout|挂起/i.test(String(dd.why || ''));
+      if (transient) {
+        notes.push('抓屏暂时不可用（屏幕关闭/锁屏中）：' + (dd.why || '').slice(0, 80) + '；不降档，点亮屏幕后自动恢复');
+        try { wakeDisplay('抓屏暂时不可用'); } catch { }
+      } else if (!dd.ok && !busy) {
         level = 2;
         notes.push('桌面复制采集不可用（' + (dd.why || '未知原因') + '），清晰模式已自动停用');
       } else if (!dd.ok && busy) {
@@ -1197,15 +1226,19 @@ function connect264Audio() {
   });
 }
 function send264Audio(pcm) {
-  if (!CFG264.audioSync || !conn264Audio || !pcm || !pcm.length) return;
-  try {
-    const hdr = Buffer.allocUnsafe(16);
-    hdr.write('PAAU', 0, 'ascii');
-    hdr.writeBigUInt64LE(BigInt(Math.round(Number(process.hrtime.bigint() / 1000n))), 4);
-    hdr.writeUInt32LE(pcm.length, 12);
-    conn264Audio.write(hdr);
-    conn264Audio.write(pcm);
-  } catch (e) { }
+  if (!CFG264.audioSync || !pcm || !pcm.length) return;
+  const hdr = Buffer.allocUnsafe(16);
+  hdr.write('PAAU', 0, 'ascii');
+  hdr.writeBigUInt64LE(BigInt(Math.round(Number(process.hrtime.bigint() / 1000n))), 4);
+  hdr.writeUInt32LE(pcm.length, 12);
+  if (conn264Audio && !conn264Audio.destroyed) {
+    try { conn264Audio.write(hdr); conn264Audio.write(pcm); } catch (e) { }
+  }
+  // C 方案（2026-11-11）：第二路也要声音，否则被分到第二路的设备只有画面没声音。
+  // 同一条 PCM 同时喂两个侧车，由各自的 Pion 独立编码，互不影响。
+  if (S2.audio && !S2.audio.destroyed && S2.audio.writable) {
+    try { S2.audio.write(hdr); S2.audio.write(pcm); } catch (e) { }
+  }
 }
 
 function connect264Feed() {
@@ -1245,6 +1278,10 @@ function onHealth264() {
   const now = Date.now();
   if (rtc264Status.sessions > 0) {
     rtc264IdleSince = 0;
+    // 有人看但没帧（或帧很旧）：大概率是屏幕还黑着 → 点一下屏幕
+    if (rtc264Status.lastFrameMs < 0 || rtc264Status.lastFrameMs > 2000) {
+      try { wakeDisplay('有观众但没画面'); } catch { }
+    }
     h264Ensure();                     // 有会话就必须有编码器（上一只在退就排队）
     // 帧输入断了先补帧输入：重启 ffmpeg 也喂不进侧车，只会白折腾
     if ((!conn264 || conn264.destroyed) && side264) connect264Feed();
@@ -1270,6 +1307,340 @@ function onHealth264() {
   }
 }
 if (CFG264.enabled) setInterval(poll264, 5000);
+
+// ============================================================================
+// C 方案（2026-11-11）：第二路编码 —— 让第二台设备跑自己的画质档位
+// ----------------------------------------------------------------------------
+// 设计原则：**一行都不改主路**。第二路是一整套独立的东西：
+//   · 独立 ffmpeg 进程（自己的 宽/帧率/码率）
+//   · 独立侧车进程（HTTP 9810 / 帧 9910 / 音频 9912，-**不**开 TURN）
+//   · 独立解析状态 S2（不复用 h264.*，避免互相踩）
+// 只有"确实有第二台设备、且它的档位和主路不同、且这台机器吃得下"时才启动；
+// 任何一步失败都回落到「共享主路」，绝不让用户黑屏。
+// ============================================================================
+const S2_PORT = RTC264_PORT + 10;
+const S2_FEED_PORT = RTC264_FEED_PORT + 10;
+const S2_AUDIO_PORT = RTC264_AUDIO_PORT + 10;
+const S2_MAX_W = 1920;          // 第二路封顶，别让两条 2560 一起把显卡/CPU 拉爆
+const S2_MAX_FPS = 90;
+const S2_MAX_KBPS = 40000;
+const S2 = {
+  side: null, spawning: false,
+  feed: null, feedRetry: 0,
+  audio: null, audioRetry: 0,
+  proc: null, pending: Buffer.alloc(0), initInfo: null, startedAt: 0, killPending: false,
+  profile: null,                 // { w, h, fps, kbps }
+  status: { ok: false, sessions: 0, framesIn: 0, at: 0 },
+  idleSince: 0, lastError: '', frames: 0
+};
+
+// 2026-11-11：定时唤醒（或电源策略）把电脑叫醒后，屏幕往往还是黑的。
+// 屏幕关着时 DXGI 桌面复制会直接 "access denied"（实测还会挂住），于是看不了画面。
+// 远控产品的核心场景就是"人不在电脑前"，所以有观众连上来时主动把屏幕点亮。
+let lastWakeAt = 0;
+function wakeDisplay(why) {
+  const now = Date.now();
+  if (now - lastWakeAt < 20000) return;
+  lastWakeAt = now;
+  try {
+    const script = [
+      '$sig = \'[DllImport("user32.dll")] public static extern IntPtr SendMessage(IntPtr hWnd, uint Msg, IntPtr wParam, IntPtr lParam);\'',
+      '$k = Add-Type -MemberDefinition $sig -Name ScrOn -Namespace W32 -PassThru',
+      '$k::SendMessage([IntPtr]0xffff, 0x0112, [IntPtr]0xF170, [IntPtr](-1)) | Out-Null',
+      '$k::SendMessage([IntPtr]0xffff, 0x0112, [IntPtr]0xF170, [IntPtr](-1)) | Out-Null'
+    ].join('; ');
+    const enc = Buffer.from(script, 'utf16le').toString('base64');
+    const ch = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc], { windowsHide: true, stdio: 'ignore' });
+    ch.on('error', () => { });
+    try { ch.unref(); } catch { }
+    console.log('[wake] 尝试点亮屏幕（' + why + '）');
+  } catch (e) { }
+}
+
+function s2Running() { return !!S2.side; }
+function s2Key(p) { return p ? (p.w + 'x' + p.fps + '@' + p.kbps) : ''; }
+function s2Http(path, method, body, timeoutMs) {
+  return new Promise((resolve, reject) => {
+    const req = http.request({
+      host: '127.0.0.1', port: S2_PORT, path, method: method || 'GET',
+      headers: body ? { 'content-type': 'application/json', 'content-length': Buffer.byteLength(body) } : {}
+    }, (res) => {
+      let d = '';
+      res.on('data', (c) => { d += c; if (d.length > 65536) { try { req.destroy(); } catch { } } });
+      res.on('end', () => { try { resolve(JSON.parse(d || '{}')); } catch { resolve({}); } });
+    });
+    req.on('error', reject);
+    req.setTimeout(timeoutMs || 2500, () => { try { req.destroy(); } catch { } reject(new Error('timeout')); });
+    if (body) req.write(body);
+    req.end();
+  });
+}
+
+function s2StartSidecar() {
+  if (!CFG264.enabled || S2.side || S2.spawning) return;
+  if (!fileExists(RTC264_EXE)) return;
+  S2.spawning = true;
+  const args = ['-port', String(S2_PORT), '-tcp', '127.0.0.1:' + S2_FEED_PORT];
+  if (CFG264.audioSync) args.push('-audio', '127.0.0.1:' + S2_AUDIO_PORT, '-opus-dll', join(HERE, 'rtc-h264', 'opus.dll'));
+  // TURN 只由主路提供：显式 -turn-port 0，别让它再去 bind 3478（主路占着，会刷一条失败日志）
+  args.push('-turn-port', '0');
+  const logPath = join(HERE, 'rtc-h264', 'sidecar2.log');
+  let outFd = -1;
+  try { outFd = openSync(logPath, 'a'); } catch { outFd = -1; }
+  try {
+    S2.side = spawn(RTC264_EXE, args, { stdio: ['ignore', outFd >= 0 ? outFd : 'ignore', outFd >= 0 ? outFd : 'ignore'], windowsHide: true });
+    console.log('rtc264: [第二路] 侧车已拉起 pid=' + S2.side.pid + ' port=' + S2_PORT);
+  } catch (e) {
+    console.log('rtc264: [第二路] 拉起失败 ' + e.message);
+    try { if (outFd >= 0) closeSync(outFd); } catch { }
+    S2.spawning = false;
+    return;
+  }
+  S2.spawning = false;
+  const child = S2.side;
+  child.on('exit', (code) => {
+    console.log('rtc264: [第二路] 侧车退出 code=' + code);
+    try { if (outFd >= 0) closeSync(outFd); } catch { }
+    if (S2.side === child) S2.side = null;
+    if (S2.feed) { try { S2.feed.destroy(); } catch { } S2.feed = null; }
+    if (S2.audio) { try { S2.audio.destroy(); } catch { } S2.audio = null; }
+    S2.status.ok = false;
+    // 侧车死了但还有第二路观众 → 2 秒后重拉
+    if (S2.profile) setTimeout(() => { if (S2.profile && !S2.side) s2StartSidecar(); }, 2000);
+  });
+  s2ConnectFeed();
+  if (CFG264.audioSync) s2ConnectAudio();
+}
+
+function s2ConnectFeed() {
+  if (!S2.side || S2.feed) return;
+  const c = net.connect(S2_FEED_PORT, '127.0.0.1');
+  S2.feed = c;
+  try { c.setNoDelay(true); } catch { }
+  c.on('connect', () => { S2.feedRetry = 0; console.log('rtc264: [第二路] 帧输入已连接'); });
+  c.on('error', () => { });
+  c.on('close', () => {
+    if (S2.feed === c) S2.feed = null;
+    if (S2.side && S2.feedRetry < 600) { S2.feedRetry++; setTimeout(s2ConnectFeed, Math.min(400 * S2.feedRetry, 5000)); }
+  });
+}
+
+function s2ConnectAudio() {
+  if (!S2.side || S2.audio) return;
+  const c = net.connect(S2_AUDIO_PORT, '127.0.0.1');
+  S2.audio = c;
+  try { c.setNoDelay(true); } catch { }
+  c.on('connect', () => { S2.audioRetry = 0; console.log('rtc264: [第二路] 音频帧输入已连接'); });
+  c.on('error', () => { });
+  c.on('close', () => {
+    if (S2.audio === c) S2.audio = null;
+    if (S2.side && S2.audioRetry < 600) { S2.audioRetry++; setTimeout(s2ConnectAudio, Math.min(400 * S2.audioRetry, 5000)); }
+  });
+}
+
+// 第二路的编码参数（与主路同样的低延迟取向，但用 S2 自己的数值）
+function s2EncArgs(fps, kbps) {
+  const gop = String(Math.max(1, Math.round(fps / 2)));
+  if (H264_ENCODER === 'nvenc') {
+    return ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1',
+      '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2',
+      '-b:v', String(kbps) + 'K', '-g', gop, '-bf', '0'];
+  }
+  return ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr',
+    '-quality', '70', '-b:v', String(kbps) + 'K', '-g', gop, '-bf', '0'];
+}
+
+function s2SpsPps() {
+  const b = S2.initInfo && S2.initInfo.avcC;
+  if (!b || b.length < 8) return Buffer.alloc(0);
+  const out = [];
+  let o = 5;
+  const ns = b[o] & 0x1f; o += 1;
+  for (let i = 0; i < ns; i++) { const l = b.readUInt16BE(o); o += 2; out.push(Buffer.from([0, 0, 0, 1])); out.push(b.subarray(o, o + l)); o += l; }
+  const np = b[o]; o += 1;
+  for (let i = 0; i < np; i++) { const l = b.readUInt16BE(o); o += 2; out.push(Buffer.from([0, 0, 0, 1])); out.push(b.subarray(o, o + l)); o += l; }
+  return Buffer.concat(out);
+}
+
+function s2FeedFrame(key, data) {
+  const c = S2.feed;
+  if (!c || c.destroyed || !c.writable) return;
+  if (c.writableLength > 4 * 1024 * 1024) return;    // 侧车写不动就丢，别把内存堆爆
+  try {
+    const payload = key ? Buffer.concat([s2SpsPps(), annxB(data)]) : annxB(data);
+    const head = Buffer.alloc(5);
+    head.writeUInt32BE(payload.length, 0);
+    head[4] = key ? 1 : 0;
+    c.write(Buffer.concat([head, payload]));
+    S2.frames++;
+  } catch { }
+}
+
+// 第二路的 fMP4 解析：结构照抄主路，但状态全在 S2.*（互不影响）
+function s2ProcessBuffer() {
+  if (S2.pending && S2.pending.length > 8 * 1024 * 1024) {
+    S2.pending = Buffer.alloc(0); S2.initInfo = null;
+    console.log('rtc264: [第二路] 解析缓冲异常堆积，已重置');
+  }
+  for (;;) {
+    if (!S2.pending || S2.pending.length < 8) return;
+    const boxes = mp4Boxes(S2.pending, 0, S2.pending.length);
+    if (!boxes.length) return;
+    if (!S2.initInfo) {
+      let ftyp = null, moov = null;
+      for (const b of boxes) { if (b.type === 'ftyp') ftyp = b; if (b.type === 'moov') moov = b; }
+      if (!ftyp || !moov) { if (S2.pending.length > 2 * 1024 * 1024) S2.pending = Buffer.alloc(0); return; }
+      const info = h264ParseMoov(S2.pending.subarray(0, moov.end));
+      S2.initInfo = { avcC: info.avcC, timescale: info.timescale || 1000, width: info.width, height: info.height };
+      console.log('rtc264: [第二路] init ' + h264CodecString(info.avcC) + ' ' + info.width + 'x' + info.height);
+      S2.pending = S2.pending.subarray(moov.end);
+      continue;
+    }
+    const moof = boxes.find((b) => b.type === 'moof');
+    if (!moof) { S2.pending = Buffer.alloc(0); return; }
+    const moofIdx = boxes.indexOf(moof);
+    const mdat = boxes.slice(moofIdx + 1).find((b) => b.type === 'mdat');
+    if (!mdat) return;
+    let samples = [];
+    try { samples = h264ExtractSamples(S2.pending.subarray(moof.start, moof.end), S2.pending.subarray(mdat.start, mdat.end)); } catch { samples = []; }
+    for (const s of samples) s2FeedFrame(s.key, s.data);
+    S2.pending = S2.pending.subarray(mdat.end);
+    continue;
+  }
+}
+
+function s2StopEncoder() {
+  const p = S2.proc;
+  if (!p) return;
+  S2.proc = null;
+  S2.initInfo = null;
+  S2.pending = Buffer.alloc(0);
+  try { p.kill(); } catch { }
+  console.log('rtc264: [第二路] 编码器已停');
+}
+
+function s2StartEncoder() {
+  if (!S2.profile || S2.proc) return;
+  const { w, h, fps, kbps } = S2.profile;
+  const args = [
+    '-hide_banner', '-loglevel', 'error', '-nostdin',
+    '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
+    '-f', 'lavfi', '-i', 'ddagrab=framerate=' + fps + ':draw_mouse=0:output_idx=' + (H264_MON || 0),
+    '-filter_complex', '[0:v]hwdownload,format=bgra,scale=' + w + ':-2:flags=lanczos+accurate_rnd[v]',
+    '-map', '[v]', '-pix_fmt', 'nv12', '-r', String(fps),
+    ...s2EncArgs(fps, kbps),
+    '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
+    '-frag_duration', '5000', '-flush_packets', '1', 'pipe:1'
+  ];
+  let proc = null;
+  try { proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true }); } catch (e) {
+    S2.lastError = String(e.message || e);
+    console.log('rtc264: [第二路] ffmpeg 启动失败 ' + S2.lastError);
+    return;
+  }
+  S2.proc = proc;
+  S2.startedAt = Date.now();
+  console.log('rtc264: [第二路] start ' + w + 'x' + h + '@' + fps + ' ' + kbps + 'kbps');
+  proc.stdout.on('data', (d) => {
+    if (S2.proc !== proc) return;
+    S2.pending = Buffer.concat([S2.pending, d]);
+    s2ProcessBuffer();
+  });
+  proc.stderr.on('data', (d) => {
+    if (S2.proc !== proc) return;
+    const s = String(d).trim();
+    if (s) S2.lastError = s.split('\n').slice(-1)[0];
+  });
+  proc.on('exit', (code) => {
+    const was = S2.proc === proc;
+    if (was) { S2.proc = null; S2.initInfo = null; S2.pending = Buffer.alloc(0); }
+    console.log('rtc264: [第二路] ffmpeg exit ' + code + (was ? '' : '（旧进程，忽略）'));
+    if (was && S2.profile && (S2.status.sessions > 0)) {
+      setTimeout(() => { if (!S2.proc && S2.profile && S2.status.sessions > 0) s2StartEncoder(); }, 1500);
+    }
+  });
+}
+
+function s2ApplyProfile(w, fps, kbps) {
+  const p = {
+    w: evenDown(Math.max(640, Math.min(S2_MAX_W, Math.round(Number(w) || 1280)))),
+    fps: Math.max(10, Math.min(S2_MAX_FPS, Math.round(Number(fps) || 30))),
+    kbps: Math.max(2000, Math.min(S2_MAX_KBPS, Math.round(Number(kbps) || 12000)))
+  };
+  p.h = evenDown(Math.max(360, Math.round(p.w * CAP_H / CAP_W)));
+  const key = s2Key(p);
+  if (S2.profile && s2Key(S2.profile) === key) return p;      // 幂等：没变不重启
+  S2.profile = p;
+  s2StartSidecar();
+  if (S2.proc) s2StopEncoder();
+  setTimeout(() => { if (S2.profile && !S2.proc && S2.status.sessions > 0) s2StartEncoder(); }, 300);
+  return p;
+}
+
+function s2StopAll(why) {
+  console.log('rtc264: [第二路] 关闭（' + why + '）');
+  S2.profile = null;
+  s2StopEncoder();
+  if (S2.feed) { try { S2.feed.destroy(); } catch { } S2.feed = null; }
+  if (S2.audio) { try { S2.audio.destroy(); } catch { } S2.audio = null; }
+  if (S2.side) {
+    const s = S2.side;
+    S2.side = null;
+    try { s2Http('/shutdown', 'POST', '{}', 800).catch(() => { }); } catch { }
+    setTimeout(() => { try { s.kill(); } catch { } }, 800);
+  }
+  S2.status.ok = false;
+  S2.status.sessions = 0;
+}
+
+function s2Poll() {
+  if (!S2.side) {
+    // 没有第二路观众时，停掉残留编码器
+    if (S2.proc && !S2.profile) s2StopEncoder();
+    return;
+  }
+  s2Http('/health', 'GET', null, 2000).then((j) => {
+    if (!j || !j.ok) { S2.status.ok = false; return; }
+    S2.status.ok = true;
+    S2.status.at = Date.now();
+    S2.status.sessions = Number(j.sessions) || 0;
+    S2.status.framesIn = Number(j.framesIn) || 0;
+    if (S2.status.sessions > 0) {
+      S2.idleSince = 0;
+      if (S2.profile && !S2.proc) s2StartEncoder();
+      if (!S2.feed || S2.feed.destroyed) s2ConnectFeed();
+      if (CFG264.audioSync && (!S2.audio || S2.audio.destroyed)) s2ConnectAudio();
+    } else {
+      if (!S2.idleSince) S2.idleSince = Date.now();
+      // 第二路没人看 45 秒 → 整路收掉（连侧车一起），不留进程
+      if (Date.now() - S2.idleSince > 45000) s2StopAll('45 秒没有观众');
+    }
+  }).catch(() => { S2.status.ok = false; });
+}
+if (CFG264.enabled) setInterval(s2Poll, 5000);
+
+// 给页面用：决定这台设备走哪一路（1=主路共享，2=自己的第二路）
+function s2PickStream(w, fps, kbps) {
+  const near = (a, b) => !!a && !!b && Math.abs(a.w - b.w) <= 32 && Math.abs(a.fps - b.fps) <= 2 && Math.abs(a.kbps - b.kbps) <= Math.max(2000, a.kbps * 0.1);
+  const want = {
+    w: evenDown(Math.max(640, Math.min(S2_MAX_W, Math.round(Number(w) || 1280)))),
+    fps: Math.max(10, Math.min(S2_MAX_FPS, Math.round(Number(fps) || 30))),
+    kbps: Math.max(2000, Math.min(kbpsCap, Math.round(Number(kbps) || 12000)))
+  };
+  const primary = { w: H264_W, fps: H264_FPS, kbps: H264_KBPS };
+  // 2026-11-11 修：原来这里还带了"最近 8 秒内有过 health 响应"这一条 —— 服务刚起来时它恒为真，
+  // 于是第一台设备也被判成"已有人在看"、被分到第二路（实测发生过）。有没有别人在看，只能看真实会话数。
+  const busy = (Number(rtc264Status.sessions) > 0) || (Number(S2.status.sessions) > 0) || (h264.clients.size > 0);
+  // 第一台设备：直接用主路（顺便把主路调成它要的档位由调用方负责）
+  if (!busy) return { stream: 1, reason: 'first' };
+  if (near(want, primary)) return { stream: 1, reason: 'same-as-primary' };
+  if (S2.profile && near(want, S2.profile) && (S2.side || S2.spawning)) return { stream: 2, reason: 'existing-second' };
+  // 第三台及以后、或者机器扛不住 → 共享主路
+  if (DEVICE.level !== 0) return { stream: 1, reason: 'device-too-weak' };
+  const p = s2ApplyProfile(want.w, want.fps, want.kbps);
+  return { stream: 2, reason: 'new-second', profile: p };
+}
+
 
 // ---- 防窥屏（privacy mode，2026-11-05）--------------------------------------
 // 原理：在被控电脑每块屏幕最上层盖一个全屏窗口，并用 WDA_EXCLUDEFROMCAPTURE 让它
@@ -4801,6 +5172,7 @@ async function handler(req, res) {
   if (url.pathname === '/rtc264/offer' || url.pathname === '/rtc264/answer' || url.pathname === '/rtc264/close') {
     const targetPath = url.pathname === '/rtc264/offer' ? '/offer' : (url.pathname === '/rtc264/answer' ? '/answer' : '/close');
     if (targetPath === '/offer') {
+      try { wakeDisplay('观众建立会话'); } catch { }
       try { start264(); } catch { }     // 侧车没起来/挂掉时顺便拉一把
       try { h264Ensure(); } catch { }   // 页面只走 WebRTC 时也要启动编码器
       // 2026-11-07 诊断：页面会把自身版本（PA_PAGE_VER）带上来。查到 old / 空 就说明
@@ -4817,8 +5189,15 @@ async function handler(req, res) {
     req.on('data', (c) => { chunks.push(c); bodyLen += c.length; if (bodyLen > 1 << 20) req.destroy(); });
     req.on('end', () => {
       const body = Buffer.concat(chunks);
+      // C 方案（2026-11-11）：页面用 ?stream=2 表示"我要走第二路"。
+      // 第二路没起来就退回主路（宁可共享也不能黑屏）。
+      const wantStream = Number(url.searchParams.get('stream')) === 2;
+      const useStream2 = wantStream && (S2.side || S2.spawning);
+      if (useStream2) { try { s2StartSidecar(); if (!S2.proc && S2.profile) s2StartEncoder(); } catch { } }
+      const sidecarPort = useStream2 ? S2_PORT : RTC264_PORT;
+      if (targetPath === '/offer' && useStream2) console.log('rtc264: [第二路] 页面走第二路（档位 ' + (S2.profile ? s2Key(S2.profile) : '-') + '）');
       const r = http.request({
-        host: '127.0.0.1', port: RTC264_PORT, path: targetPath,
+        host: '127.0.0.1', port: sidecarPort, path: targetPath,
         method: targetPath === '/offer' ? 'POST' : (req.method || 'POST'),
         headers: { 'content-type': 'application/json', 'content-length': body.length }
       }, (resp) => {
@@ -5291,6 +5670,27 @@ async function handler(req, res) {
     });
     return;
   }
+  // 2026-11-11（C 方案）：手机连上来时问一句"我该走哪一路"。
+  // 第一台设备 → 主路（并把主路调成它要的档位）；第二台不同档位 → 给它单开第二路；
+  // 第三台以后 / 弱机器 / 第二路起不来 → 共享主路。永远不会因为分配失败而黑屏。
+  if (url.pathname === '/h264-stream-pick' && req.method === 'POST') {
+    let b = '';
+    req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
+    req.on('end', () => {
+      const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
+      let m = {};
+      try { m = JSON.parse(b || '{}'); } catch { }
+      try {
+        // 页面在启动阶段还不知道自己想要多宽（宽度只在设置面板里选），不传就用主路当前宽度
+        const r = s2PickStream(Number(m.width) > 0 ? Number(m.width) : H264_W, Number(m.fps), Number(m.kbps));
+        console.log('rtc264: 分配线路 stream=' + r.stream + '（' + r.reason + '）请求 ' + m.width + 'x' + m.fps + '@' + m.kbps);
+        jr(200, { ok: true, stream: r.stream, reason: r.reason, profile: r.profile || null, primary: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS } });
+      } catch (e) {
+        jr(200, { ok: true, stream: 1, reason: 'error:' + String((e && e.message) || e) });
+      }
+    });
+    return;
+  }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
     if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON, maxCapture: CAP_W });
@@ -5308,6 +5708,12 @@ async function handler(req, res) {
       };
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
+      // C 方案：带 stream:2 的请求只改第二路，绝不动主路（否则又把第一台设备打断）
+      if (Number(m.stream) === 2) {
+        const p = s2ApplyProfile(Number(m.width), Number(m.fps), Number(m.kbps));
+        qreply({ ok: true, stream: 2, changed: true, width: p.w, height: p.h, fps: p.fps, kbps: p.kbps });
+        return;
+      }
       const f = Number(m.fps), k = Number(m.kbps), w = Number(m.width), mon = Number(m.mon);
       // 显示器切换：ddagrab output_idx 要跟着换（裁剪矩形由页面换算成"相对该显示器"的坐标）
       if (Number.isFinite(mon) && mon >= 0 && mon <= 7 && Math.round(mon) !== H264_MON) {
@@ -5403,6 +5809,14 @@ async function handler(req, res) {
       // 落盘后启动时优先恢复上次生效值，默认值只在从来没有调过画质时使用。
       // 但页面"自动降档"发来的请求带 auto:true —— 那种临时降档**不能落盘**（否则一次瞬时卡顿
       // 会被永久记住，把客户冤枉地压成低画质；实测这台手机单独跑 121fps/54Mbps 完全正常）。
+      // 用户显式选择 → 记进 H264_REQ（落盘用它）；设备审查只压生效值，不动这里
+      try {
+        if (m.auto !== true) {
+          if (Number.isFinite(f)) H264_REQ.fps = Math.round(f);
+          if (Number.isFinite(k)) H264_REQ.kbps = Math.round(k);
+          if (Number.isFinite(w) && w >= 640) H264_REQ.width = Math.round(w);
+        }
+      } catch { }
       try { if (m.auto !== true) saveH264QualityState(); } catch { }
       qreply({ ok: true, changed: !__same, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
         device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
@@ -5461,6 +5875,15 @@ async function handler(req, res) {
       // 当前实际生效的参数（可能已经被设备上限压过）
       applied: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS },
       ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }
+    }));
+    return;
+  }
+  if (url.pathname === '/h264-streams') {
+    res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+    res.end(JSON.stringify({
+      ok: true,
+      primary: { port: RTC264_PORT, sessions: rtc264Status.sessions, fps: H264_FPS, width: H264_W, kbps: H264_KBPS, proc: !!h264.proc },
+      second: { on: !!S2.side, port: S2_PORT, profile: S2.profile, sessions: S2.status.sessions, framesIn: S2.status.framesIn, proc: !!S2.proc, frames: S2.frames, lastError: S2.lastError }
     }));
     return;
   }
@@ -6381,6 +6804,22 @@ for (const host of hosts) {
 // 两边会抢桌面复制（本机实测会 -40 秒退）。审查内部还有"编码器在跑就不降档"的保护，
 // 两道加起来保证不会因为审查本身把画面搞坏。
 setTimeout(() => { try { deviceAudit(); } catch { } }, 1200).unref?.();
+
+// 2026-11-11：审查结果不能"一错到底"。
+// 实测坑：开机/部署时屏幕还锁着（或 RDP/虚拟机正接管），ddagrab 探针拿到 "access denied"
+// → 直接判定 fallback，把画质永久压到 1280x800@30/8Mbps、还停用清晰模式。
+// 现在只要当前判定不是 good，就每 5 分钟重审一次；解锁/恢复正常后会自己回到更高档。
+let deviceReauditBusy = false;
+setInterval(() => {
+  try {
+    if (deviceReauditBusy || !DEVICE.done || DEVICE.level === 0) return;
+    deviceReauditBusy = true;
+    Promise.resolve()
+      .then(() => deviceAudit())
+      .catch(() => { })
+      .finally(() => { deviceReauditBusy = false; });
+  } catch (e) { deviceReauditBusy = false; }
+}, 5 * 60 * 1000).unref?.();
 
 // 离线模式：备用监听绑 0.0.0.0（所有网卡）——电脑换网络/开热点/USB 共享后新 IP 立刻能用，
 // 不用等守护重启。只绑 8661/8662 这种备用端口：8660 必须保持"回环+tailnet 走 http、局域网 IP 走 https"，
