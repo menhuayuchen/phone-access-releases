@@ -1127,6 +1127,9 @@ let conn264AudioRetry = 0;   // 音频帧输入的重连次数（侧车刚起来
 // 2026-11-10：Node 侧刚丢过帧（feed 缓冲满），下一帧写出去时带 gap 标志让侧车等关键帧
 let rtc264PendingGap = false;
 const RTC264_EXE = join(HERE, 'rtc-h264', 'rtc-h264.exe');
+// 2026-11-11：服务进程的 PATH 里没有 powershell.exe（spawn 直接 ENOENT），
+// 导致"背光控制/点亮屏幕"静默失败。统一用绝对路径。
+const PS_EXE = join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 const RTC264_TURN_PORT = CFG264.turn === false ? 0 : (Number(CFG264.turnPort) || 3478);
 let rtc264Spawning = false;
 let rtc264FeedDrops = 0;
@@ -1355,11 +1358,92 @@ function wakeDisplay(why) {
       '$k::SendMessage([IntPtr]0xffff, 0x0112, [IntPtr]0xF170, [IntPtr](-1)) | Out-Null'
     ].join('; ');
     const enc = Buffer.from(script, 'utf16le').toString('base64');
-    const ch = spawn('powershell.exe', ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc], { windowsHide: true, stdio: 'ignore' });
+    const ch = spawn(PS_EXE, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc], { windowsHide: true, stdio: 'ignore' });
     ch.on('error', () => { });
     try { ch.unref(); } catch { }
     console.log('[wake] 尝试点亮屏幕（' + why + '）');
   } catch (e) { }
+}
+
+// ---- 真息屏：控制显示器背光（2026-11-11）-------------------------------------
+// 为什么不用 SC_MONITORPOWER：那是"关屏"，桌面复制会失败 → 手机看不到画面。
+// 背光调到 0 是另一条路：**显示通路还活着**，抓屏正常，但屏幕真的不发光（省电、无光污染）。
+// 本机实测：背光 0 时 ddagrab 抓帧 OK。
+const BACKLIGHT_STATE = join(HERE, 'screen-backlight.state.json');
+let backlightSaved = 0;         // 关之前的亮度（0 表示没记录）
+let backlightOff = false;
+
+function psRun(script, timeoutMs) {
+  return new Promise((resolve) => {
+    let done = false;
+    const fin = (v) => { if (!done) { done = true; resolve(v); } };
+    try {
+      const enc = Buffer.from(script, 'utf16le').toString('base64');
+      // stdin 必须给 'ignore'：从服务里 spawn 时，如果 stdin 是管道又没人写，powershell 会一直等着（实测 15 秒超时）
+      const ch = spawn(PS_EXE, ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', enc], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
+      let out = '';
+      ch.stdout.on('data', (d) => { out += String(d); });
+      ch.stderr.on('data', () => { });
+      ch.on('error', (e) => { console.log('[ps] 启动失败 ' + ((e && e.message) || e) + '（' + PS_EXE + '）'); fin(''); });
+      ch.on('exit', (code) => { if (code !== 0) console.log('[ps] 退出码 ' + code + ' 输出=' + JSON.stringify(out.slice(0, 80))); fin(out.trim()); });
+      const tm = setTimeout(() => { try { ch.kill(); } catch { } console.log('[ps] 超时'); fin(''); }, timeoutMs || 15000);
+      try { tm.unref(); } catch { }
+    } catch (e) { fin(''); }
+  });
+}
+// 2026-11-11：从服务进程里 spawn powershell 时拿不到 stdout（实测一直超时/空），
+// 改成"powershell 把结果写进临时文件，Node 再读文件"——绕开控制台输出这条路。
+const BL_TMP = join(HERE, '.bl-tmp.txt');
+function psViaFile(script, timeoutMs) {
+  try { unlinkSync(BL_TMP); } catch { }
+  const full = script.replace(/__OUT__/g, BL_TMP.replace(/\\/g, '\\\\'));
+  return psRun(full, timeoutMs || 15000).then(() => {
+    try { return String(readFileSync(BL_TMP, 'utf8')).trim(); } catch { return ''; }
+  });
+}
+function psBrightnessGet() {
+  return psViaFile([
+    '$b = Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorBrightness -OperationTimeoutSec 4 -ErrorAction SilentlyContinue',
+    'if ($b) { Set-Content -LiteralPath "__OUT__" -Value ([string]$b.CurrentBrightness) -Encoding ascii } else { Set-Content -LiteralPath "__OUT__" -Value "-1" -Encoding ascii }'
+  ].join('; '), 12000).then((s) => { const n = Number(String(s).trim()); return Number.isFinite(n) ? n : -1; });
+}
+function psBrightnessSet(v) {
+  return psViaFile([
+    '$m = Get-CimInstance -Namespace root\\wmi -ClassName WmiMonitorBrightnessMethods -OperationTimeoutSec 4 -ErrorAction SilentlyContinue',
+    'if ($m) { Invoke-CimMethod -InputObject $m -MethodName WmiSetBrightness -Arguments @{ Timeout = 0; Brightness = ' + Math.max(0, Math.min(100, Math.round(v))) + ' } -OperationTimeoutSec 4 | Out-Null; Set-Content -LiteralPath "__OUT__" -Value "OK" -Encoding ascii } else { Set-Content -LiteralPath "__OUT__" -Value "NOSUP" -Encoding ascii }'
+  ].join('; '), 12000).then((s) => String(s).trim() === 'OK');
+}
+function backlightLoadState() {
+  try {
+    const s = JSON.parse(readFileSync(BACKLIGHT_STATE, 'utf8').replace(/^\uFEFF/, ''));
+    if (s && Number.isFinite(Number(s.saved))) backlightSaved = Number(s.saved);
+    backlightOff = !!(s && s.off);
+  } catch { }
+}
+function backlightSaveState() {
+  try { writeFileSync(BACKLIGHT_STATE, JSON.stringify({ saved: backlightSaved, off: backlightOff, at: Date.now() }), 'utf8'); } catch { }
+}
+backlightLoadState();
+
+async function screenOff() {
+  if (!backlightOff) {
+    const cur = await psBrightnessGet();
+    backlightSaved = (cur >= 0) ? cur : 80;      // 读不到就按 80 恢复
+  }
+  const ok = await psBrightnessSet(0);
+  if (!ok) return { ok: false, message: '这台电脑的屏幕不支持调背光（外接显示器常见），改用下面的「防窥屏」遮罩' };
+  backlightOff = true;
+  backlightSaveState();
+  console.log('[screen] 已真息屏（背光 0，恢复值 ' + backlightSaved + '）');
+  return { ok: true, brightness: 0, saved: backlightSaved };
+}
+async function screenOn() {
+  const v = (backlightSaved > 0) ? backlightSaved : 80;
+  const ok = await psBrightnessSet(v);
+  backlightOff = false;
+  backlightSaveState();
+  console.log('[screen] 已恢复亮屏（背光 ' + v + '）');
+  return { ok, brightness: v };
 }
 
 function s2Running() { return !!S2.side; }
@@ -5925,6 +6009,28 @@ async function handler(req, res) {
       applied: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS },
       ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }
     }));
+    return;
+  }
+  // 真息屏（背光 0，抓屏不受影响）
+  if (url.pathname === '/screen/off' && req.method === 'POST') {
+    screenOff().then((r) => {
+      try { res.writeHead(r.ok ? 200 : 500, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(r)); } catch { }
+    });
+    return;
+  }
+  if (url.pathname === '/screen/on' && req.method === 'POST') {
+    screenOn().then((r) => {
+      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(r)); } catch { }
+    });
+    return;
+  }
+  if (url.pathname === '/screen/state') {
+    psBrightnessGet().then((cur) => {
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: true, off: backlightOff, brightness: cur, saved: backlightSaved, supported: cur >= 0 }));
+      } catch { }
+    });
     return;
   }
   if (url.pathname === '/h264-streams') {

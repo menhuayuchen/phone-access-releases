@@ -6839,8 +6839,7 @@ bindImg(img);
         tog.disabled = active && !mine;
       }
       if (imgMsg) imgMsg.textContent = st && st.hasImage ? '当前：自定义图' : '当前：纯黑';
-      const sb = box.querySelector('#prvSleep');
-      if (sb) sb.textContent = (active && mine) ? '恢复亮屏' : '一键息屏（本机黑屏）';
+      // （「真息屏」按钮的文字/状态由 paintSleep 管，这里不再覆盖）
       if (lockCb && active && mine) lockCb.checked = st.lockInput !== false;
       if (mine) { setMsg('已开启（电脑本机已遮住' + (st && st.lockInput ? '，键盘鼠标已锁' : (st && st.hotkeys ? '，仅拦快捷键' : '')) + '）', '#8CE58C'); startBeat(); }
       else if (active) setMsg('另一台设备已开启（以先开的为准）', '#ffb454');
@@ -6860,27 +6859,39 @@ bindImg(img);
     });
     // 2026-11-11：一键息屏 = 用黑屏遮罩把本机盖住（不锁键鼠），远程照常可见。
     // 为什么不用"关显示器"：实测真关屏（DPMS）后桌面复制抓不到（access denied / 挂住），远程就黑了。
+    // 2026-11-11：真息屏 = 把显示器背光调到 0（不是 DPMS 关屏！关屏会让抓屏失败、远程就黑了）。
+    // 实测：背光 0 时桌面复制照常出帧，所以"屏幕不亮 + 手机照常看"可以同时成立。
     const sleepBtn = box.querySelector('#prvSleep');
     const sleepMsg = box.querySelector('#prvSleepMsg');
     const saySleep = (t, c) => { if (sleepMsg) { sleepMsg.textContent = t; sleepMsg.style.color = c || '#6b7078'; } };
+    const paintSleep = (st) => {
+      if (!sleepBtn) return;
+      const off = !!(st && st.off);
+      sleepBtn.textContent = off ? '恢复亮屏' : '真息屏（关背光）';
+      sleepBtn.style.background = off ? '#7a2f2f' : '#1f2a3a';
+      if (st && st.supported === false) {
+        sleepBtn.disabled = true;
+        saySleep('这台电脑的屏幕不支持程序调背光（外接显示器常见），请用下面的「防窥屏」遮罩代替', '#ffb454');
+      }
+    };
+    const refreshSleep = () => fetch('/screen/state', { cache: 'no-store' }).then((r) => r.json()).then(paintSleep).catch(() => { });
     if (sleepBtn) sleepBtn.addEventListener('click', async () => {
       sleepBtn.disabled = true;
       try {
-        if (window.__prvMine) {
-          await post('/privacy/off', { sid: dev });
-          stopBeat();
-          saySleep('已恢复亮屏', '#8CE58C');
+        const st = await (await fetch('/screen/state', { cache: 'no-store' })).json();
+        if (st && st.off) {
+          const r = await (await fetch('/screen/on', { method: 'POST' })).json();
+          saySleep('已恢复亮屏（背光 ' + (r && r.brightness) + '）', '#8CE58C');
         } else {
-          const r = await post('/privacy/on', { sid: dev, lock: false });
-          if (r && r.ok && r.owner) {
-            startBeat();
-            saySleep('已息屏：电脑本机全黑，画面只在你手机上看得到；再点一次恢复', '#8CE58C');
-          } else saySleep('开不了（可能另一台设备正在用）', '#ffb454');
+          const r = await (await fetch('/screen/off', { method: 'POST' })).json();
+          if (r && r.ok) saySleep('已真息屏：屏幕不亮，手机照常能看能操作；再点一次恢复', '#8CE58C');
+          else saySleep((r && r.message) || '息屏失败', '#ffb454');
         }
-        await refresh();
+        await refreshSleep();
       } catch (e) { saySleep('操作失败：' + (e && e.message), '#ff9d9d'); }
       sleepBtn.disabled = false;
     });
+    refreshSleep();
     // 「锁住电脑前的键盘和鼠标」：默认开；开着的时候改选项 → 重启一次遮罩让它生效
     if (lockCb) lockCb.addEventListener('change', async () => {
       lockOn = !!lockCb.checked;
@@ -7452,9 +7463,10 @@ bindImg(img);
       // 但系统仍在正常合成，远程画面完全不受影响 —— 这才是"人不在电脑前"想要的效果。
       '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
       + '<button id="prvSleep" style="background:#1f2a3a;color:#bcd4ff;border:1px solid #2d4a6e;border-radius:9px;'
-      + 'padding:9px 15px;font-size:13px;cursor:pointer">一键息屏（本机黑屏）</button>'
+      + 'padding:9px 15px;font-size:13px;cursor:pointer">真息屏（关背光）</button>'
       + '<span id="prvSleepMsg" style="font-size:12px;color:#6b7078;flex:1;min-width:160px;line-height:1.6">'
-      + '点一下电脑屏幕立刻全黑，而你手机上的画面和操作完全不受影响；再点一次恢复。</span>'
+      + '把显示器背光关到 0：屏幕真的不亮（省电、夜里没有光），但电脑照常运行、你手机上的画面完全正常。'
+      + '再点一次恢复；也会一直保持，直到你手动恢复。</span>'
       + '</div>'
       + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">'
       + '下面的「防窥屏」更彻底：电脑本机会被一层锁屏图盖住，屏幕前的人看不到桌面、鼠标点不动；'
@@ -8653,7 +8665,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-11.1';
+export const PAGE_VER = '2026-11-11.2';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
