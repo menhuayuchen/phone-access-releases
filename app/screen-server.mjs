@@ -793,8 +793,10 @@ function attachH264Rtc(server, key) {
     ws.on('error', () => { });
   });
 }
-function h264Filter() {
-  let vf = '[0:v]hwdownload,format=bgra';
+// 采集链的滤镜（hwdownload → 可选裁剪 → 缩放到指定宽度）。
+// 2026-11-11（B2）：抽成"带宽度参数"，因为两路模式要给每一路各接一份、各自缩放到自己的宽度。
+function h264FilterChain(width) {
+  let vf = 'hwdownload,format=bgra';
   if (H264_RECT && H264_RECT.w >= 16 && H264_RECT.h >= 16) {
     const x = Math.max(0, Math.round(H264_RECT.x / 2) * 2);
     const y = Math.max(0, Math.round(H264_RECT.y / 2) * 2);
@@ -804,12 +806,15 @@ function h264Filter() {
   }
   // 2026-11-06：不再显式接 format=nv12 —— 交给编码器声明 -pix_fmt nv12，
   // swscale 在缩放的同一次 pass 里就把 BGRA 转成 NV12（实测 1920×1200@60 少约 25% CPU，输出完全一致）。
-  vf += ',scale=' + H264_W + ':-2:flags=lanczos+accurate_rnd[v]';
+  vf += ',scale=' + width + ':-2:flags=lanczos+accurate_rnd';
   return vf;
 }
+function h264Filter() {
+  return '[0:v]' + h264FilterChain(H264_W) + '[v]';
+}
 
-// 编码参数（ddagrab 全屏采集和单窗口采集共用）
-function h264EncArgs() {
+// 编码参数（ddagrab 全屏采集和单窗口采集共用）。只含编码器部分，不含封装尾巴。
+function h264EncOnly() {
   return [
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
@@ -821,11 +826,12 @@ function h264EncArgs() {
            '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : [])]
         : ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0'])
       : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', H264_QF ? '90' : '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0']),
-    '-f', 'mp4',
-    '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
-    '-frag_duration', '5000', '-flush_packets', '1',
-    'pipe:1'
   ];
+}
+// fMP4 封装尾巴（主路走 stdout；两路模式下第二路走命名管道，用的是同一套尾巴）
+const H264_MP4_TAIL = ['-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof', '-frag_duration', '5000', '-flush_packets', '1'];
+function h264EncArgs() {
+  return [...h264EncOnly(), ...H264_MP4_TAIL, 'pipe:1'];
 }
 
 function h264ResetCounters() {
@@ -855,6 +861,20 @@ function h264AttachEncoder(proc) {
     if (wasCurrent) { h264.proc = null; h264.killPending = false; }
     console.log('h264: ffmpeg exit ' + code + (wasCurrent ? '' : '（旧进程，忽略）'));
     if (!wasCurrent) return;
+    // 2026-11-11（B2）：两路模式熔断。这台机器如果做不了「一次采集两路编码」（驱动/编码器限制），
+    // **绝不能让主路跟着死** —— 立刻退回单路，2 分钟内不再尝试，并把第二路降级回"共享主路"。
+    // 不 return：让下面的秒退保护照常接管，它会重排一次 h264Start，那次就会走单路。
+    if (h264DualOn) {
+      const aliveMs = Date.now() - (h264.startedAt || 0);
+      if (aliveMs < 3000) {
+        h264DualOn = false;
+        dualFailUntil = Date.now() + 120000;
+        h264.quickFails = 0;   // 给单路重试一个干净的起点，别被"秒退两次"误判成机器不支持
+        h264.lastError = '两路模式启动失败，已回退单路（2 分钟内不再尝试）';
+        console.log('h264: ' + h264.lastError);
+        try { s2DegradeToShared('两路模式启动失败'); } catch { }
+      }
+    }
     // 2026-11-07：秒退保护。零拷贝路径在个别机器上会立刻失败（-40 Function not implemented），
     // 以前会无限重试、画面永远黑。这里连续 2 次在 2 秒内退出就判定该路径不可用，
     // 永久退回过滤器路径再重启，保证用户至少能看到画面。
@@ -900,20 +920,44 @@ function h264Start() {
   //   · scale_d3d11 在某些显卡 + 驱动组合上创建 NV12 纹理直接 E_INVALIDARG。
   // 所以全屏缩小仍走 CPU（hwdownload → swscale lanczos），但把「缩放 + 转 NV12」合成一次 pass：
   // 由编码器声明 -pix_fmt nv12，filter 里不再接 format=nv12（实测少约 25% CPU，输出保持一致）。
+  // ⚠ 这里必须用 h264DualOn（已经过"命名管道 listening"门控的状态），**不能**直接算 h264WantDual()。
+  // 踩过的坑（2026-11-11，本轮实测）：观众连接会走 h264Ensure → h264Start，如果这里重算
+  // h264WantDual()，就会出现"管道还没 listening 就 spawn 带管道输出的 ffmpeg"——
+  // ffmpeg 报 Error opening output files: No such file or directory，秒退两次后
+  // 整条清晰模式被标记不可用 60 秒，页面直接回落到 WS。
+  const dual = h264DualOn && h264WantDual();
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
+    // 2026-11-11（B2）：-y 是给「两路模式下第二路写命名管道」用的 —— ffmpeg 的 file 协议会把已存在的
+    // 命名管道当成"文件已存在"而拒绝写（实测报 File already exists. Exiting.）。
+    // 主路走 stdout，加 -y 对它没有任何影响。
+    '-y',
     // 低延迟输入：不探测/不缓存
     '-fflags', 'nobuffer', '-flags', 'low_delay', '-probesize', '32', '-analyzeduration', '0',
     '-f', 'lavfi', '-i', `ddagrab=framerate=${H264_FPS}:draw_mouse=0:output_idx=${H264_MON}`,
-    ...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']),
-    '-pix_fmt', 'nv12',
+  ];
+  if (dual) {
+    // 一次 ddagrab、两个输出：每路各自 hwdownload → scale → NVENC，第二路写命名管道回 Node。
+    // 注意：这里**不能保留零拷贝**（H264_NATIVE 那条路）—— 实测这只 ffmpeg（8.1.3 裁剪版）
+    // 无法在保留 d3d11 帧的同时给第二个消费者做格式转换，会直接
+    // "Impossible to convert between the formats supported by the filter"。
+    // 所以两路模式一律走 hwdownload；单路模式完全不受影响，仍是原来的零拷贝路径。
+    args.push('-filter:v', h264FilterChain(H264_W), '-pix_fmt', 'nv12', '-r', String(H264_FPS), ...h264EncOnly());
+    args.push(...H264_MP4_TAIL, 'pipe:1');
+    const p2 = S2.profile || { w: 1280, fps: 30, kbps: 8000 };
+    args.push('-filter:v', h264FilterChain(p2.w), '-pix_fmt', 'nv12', '-r', String(p2.fps), ...s2EncArgs(p2.fps, p2.kbps));
+    args.push(...H264_MP4_TAIL, 'file:' + S2_FMP4_PIPE);
+  } else {
+    args.push(...(H264_NATIVE ? [] : ['-filter_complex', h264Filter(), '-map', '[v]']));
+    args.push('-pix_fmt', 'nv12');
     // 2026-11-10：强制恒定帧率（CFR）。ddagrab 是 VFR（桌面变才出帧），
     // 不补帧的话帧间隔忽长忽短，浏览器判定为抖动 → jitter buffer 自动膨胀 → 「缓」一路涨到 300ms。
     // 实测 iPhone 17 Pro 也一样涨，说明问题在发送端不是设备解码。
-    '-r', String(H264_FPS),
-    ...h264EncArgs()
-  ];
-  console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps');
+    args.push('-r', String(H264_FPS));
+    args.push(...h264EncArgs());
+  }
+  console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
+    + (dual ? (' + 第二路 ' + (S2.profile ? S2.profile.w : '?') + 'x@' + (S2.profile ? S2.profile.fps : '?') + ' 一次采集两路编码') : ''));
   h264ResetCounters();
   let proc = null;
   try {
@@ -1347,6 +1391,121 @@ const S2 = {
   idleSince: 0, lastError: '', frames: 0
 };
 
+// ---- B2（2026-11-11）：一次采集、两路编码 -------------------------------------
+// 为什么要改：原来第二路是**另一只 ffmpeg 自己 ddagrab 同一块屏**。两个桌面复制客户端互相拖死，
+// 主路跟着没帧 → "没帧就重启编码器"的看门狗每 30 秒重启一次 → 花屏复发（实测 dropped=1321）。
+// 现在：主 ffmpeg 只做一次 ddagrab，fan-out 成两个输出，各自 scale + NVENC；
+// 第二路经 **Windows 命名管道** 回到 Node，喂给原来的 S2 解析器/侧车（解析、喂帧、profile 全复用）。
+//
+// 实测结论（PoC 已验证，别再重复试错）：
+//   · 这只 ffmpeg 是裁剪版（8.1.3，--disable-everything）：**没有 split 滤镜、没有 tcp 协议、没有 tee 复用器**。
+//     但 ffmpeg 原生支持"一路输入 fan-out 到多个输出"（每路用自己的 -filter:v），所以不需要 split。
+//   · 命名管道能当输出用（file 协议认 \\.\pipe\xxx），但**必须加 -y**，否则报 "File ... already exists. Exiting."。
+//   · 两路模式**保不住零拷贝**：保留 d3d11 帧的同时再给第二个消费者做格式转换会直接报
+//     "Impossible to convert between the formats supported by the filter"。所以两路态一律 hwdownload；
+//     单路态原样不动（仍是零拷贝）。
+const S2_FMP4_PIPE = '\\\\.\\pipe\\dsh-screen-h264s2-' + RTC264_PORT;
+let s2PipeSrv = null;
+let s2PipeSock = null;
+let h264DualOn = false;        // 当前这只 ffmpeg 是否带着第二路输出
+let dualFailUntil = 0;         // 两路模式熔断到期时间
+let dualSwitchTimer = null;
+
+// 现在该不该跑两路？
+function h264WantDual() {
+  if (!PER_SESSION_Q) return false;                 // 总开关关着（默认）
+  if (!H264_ENABLED) return false;
+  if (!S2.profile) return false;                    // 没有第二台设备要独立档位
+  if (h264TemporarilyUnavailable()) return false;
+  if (H264_WIN > 0) return false;                   // 单窗口采集不支持两路，退回共享主路
+  if (Date.now() < dualFailUntil) return false;     // 刚失败过，熔断中
+  return true;
+}
+
+function s2EnsureFmp4Pipe(cb) {
+  if (s2PipeSrv && s2PipeSrv.listening) { try { if (cb) cb(); } catch { } return; }
+  if (s2PipeSrv) { try { if (cb) s2PipeSrv.once('listening', () => { try { cb(); } catch { } }); } catch { } return; }
+  try {
+    s2PipeSrv = net.createServer((sock) => {
+      s2PipeSock = sock;
+      S2.pending = Buffer.alloc(0);
+      S2.initInfo = null;
+      sock.on('data', (d) => {
+        if (s2PipeSock !== sock) return;
+        S2.pending = Buffer.concat([S2.pending, d]);
+        s2ProcessBuffer();
+      });
+      sock.on('error', () => { });
+      sock.on('close', () => { if (s2PipeSock === sock) s2PipeSock = null; });
+    });
+    s2PipeSrv.on('error', (e) => {
+      console.log('rtc264: [第二路] 命名管道出错 ' + ((e && e.message) || e));
+      try { s2PipeSrv.close(); } catch { }
+      s2PipeSrv = null;
+    });
+    s2PipeSrv.listen(S2_FMP4_PIPE, () => {
+      console.log('rtc264: [第二路] 命名管道就绪 ' + S2_FMP4_PIPE);
+      try { if (cb) cb(); } catch { }
+    });
+  } catch (e) {
+    s2PipeSrv = null;
+    console.log('rtc264: [第二路] 命名管道创建失败 ' + ((e && e.message) || e));
+  }
+}
+
+function s2DropFmp4Pipe() {
+  try { if (s2PipeSock) s2PipeSock.destroy(); } catch { }
+  s2PipeSock = null;
+  try { if (s2PipeSrv) s2PipeSrv.close(); } catch { }
+  s2PipeSrv = null;
+  S2.pending = Buffer.alloc(0);
+  S2.initInfo = null;
+}
+
+// 两路不可用时，把第二路降级回"共享主路"——让设备重新分配到 stream 1，而不是黑屏。
+function s2DegradeToShared(why) {
+  console.log('rtc264: [第二路] 降级为共享主路（' + why + '）');
+  S2.profile = null;
+  S2.ownerClient = '';
+  S2.ownerAt = 0;
+  S2.initInfo = null;
+  S2.pending = Buffer.alloc(0);
+  try { if (S2.proc) { const p = S2.proc; S2.proc = null; try { p.kill(); } catch { } } } catch { }
+  s2DropFmp4Pipe();
+}
+
+// 切换"单路 / 两路"必须重建 ffmpeg（输出个数变了）。做成脱抖 + 幂等，避免来回抖。
+// 关键顺序：**开两路一定等命名管道进入 listening 之后再让 ffmpeg 打开它**，
+// 否则 ffmpeg 打开管道失败 → 秒退 → 误触发熔断（白等 2 分钟）。
+function h264RestartForDual(why) {
+  let want = false;
+  try { want = h264WantDual(); } catch { want = false; }
+  if (want === h264DualOn) return;            // 已经是要的状态
+  if (dualSwitchTimer) return;
+  const apply = () => {
+    let w2 = false;
+    try { w2 = h264WantDual(); } catch { w2 = false; }
+    if (w2 === h264DualOn) return;
+    if (w2) {
+      s2EnsureFmp4Pipe(() => {
+        let w3 = false;
+        try { w3 = h264WantDual(); } catch { w3 = false; }
+        if (!w3 || w3 === h264DualOn) return;
+        h264DualOn = true;
+        console.log('h264: 切换两路（一次采集两路编码）（' + why + '）');
+        if (h264.proc || h264.killPending) { h264.startQueued = true; h264Stop(); }
+        else h264Ensure();
+      });
+    } else {
+      h264DualOn = false;
+      console.log('h264: 切换单路（' + why + '）');
+      s2DropFmp4Pipe();
+      if (h264.proc || h264.killPending) { h264.startQueued = true; h264Stop(); }
+    }
+  };
+  dualSwitchTimer = setTimeout(() => { dualSwitchTimer = null; apply(); }, 350);
+}
+
 // 2026-11-11：定时唤醒（或电源策略）把电脑叫醒后，屏幕往往还是黑的。
 // 屏幕关着时 DXGI 桌面复制会直接 "access denied"（实测还会挂住），于是看不了画面。
 // 远控产品的核心场景就是"人不在电脑前"，所以有观众连上来时主动把屏幕点亮。
@@ -1633,18 +1792,42 @@ function s2ProcessBuffer() {
   }
 }
 
+// 强制重建主编码器（档位变化、需要换第二路参数时用）
+function h264ForceRestart(why) {
+  console.log('h264: 重建编码器（' + why + '）');
+  if (h264.proc || h264.killPending) { h264.startQueued = true; h264Stop(); }
+  else h264Ensure();
+}
+
 function s2StopEncoder() {
   const p = S2.proc;
-  if (!p) return;
-  S2.proc = null;
-  S2.initInfo = null;
-  S2.pending = Buffer.alloc(0);
-  try { p.kill(); } catch { }
-  console.log('rtc264: [第二路] 编码器已停');
+  if (p) {
+    S2.proc = null;
+    S2.initInfo = null;
+    S2.pending = Buffer.alloc(0);
+    try { p.kill(); } catch { }
+    console.log('rtc264: [第二路] 独立编码器已停');
+  }
+  // 2026-11-11（B2）：两路模式下"第二路编码器"其实是主 ffmpeg 的第二个输出 ——
+  // 停它 = 让主编码器退回单路（幂等：本来就不是两路就直接返回，不重建）。
+  try { h264RestartForDual('第二路不再需要'); } catch { }
 }
 
 function s2StartEncoder() {
-  if (!S2.profile || S2.proc) return;
+  if (!S2.profile) return;
+
+  // 2026-11-11（B2）：首选「一次采集两路编码」——主 ffmpeg 顺带出第二路，不再自己抓屏。
+  // 走到这里说明第二台设备要独立档位；让主编码器加上第二路输出即可。
+  if (h264WantDual()) {
+    s2EnsureFmp4Pipe();
+    S2.lastError = '';
+    if (h264DualOn) return;                     // 已经在两路输出，无需动作
+    try { h264RestartForDual('第二路需要独立档位'); } catch { }
+    return;
+  }
+
+  // 回退路径：两路不支持的场景（单窗口采集、熔断中）才用独立 ffmpeg —— 也就是老行为。
+  if (S2.proc) return;
   const { w, h, fps, kbps } = S2.profile;
   const args = [
     '-hide_banner', '-loglevel', 'error', '-nostdin',
@@ -1697,6 +1880,9 @@ function s2ApplyProfile(w, fps, kbps) {
   S2.profile = p;
   s2StartSidecar();
   if (S2.proc) s2StopEncoder();
+  // 2026-11-11（B2）：两路模式下第二路的参数在**主 ffmpeg 的输出参数**里，
+  // 所以档位变了必须重建主编码器，否则第二路还按旧的分辨率/帧率在编。
+  else if (h264DualOn) h264ForceRestart('第二路档位变化 ' + key);
   setTimeout(() => { if (S2.profile && !S2.proc && S2.status.sessions > 0) s2StartEncoder(); }, 300);
   return p;
 }
