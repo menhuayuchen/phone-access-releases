@@ -1321,6 +1321,11 @@ if (CFG264.enabled) setInterval(poll264, 5000);
 // 只有"确实有第二台设备、且它的档位和主路不同、且这台机器吃得下"时才启动；
 // 任何一步失败都回落到「共享主路」，绝不让用户黑屏。
 // ============================================================================
+// 2026-11-11 傍晚：两路（每台设备各自画质）实测会导致编码器反复重启 → 花屏复发。
+// 先加一个总开关，默认关闭：关闭时所有设备共享主路（幂等，不互相打断），行为回到稳定版。
+// 需要时在 product.config.json 里设 screen.h264.rtc264.perSessionQuality=true 再启用。
+const PER_SESSION_Q = CFG264.perSessionQuality === true;
+
 const S2_PORT = RTC264_PORT + 10;
 const S2_FEED_PORT = RTC264_FEED_PORT + 10;
 const S2_AUDIO_PORT = RTC264_AUDIO_PORT + 10;
@@ -1735,6 +1740,15 @@ function s2BudgetFps(w, fps) {
 // ②第二路自己的低上限把 2560/120/240 "吃掉"，表现就是"画质设置被搞坏了"。
 function s2PickStream(clientId, w, fps, kbps) {
   const cid = String(clientId || '').slice(0, 40);
+  // 总开关关闭：所有设备共享主路。第一台成为主人（可改档位），其余只读。
+  if (!PER_SESSION_Q) {
+    if (!cid || !primaryOwnerAlive() || PRIMARY_OWNER.client === cid) {
+      PRIMARY_OWNER.client = cid || PRIMARY_OWNER.client;
+      PRIMARY_OWNER.at = Date.now();
+      return { stream: 1, reason: 'shared-mode-owner', owner: true, profile: null };
+    }
+    return { stream: 1, reason: 'shared-mode-guest', owner: false, profile: null };
+  }
   const want = {
     w: evenDown(Math.max(640, Math.min(S2_MAX_W, Math.round(Number(w) || H264_W)))),
     fps: Math.max(10, Math.min(S2_MAX_FPS, Math.round(Number(fps) || H264_FPS))),
@@ -5927,6 +5941,7 @@ async function handler(req, res) {
       };
       let __same = true;
       for (const kk of Object.keys(__before)) { if (__before[kk] !== __after[kk]) { __same = false; break; } }
+      try { if (!__same) console.log('h264: 画质变更 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps  client=' + String(m.client || '-') + ' stream=' + String(m.stream || 1) + ' auto=' + (m.auto === true)); } catch { }
       if (__same) {
         try { console.log('h264: 画质未变化，跳过重启（' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps）'); } catch (e) { }
       } else {
