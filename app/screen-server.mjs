@@ -849,7 +849,22 @@ function h264AttachEncoder(proc) {
     if (!isCurrent()) return;
     h264.bytes += d.length;
     h264.pending = Buffer.concat([h264.pending, d]);
+    // 2026-11-12（压测后加）：这个解析函数是**同步**的，而且 mp4Boxes 会整段扫描 pending。
+    // 2026-11-11 压测在 churn 场景抓到一次 2819ms 事件循环卡顿 → 音频管道写超时 → 丢 3.5 秒声音。
+    // 卡顿期间日志是空白的，无法定位。这里记录耗时与缓冲大小，下次复现就能知道是不是解析器。
+    const _pt0 = process.hrtime.bigint();
     processH264Buffer();
+    try {
+      const _ms = Number(process.hrtime.bigint() - _pt0) / 1e6;
+      const _pend = h264.pending ? h264.pending.length : 0;
+      if (_ms > 50 || _pend > 1024 * 1024) {
+        const _t = Date.now();
+        if (_t - (h264._parseLogAt || 0) > 5000) {
+          h264._parseLogAt = _t;
+          console.log('[h264-parse] 耗时 ' + _ms.toFixed(0) + 'ms，输入 ' + d.length + 'B，缓冲余 ' + _pend + 'B');
+        }
+      }
+    } catch { }
   });
   proc.stderr.on('data', (d) => {
     if (!isCurrent()) return;
