@@ -1289,7 +1289,11 @@ function tryStartWC264(pc) {
   attempt();
 }
 const WC264 = {
-  on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0, lastFrameAt: 0, lastErr: "",
+  on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0,
+  // 2026-11-11：初值给"现在"，不要给 0。
+  // 看门狗的外层条件是 lastFrameAt 存在；给 0 的话，**不支持 WebCodecs 的浏览器永远进不去**
+  // 那段逻辑，连"浏览器解码这条兜底路也死了"的检测都没有 —— 那才是真的没人管。
+  lastFrameAt: Date.now(), lastErr: "",
   // 2026-11-10：卡死自愈用。gaveUp=彻底放弃（回退 <video>）；restarts=已经重建过几次接收端。
   gaveUp: false, restarts: 0, restarting: false,
   supported() { try { return typeof RTCRtpScriptTransform !== "undefined" && typeof VideoDecoder !== "undefined"; } catch (e) { return false; } },
@@ -1333,6 +1337,17 @@ const WC264 = {
       this.canvas = c;
       this.ctx = c.getContext("2d", { alpha: false, desynchronized: true });
       this.on = true;
+      // 2026-11-11（关键修正）：重建接收端之后必须把"上一次出帧时间"重置到现在。
+      // 原来没重置 → 看门狗拿着**重建前**的旧时间戳，1.2 秒后立刻又判"还在卡"，
+      // 3 次重建名额在约 5 秒内烧光 → 过早 gaveUp → 之后只能整页重连才恢复。
+      // 这就是"画面静止 + 不停重新连接"的直接成因。
+      this.lastFrameAt = Date.now();
+      this.frames = 0;
+      this.stats = null;
+      this._lastDec = undefined;
+      this._lastRtp = undefined;
+      this._vidFramesLast = undefined;
+      this._vidStallSince = 0;
       setStat("WebCodecs 接收端已启用");
       return true;
     } catch (e) {
@@ -1352,6 +1367,11 @@ const WC264 = {
           x.drawImage(f, 0, 0);
           this.frames++;
           this.lastFrameAt = Date.now();
+          // 2026-11-11：出帧 = 活着。把"连续失败"计数清零并解除冷却。
+          // 原来 restarts 是**终身计数**：一晚上遇到 3 次网络抖动之后就永久放弃 WebCodecs，
+          // 之后再卡也不会自愈（违反 10287a02：任何 false 状态都必须有恢复路径）。
+          if (this.restarts) this.restarts = 0;
+          this.gaveUp = false;
         }
       } catch (e) { } finally { try { f.close(); } catch (e2) { } }
     } else if (m.type === "stats") {
@@ -1856,44 +1876,100 @@ async function rtc264Stats() {
     // 所以这里在 WebCodecs 生效时显示真实链路延迟（帧从解码到绘制的间隔），而不是误导性的 jitterBufferDelay。
     let _wcBufOverride = -1;
     try {
-      if (window.__wc264 && window.__wc264.on && window.__wc264.lastFrameAt) {
-        _wcBufOverride = Math.max(0, Date.now() - window.__wc264.lastFrameAt);
-        // 2026-11-10 看门狗（第二版）：WebCodecs 接收端卡死时自愈。
-        //
-        // 第一版是"卡 3 秒就永久回退 <video>"，实测代价太大：编码器只要重启一次
-        // （切分辨率/切窗口/码率、ffmpeg 崩溃重启）就会断帧 1~4 秒，于是每次调画质都
-        // 永久丢掉 WebCodecs，用户莫名其妙回到"延迟会涨"的浏览器解码链路，
-        // 而且 gaveUp 一旦置位，后面再卡死连回退都不会做了（黑屏不恢复）。
-        //
-        // 现在：卡住先自己重建接收端（最多 3 次，每次间隔 1.2 秒），真的救不回来才回退。
-        // 另外加一条"解码器僵死"判据：帧还在进来、但解出来的帧数不涨 —— 这种状态
-        // lastFrameAt 照涨（主线程还在 drawImage 旧帧），光看时间戳发现不了。
+      // 2026-11-11 看门狗（第三版）：改成"有恢复路径"的状态机。
+      //
+      // 第二版的两个硬伤（今天实测确认）：
+      //   ① 重建接收端后没有重置 lastFrameAt → 看门狗拿着**重建前**的旧时间戳继续判"卡住"，
+      //      3 次重建名额在约 5 秒内烧光，于是过早 gaveUp；
+      //   ② 外层条件是 __wc264.on && ...，gaveUp 把 on 置 false 之后**整块看门狗不再执行** ——
+      //      冷却、重连、任何恢复路径都没有了，只能整页刷新/重连才回来。
+      //      这正是"画面静止 + 不停重新连接"的成因（也违反 10287a02：false 必须有恢复路径）。
+      //
+      // 第三版的规则：
+      //   · 只在"该有画面"时判卡：清晰模式 + 页面可见 + PeerConnection 已连接；
+      //   · 出帧即清零连续失败计数（restarts 是**连续**失败数，不是终身计数）；
+      //   · 放弃 ≠ 永久：救不回就回退浏览器解码，**60 秒后自动再试**；
+      //   · 另外盯住浏览器解码这条兜底路：两条路都 >10 秒没有新帧 → 才升级成一次重连，
+      //     并且限流 60 秒一次，避免变成"重连风暴"。
+      const _wc0 = window.__wc264;
+      if (_wc0 && _wc0.lastFrameAt) {
+        if (_wc0.on) _wcBufOverride = Math.max(0, Date.now() - _wc0.lastFrameAt);
         try {
-          const _wc = window.__wc264;
-          const _stall = Date.now() - _wc.lastFrameAt;
-          const _st = _wc.stats;
-          let _stuck = false;
-          if (_st) {
-            if (_wc._lastDec !== undefined && _st.rtp > _wc._lastRtp && _st.decoded <= _wc._lastDec) _stuck = true;
-            _wc._lastDec = _st.decoded; _wc._lastRtp = _st.rtp;
-          }
-          if (!_wc.restarting && (_stall > 8000 || _stuck)) {
-            _wc.restarts = (_wc.restarts || 0) + 1;
-            if (_wc.restarts <= 3) {
-              _wc.restarting = true;
-              try { console.log("wc264: " + (_stuck ? "解码器僵死" : "卡了 " + _stall + "ms") + "，第 " + _wc.restarts + " 次重建接收端"); } catch (e0) { }
-              try { _wc.stop(); } catch (e1) { }
-              setTimeout(function () {
-                try { _wc.restarting = false; } catch (e4) { }
-                try {
-                  const _pc = window.__rtc264 && window.__rtc264.pc;
-                  if (_pc && state.mode === 'h264' && !_wc.on) _wc.start(_pc);
-                } catch (e5) { }
-              }, 1200);
-            } else if (!_wc.gaveUp) {
-              _wc.gaveUp = true;
-              try { console.log("wc264: 连续 " + (_wc.restarts - 1) + " 次重建都救不回来，回退到浏览器解码"); } catch (e6) { }
-              try { _wc.stop(); } catch (e7) { }
+          const _wc = _wc0;
+          const _R = window.__rtc264 || {};
+          const _pc2 = _R.pc;
+          const _pcAlive = !!(_pc2 && (_pc2.connectionState === 'connected' || _pc2.connectionState === 'completed'));
+          const _now = Date.now();
+          const _shouldBeLive = (state.mode === 'h264') && !document.hidden && _pcAlive;
+          if (!_shouldBeLive) {
+            // 切后台 / 换模式 / 电脑端没连上：不判卡，也不累积任何"卡住"的状态
+            _wc._lastDec = undefined; _wc._lastRtp = undefined;
+            _wc._vidFramesLast = undefined; _wc._vidStallSince = 0;
+          } else {
+            // 冷却结束 → 重新武装（恢复路径）
+            if (_wc.gaveUp && (_now - (_wc.gaveUpAt || 0)) > 60000) {
+              try { console.log("wc264: 冷却结束，重新尝试 WebCodecs"); } catch (e0) { }
+              _wc.gaveUp = false; _wc.restarts = 0; _wc.lastFrameAt = _now;
+              _wc._lastDec = undefined; _wc._lastRtp = undefined;
+              try { if (_pc2) _wc.start(_pc2); } catch (e1) { }
+            }
+            if (_wc.on) {
+              // ---- WebCodecs 生效中：判"卡了"或"解码器僵死" ----
+              const _st = _wc.stats;
+              let _stuck = false;
+              if (_st) {
+                const _rtpNow = Number(_st.rtp || 0), _decNow = Number(_st.decoded || 0);
+                // 僵死：RTP 还在进（至少 30 包）但解出来的帧数不涨 —— 光看时间戳发现不了
+                if (_wc._lastDec !== undefined && _wc._lastRtp !== undefined
+                  && (_rtpNow - _wc._lastRtp) >= 30 && _decNow <= _wc._lastDec) _stuck = true;
+                _wc._lastDec = _decNow; _wc._lastRtp = _rtpNow;
+              }
+              const _stall = _now - (_wc.lastFrameAt || 0);
+              if (!_wc.restarting && (_stall > 8000 || _stuck)) {
+                _wc.restarts = (_wc.restarts || 0) + 1;
+                if (_wc.restarts <= 3) {
+                  _wc.restarting = true;
+                  try { console.log("wc264: " + (_stuck ? "解码器僵死" : "卡了 " + _stall + "ms") + "，第 " + _wc.restarts + " 次重建接收端"); } catch (e2) { }
+                  try { _wc.stop(); } catch (e3) { }
+                  setTimeout(function () {
+                    try { _wc.restarting = false; } catch (e4) { }
+                    try {
+                      const _p3 = window.__rtc264 && window.__rtc264.pc;
+                      if (_p3 && state.mode === 'h264' && !_wc.on) {
+                        _wc.lastFrameAt = Date.now();   // 给新接收端宽限期，别让旧时间戳立刻再触发一轮
+                        _wc._lastDec = undefined; _wc._lastRtp = undefined;
+                        _wc.start(_p3);
+                      }
+                    } catch (e5) { }
+                  }, 1200);
+                } else if (!_wc.gaveUp) {
+                  _wc.gaveUp = true; _wc.gaveUpAt = _now;
+                  try { console.log("wc264: 连续 3 次重建都没救回来，先回退浏览器解码，60 秒后自动再试"); } catch (e6) { }
+                  try { _wc.stop(); } catch (e7) { }
+                }
+              }
+            } else {
+              // ---- WebCodecs 没启用（不支持 / 冷却中 / 刚 stop）：盯住浏览器解码这条兜底路 ----
+              try {
+                // 必须先确认"确实有视频轨道"（videoWidth>0），否则还没接到画面就会误判成
+                // "两条路都死"，每 60 秒白重连一次（真机上会表现成莫名其妙的周期性重连）。
+                const _vid = document.getElementById('vid');
+                const _hasTrack = !!(_vid && _vid.videoWidth > 0);
+                if (!_hasTrack) {
+                  _wc._vidFramesLast = undefined; _wc._vidStallSince = 0;
+                } else {
+                  const _vfc = videoFrameCount();
+                  if (_wc._vidFramesLast === undefined || _vfc > _wc._vidFramesLast) {
+                    _wc._vidFramesLast = _vfc; _wc._vidStallSince = 0;
+                  } else if (!_wc._vidStallSince) {
+                    _wc._vidStallSince = _now;
+                  } else if ((_now - _wc._vidStallSince) > 10000 && (_now - (_wc._mediaRetryAt || 0)) > 60000) {
+                    _wc._mediaRetryAt = _now; _wc._vidStallSince = 0; _wc.restarts = 0;
+                    try { console.log("wc264: WebCodecs 与浏览器解码都没有新帧（>10s），重连会话"); } catch (e8) { }
+                    try { rtc264Retry('media-dead'); } catch (e9) { }
+                  }
+                }
+              } catch (e10) { }
             }
           }
         } catch (e) { }
