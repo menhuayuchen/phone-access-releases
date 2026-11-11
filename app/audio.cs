@@ -625,7 +625,12 @@ internal sealed class AudioRunner
     private const int TargetChannels = 2;
     private const int ChunkMilliseconds = 10;
     private const int ChunkBytes = TargetRate * ChunkMilliseconds / 1000 * TargetChannels * 2; // 10ms -> 1920
-    private const int PipeWriteTimeoutMs = 2000;
+    // 2026-11-12：2 秒 → 5 秒。
+    // 压测实测：screen-server 出现过一次 2819ms 的事件循环卡顿，读端停转 → 这里 2000ms 超时
+    // 直接判定管道断开 → 断开重连（还要多丢约 1 秒）→ 侧车把音频时间戳贴回真实时间。
+    // 用户听感就是"发糊/断续"。卡顿期间音频本来也会被环形缓冲丢掉（MaxRingBytes 只有 120ms），
+    // 所以放宽超时**不增加延迟**，只是别把一次卡顿升级成"断开+重连+时间戳跳变"。
+    private const int PipeWriteTimeoutMs = 5000;
 
     private readonly string _pipeName;
     // 2026-11-08：原来 2 秒。收发速率相等时，任何一次抖动都会把"深度"永久钉在最深处，
