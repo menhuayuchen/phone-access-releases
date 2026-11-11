@@ -1461,6 +1461,33 @@ let _rafCount = 0, _rafHz = 0, _rafLastAt = performance.now();
   try { requestAnimationFrame(tick); } catch (e) { }
 })();
 
+// 2026-11-11：两个排查/突破用的 URL 开关（不改任何现有 UI）
+//
+// ① ?fs=1 —— 首次触摸自动进全屏。
+//    Chrome on Android 对普通标签页常把合成钉在 60Hz；全屏（尤其接近视频播放的形态）
+//    才可能放开到屏幕原生刷新率。全屏本身对远控也是体验提升（面积更大、藏掉浏览器栏）。
+// ② ?wc=0 —— 强制走浏览器 <video> 解码，而不是 WebCodecs + canvas。
+//    用来判断"限制来自 canvas 合成"还是"屏幕/浏览器整体"：
+//    如果 <video> 能到 120Hz 而 canvas 只有 60Hz，那就说明有得绕。
+(function () {
+  try {
+    if (!/[?&]fs=1(&|$)/.test(location.search)) return;
+    const go = function () {
+      try {
+        const el = document.documentElement;
+        if (el.requestFullscreen && !document.fullscreenElement) {
+          el.requestFullscreen().catch(function () { });
+        }
+        try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(function () { }); } catch (e) { }
+      } catch (e) { }
+      try { document.removeEventListener('pointerdown', go, true); } catch (e) { }
+      try { document.removeEventListener('touchend', go, true); } catch (e) { }
+    };
+    document.addEventListener('pointerdown', go, true);
+    document.addEventListener('touchend', go, true);
+  } catch (e) { }
+})();
+
 const WC264 = {
   on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0,
   // 2026-11-11：初值给"现在"，不要给 0。
@@ -1469,7 +1496,15 @@ const WC264 = {
   lastFrameAt: Date.now(), lastErr: "",
   // 2026-11-10：卡死自愈用。gaveUp=彻底放弃（回退 <video>）；restarts=已经重建过几次接收端。
   gaveUp: false, restarts: 0, restarting: false,
-  supported() { try { return typeof RTCRtpScriptTransform !== "undefined" && typeof VideoDecoder !== "undefined"; } catch (e) { return false; } },
+  supported() {
+    try {
+      // 2026-11-11：?wc=0 强制走浏览器 <video> 解码路径（A/B 实验用）。
+      // 目的：如果 <video> 那条路在手机上能拿到 120Hz 合成而 canvas 只有 60Hz，
+      // 就说明限制来自"canvas 合成"而不是屏幕，我们就有办法绕。
+      if (/[?&]wc=0(&|$)/.test(location.search)) return false;
+      return typeof RTCRtpScriptTransform !== "undefined" && typeof VideoDecoder !== "undefined";
+    } catch (e) { return false; }
+  },
   start(pc) {
     if (this.on || !pc) return false;
     if (!this.supported()) { this.lastErr = "no-rtp-tf"; return false; }
@@ -2373,11 +2408,20 @@ async function rtc264Stats() {
           // 于是 60Hz 屏上永远显示 60，用户改 120/240 都像没生效（实际是屏幕吃不下）。
           if (_dt > 0 && _dA >= 0) _w._hudFps = _dA / _dt;
           if (_dt > 0 && _dD >= 0) _w._hudDrawFps = _dD / _dt;
+          // 2026-11-11：<video> 元素自己解出来的帧率。和 _hudDrawFps 对比就能判断
+          // 是不是"canvas 合成被限速"（?wc=0 时走这条路）。
+          try {
+            const _vfc = videoFrameCount();
+            const _dV = _vfc - (_w._hudLastVfc | 0);
+            if (_dt > 0 && _dV >= 0) _w._hudVidFps = _dV / _dt;
+            _w._hudLastVfc = _vfc;
+          } catch (e) { }
           _w._hudLastArrived = _arr;
           _w._hudLastDrawn = _drw;
           _w._hudLastAt = _now;
         } else if (!_w._hudLastAt) {
           _w._hudLastAt = _now;
+          try { _w._hudLastVfc = videoFrameCount(); } catch (e) { }
           _w._hudLastArrived = _arr;
           _w._hudLastDrawn = _drw;
         }
@@ -2463,6 +2507,11 @@ async function rtc264Stats() {
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
           // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
           drawMs: Math.round((((window.__pq || {}).drawMs) || 0) * 100) / 100,
+          // 2026-11-11：全屏状态 / WebCodecs 是否启用 / <video> 自己解出的帧率。
+          // ?fs=1 看全屏能否放开高刷；?wc=0 看 video 路径能否绕过 canvas 合成限制。
+          fs: !!document.fullscreenElement,
+          wc: !!_wd.on,
+          vidFps: Math.round((_wd._hudVidFps || 0) * 10) / 10,
           dpr: Math.round((window.devicePixelRatio || 0) * 100) / 100,
           scr: (window.screen ? (screen.width + 'x' + screen.height) : ''),
           buf: Math.round(_wcBufOverride >= 0 ? _wcBufOverride : bufMs),

@@ -6641,6 +6641,8 @@ async function handler(req, res) {
           + ' 画=' + (Math.round((Number(m.drawnHz) || 0) * 10) / 10)
           + ' dpr=' + String(m.dpr || '') + ' 屏=' + String(m.scr || '')
           + ' 画耗=' + (Math.round((Number(m.drawMs) || 0) * 100) / 100) + 'ms'
+          // 2026-11-11：全屏状态 / WebCodecs 是否启用 / <video> 自己解出的帧率
+          + ' 全屏=' + (m.fs ? 1 : 0) + ' wc=' + (m.wc ? 1 : 0) + ' vid=' + (Math.round((Number(m.vidFps) || 0) * 10) / 10)
           + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));
       } catch { }
