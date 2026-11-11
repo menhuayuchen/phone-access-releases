@@ -1301,7 +1301,7 @@ function tryStartWC264(pc) {
 // 为什么改：第一版用合成时间戳当播放时钟，而它的步长来自 fpsHint；实测切档（120→90 自动降档）
 // 时 worker 还按旧步长累加，播放时钟整体跑偏，只能靠"追上/对齐"硬纠正，纠正瞬间又造成新抖动
 // （实测 240 个采样里 82 个是超长间隔）。到达速率本身就是内容帧率最可靠的来源，1 秒内自动跟随。
-const PQ = { q: [], playing: false, raf: 0, drawn: 0, arrived: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0 };
+const PQ = { q: [], playing: false, raf: 0, drawn: 0, arrived: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0, drawMs: 0 };
 try { window.__pq = PQ; } catch (e) { }
 
 function pqStop() {
@@ -1378,6 +1378,7 @@ function pqTick() {
   // 追赶会连着吐出几帧，反而更抖。
   if (now - PQ.nextAt > periodMs * 2) PQ.nextAt = now;
   const f = q.shift();
+  const _drawT0 = performance.now();
   try {
     const c = w.canvas, x = w.ctx;
     if (c.width !== f.displayWidth || c.height !== f.displayHeight) { c.width = f.displayWidth; c.height = f.displayHeight; }
@@ -1395,6 +1396,10 @@ function pqTick() {
         if (_pi > 0 && _pi < 500) { PQ.di.push(Math.round(_pi * 10) / 10); if (PQ.di.length > 240) PQ.di.shift(); }
       }
       PQ.lastDrawAt = _pd;
+      // 2026-11-11：记录**每帧绘制耗时**（EMA）。这是区分两种"只画 60"的关键：
+      //   · 耗时 ~1-2ms 且 raf=60  → 是浏览器/屏幕只给 60Hz，与我们无关；
+      //   · 耗时 ~8-16ms 且 raf=60 → 是我们画得太重，Chrome 把合成降到 60Hz（rAF 跟着降）。
+      try { const _dm = _pd - _drawT0; PQ.drawMs = PQ.drawMs ? (PQ.drawMs * 0.9 + _dm * 0.1) : _dm; } catch (e) { }
     } catch (e) { }
   } catch (e) { }
   try { f.close(); } catch (e) { }
@@ -2456,6 +2461,8 @@ async function rtc264Stats() {
           raf: _rafHz,
           drawnHz: Math.round((_wd._hudDrawFps || 0) * 10) / 10,
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
+          // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
+          drawMs: Math.round((((window.__pq || {}).drawMs) || 0) * 100) / 100,
           dpr: Math.round((window.devicePixelRatio || 0) * 100) / 100,
           scr: (window.screen ? (screen.width + 'x' + screen.height) : ''),
           buf: Math.round(_wcBufOverride >= 0 ? _wcBufOverride : bufMs),

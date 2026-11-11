@@ -6640,6 +6640,7 @@ async function handler(req, res) {
           + ' raf=' + n(m.raf) + 'Hz 解=' + (Math.round((Number(m.decHz) || 0) * 10) / 10)
           + ' 画=' + (Math.round((Number(m.drawnHz) || 0) * 10) / 10)
           + ' dpr=' + String(m.dpr || '') + ' 屏=' + String(m.scr || '')
+          + ' 画耗=' + (Math.round((Number(m.drawMs) || 0) * 100) / 100) + 'ms'
           + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));
       } catch { }
