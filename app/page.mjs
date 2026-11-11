@@ -517,6 +517,9 @@ body.ha-right #paHandle {
     <button id="srcBtn" title="选择显示来源">全部屏幕</button>
     <button id="deskBtn" title="最小化所有窗口，露出桌面">桌面</button>
     <button id="cmdBtn">命令</button>
+    <!-- 2026-11-11：全屏常驻入口。真机实测：全屏**不会**提高刷新率（raf 仍 60），
+         但能去掉浏览器工具栏、多出显示面积、锁横屏 —— 对远控观看本身就是体验提升。 -->
+    <button id="fsBtn" title="全屏观看（隐藏浏览器工具栏，多一点画面面积）">全屏</button>
   </div>
   <select id="src" style="display:none"><option value="m-1">全部屏幕</option></select>
   <!-- 2026-11-09：断线时原来只能刷新页面；给一个明确入口 -->
@@ -2438,16 +2441,34 @@ async function rtc264Stats() {
         }
         if (typeof _w._hudFps === 'number') { _fpsShow = _w._hudFps; _drawFps = _w._hudDrawFps || 0; }
       }
+      // 2026-11-11：video 元素自身的呈现帧率 —— **必须在 WebCodecs 关闭时也测**。
+      // 上一版把它写在上面的 _w.on 判断里，而 ?wc=0（video 路径）时 on 为 false，
+      // 于是日志里永远是 vid=0，没法判断 video 路径到底能呈现多少帧（B 实验白跑）。
+      try {
+        const _vEl = document.getElementById('vid');
+        if (_w && _vEl && _vEl.videoWidth > 0) {
+          const _now2 = Date.now();
+          if (_w._vidLastAt && _now2 - _w._vidLastAt > 200) {
+            const _dt2 = (_now2 - _w._vidLastAt) / 1000;
+            const _c2 = videoFrameCount();
+            const _dc2 = _c2 - (_w._vidLastC | 0);
+            if (_dt2 > 0 && _dc2 >= 0) _w._hudVidFps = _dc2 / _dt2;
+            _w._vidLastC = _c2; _w._vidLastAt = _now2;
+          } else if (!_w._vidLastAt) {
+            _w._vidLastAt = _now2; _w._vidLastC = videoFrameCount();
+          }
+        }
+      } catch (e) { }
     } catch (e) { }
     const connMs = Date.now() - (R.playStart || 0);
     let fpsTxt;
     if (connMs < 2500) fpsTxt = '… fps';
     else if (_fpsShow > 0.05) {
       fpsTxt = _fpsShow.toFixed(1) + ' fps';
-      // 2026-11-11：屏幕刷新率低于内容帧率时（比如 60Hz 屏在播 120fps 的流），
-      // 把"实际呈现"也标出来，否则用户看到 HUD 一直是 60、会以为自己设置的 120 没生效。
-      // 差得不多就不加，免得 HUD 变长。
-      if (_drawFps > 0.5 && (_fpsShow - _drawFps) > _fpsShow * 0.15) fpsTxt += '·显示' + _drawFps.toFixed(0);
+      // 2026-11-11：屏幕刷新率低于内容帧率时，把"实际呈现"也标出来。
+      // canvas 路径看 _drawFps；video 路径（?wc=0）看 _hudVidFps。
+      const _dispFps = (_drawFps > 0.5) ? _drawFps : ((window.__wc264 && window.__wc264._hudVidFps) || 0);
+      if (_dispFps > 0.5 && (_fpsShow - _dispFps) > _fpsShow * 0.15) fpsTxt += '·显示' + _dispFps.toFixed(0);
     }
     else fpsTxt = '静止';
     const mbpsTxt = R.qMbps > 0 ? R.qMbps.toFixed(1) + ' Mbps' : '';
@@ -3279,6 +3300,36 @@ btnCrisp.addEventListener('click', async () => {
   if (state.audio) startPcmAudio();     // 声音统一走 PCM 通道（H.264 只传画面）
   buzz(8);
 });
+
+// 2026-11-11：全屏常驻入口（实测：不会提高刷新率，但面积更大、去掉浏览器工具栏、锁横屏）
+(function () {
+  var b = null;
+  try { b = document.getElementById('fsBtn'); } catch (e) { return; }
+  if (!b) return;
+  var sync = function () {
+    try { b.textContent = document.fullscreenElement ? '退出全屏' : '全屏'; } catch (e) { }
+    try { b.classList.toggle('on', !!document.fullscreenElement); } catch (e) { }
+  };
+  b.addEventListener('click', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    try {
+      if (document.fullscreenElement) {
+        var pe = document.exitFullscreen();
+        if (pe && pe.catch) pe.catch(function () { });
+      } else {
+        var el = document.documentElement;
+        if (el.requestFullscreen) {
+          var pr = el.requestFullscreen();
+          if (pr && pr.catch) pr.catch(function () { });
+        }
+        try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(function () { }); } catch (e2) { }
+      }
+    } catch (e3) { }
+    setTimeout(sync, 350);
+  });
+  try { document.addEventListener('fullscreenchange', sync); } catch (e) { }
+  sync();
+})();
 
 btnSmooth.addEventListener('click', async () => {
   stopRtc264('user-smooth');
