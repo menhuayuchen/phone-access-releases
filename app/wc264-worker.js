@@ -39,7 +39,53 @@ const S = {
   tsMax: 0,
   tsEma: 0,
   tsN: 0,
+  // 2026-11-11：**画面间断感**的量化。用户反馈"120 帧也看得出一点间断，240 帧就好些"，
+  // 这不是吞吐问题，是帧**到达节奏**不匀（成簇到达）。这里按窗口统计相邻帧到达间隔：
+  // arrAvg/arrP90/arrMax 单位 ms，arrOver=间隔超过 1.5 倍期望的次数（会看到"顿一下"），
+  // arrUnder=间隔不到 0.5 倍的次数（成簇，紧接着就会空一个 vsync）。每窗口算完清零。
+  arrN: 0,
+  arrAvg: 0,
+  arrP50: 0,
+  arrP90: 0,
+  arrMax: 0,
+  arrOver: 0,
+  arrUnder: 0,
 };
+
+// 到达节奏采样窗口（每次 stats 上报后清空，约 1 秒）
+let _arrPrev = 0;
+let _arrBuf = [];
+function noteArrival() {
+  const now = performance.now();
+  if (_arrPrev > 0) {
+    const d = now - _arrPrev;
+    if (d >= 0 && d < 2000) {
+      _arrBuf.push(d);
+      if (_arrBuf.length > 600) _arrBuf.shift();
+    }
+  }
+  _arrPrev = now;
+}
+function cadenceSnapshot() {
+  const arr = _arrBuf;
+  if (arr.length < 2) { S.arrN = arr.length; S.arrAvg = 0; S.arrP50 = 0; S.arrP90 = 0; S.arrMax = 0; S.arrOver = 0; S.arrUnder = 0; return; }
+  const sorted = arr.slice().sort(function (a, b) { return a - b; });
+  const n = sorted.length;
+  let sum = 0;
+  for (let i = 0; i < n; i++) sum += arr[i];
+  const avg = sum / n;
+  const exp = 1000 / Math.max(1, fpsHint);
+  let over = 0, under = 0;
+  for (let i = 0; i < n; i++) { if (arr[i] > exp * 1.5) over++; else if (arr[i] < exp * 0.5) under++; }
+  S.arrN = n;
+  S.arrAvg = Math.round(avg * 10) / 10;
+  S.arrP50 = Math.round(sorted[Math.floor(n * 0.5)] * 10) / 10;
+  S.arrP90 = Math.round(sorted[Math.floor(n * 0.9)] * 10) / 10;
+  S.arrMax = Math.round(sorted[n - 1] * 10) / 10;
+  S.arrOver = over;
+  S.arrUnder = under;
+  _arrBuf = [];   // 下个窗口重新采样
+}
 
 // RTCEncodedVideoFrame.timestamp 实测是 90kHz 刻度，而且时间戳是侧车**按帧到达时刻**打的，
 // 所以相邻帧的差值反映的是 Node→侧车的投递抖动，不是编码器的出帧节奏：
@@ -275,6 +321,7 @@ function submitFrame(buf, isKeyFrame) {
 // ---------- 一帧 ----------
 function onEncodedFrame(data, isKey, inTs) {
   S.rtp++;
+  noteArrival();       // 2026-11-11：到达节奏采样（画面间断感的量化依据）
   noteInTs(inTs);   // 只做观测，不参与丢帧判断（原因见 noteInTs 上方注释）
   if (!data || data.byteLength === 0) return;
   const u8 = new Uint8Array(data);
@@ -434,6 +481,7 @@ function handleRtpTransform(event) {
 
   setInterval(() => {
     try { S.queue = decoder ? (decoder.decodeQueueSize | 0) : 0; } catch (e) { S.queue = 0; }
+    try { cadenceSnapshot(); } catch (e) { }   // 到达节奏统计（算完清零）
     post({ type: 'stats', stats: Object.assign({}, S), ready: decoderReady, waitKey, err: S.lastErr });
   }, 2000);
 }

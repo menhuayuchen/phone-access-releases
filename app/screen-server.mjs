@@ -1119,6 +1119,25 @@ function annxB(avcc) {
   }
   return Buffer.concat(parts);
 }
+// 2026-11-11：投递节奏观测的缓冲（feed264 里写入，定时器算百分位，/h264-status 暴露）
+const feedCadBuf = [];
+let feedCadLast = 0n;
+let feedCad = { n: 0, avg: 0, p50: 0, p90: 0, max: 0 };
+setInterval(() => {
+  if (feedCadBuf.length < 2) return;
+  const s = feedCadBuf.slice().sort((a, b) => a - b);
+  let sum = 0;
+  for (const v of s) sum += v;
+  feedCad = {
+    n: s.length,
+    avg: Math.round((sum / s.length) * 10) / 10,
+    p50: Math.round(s[Math.floor(s.length * 0.5)] * 10) / 10,
+    p90: Math.round(s[Math.floor(s.length * 0.9)] * 10) / 10,
+    max: Math.round(s[s.length - 1] * 10) / 10,
+  };
+  feedCadBuf.length = 0;
+}, 5000).unref?.();
+
 function spsPpsPrefix() {
   const b = h264.initInfo && h264.initInfo.avcC;
   if (!b || b.length < 8) return Buffer.alloc(0);
@@ -1138,6 +1157,17 @@ function spsPpsPrefix() {
 }
 function feed264(key, data) {
   if (!conn264 || conn264.destroyed || !conn264.writable) return;
+  // 2026-11-11：投递节奏观测（查"画面间断感"用）。
+  // 这里量的是 Node 把帧交侧车的时刻间隔，跟手机端 cad= 一起看就能定位抖动发生在
+  // 上游（ffmpeg/Node 产帧成簇）还是下游（侧车发出/浏览器接收成簇）。
+  try {
+    const _t = process.hrtime.bigint();
+    if (feedCadLast) {
+      const _d = Number(_t - feedCadLast) / 1e6;
+      if (_d >= 0 && _d < 2000) { feedCadBuf.push(_d); if (feedCadBuf.length > 1200) feedCadBuf.shift(); }
+    }
+    feedCadLast = _t;
+  } catch { }
   // 侧车写不动（进程卡住/系统卡）时丢帧，绝不让 Node 的内存无限涨
   if (conn264.writableLength > 4 * 1024 * 1024) {
     rtc264FeedDrops++;
@@ -6597,6 +6627,12 @@ async function handler(req, res) {
           + ' rtp=' + n(s.rtp) + ' dec=' + n(s.decoded) + ' drop=' + n(s.dropped)
           + ' cfg=' + n(s.cfg) + ' sps=' + n(s.spsChanges) + ' q=' + n(s.queue)
           + ' gaps=' + (n(s.gaps)) + ' ts=' + n(s.tsEma)
+          // 2026-11-11：帧到达节奏（画面"间断感"的量化）。单位 ms。
+          // avg≈1000/fps 才正常；p90/max 明显偏大 + under 多 = 帧成簇到达（会看到顿一下）。
+          + ' cad=' + n(s.arrN) + '个 avg=' + (Math.round((s.arrAvg || 0) * 10) / 10)
+          + ' p90=' + (Math.round((s.arrP90 || 0) * 10) / 10)
+          + ' max=' + (Math.round((s.arrMax || 0) * 10) / 10)
+          + ' over=' + n(s.arrOver) + ' under=' + n(s.arrUnder)
           + ' lost=' + n(m.lost) + ' pli=' + n(m.pli)
           + ' canvas=' + n(m.cw) + 'x' + n(m.ch) + ' vid=' + n(m.vw) + 'x' + n(m.vh)
           + ' fps=' + n(m.fps) + ' mbps=' + n(m.mbps) + ' buf=' + n(m.buf) + 'ms'
@@ -6712,6 +6748,10 @@ async function handler(req, res) {
       wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,
       // 2026-11-10：Node 侧 feed 缓冲满丢掉的帧数（这些帧会带 gap 标志让侧车等关键帧）
       feedDrops: rtc264FeedDrops,
+      // 2026-11-11：投递节奏（ms）。Node→侧车的帧间隔，用来和手机端 cad= 对照：
+      // 这里就成簇（p50 远小于理论间隔、p90 很大）→ 问题在 ffmpeg/Node 产帧；
+      // 这里均匀而手机端 cad 成簇 → 问题在侧车发送或浏览器接收侧。
+      feedCad: feedCad,
       // 2026-11-10（1.0.21）：设备审查等级（good/basic/fallback）与它的画质上限
       device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, notes: DEVICE.notes },
       lastError: h264.lastError
