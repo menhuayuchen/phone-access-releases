@@ -1430,6 +1430,15 @@ function backlightSaveState() {
 }
 backlightLoadState();
 
+// 息屏状态（保持型）：{ on: true } 存在磁盘，服务重启也保持
+const SLEEP_STATE = join(HERE, 'screen-sleep.state.json');
+function sleepStateSet(on) {
+  try { writeFileSync(SLEEP_STATE, JSON.stringify({ on: !!on, at: Date.now() }), 'utf8'); } catch { }
+}
+function sleepStateGet() {
+  try { return JSON.parse(readFileSync(SLEEP_STATE, 'utf8').replace(/^\uFEFF/, '')).on === true; } catch { return false; }
+}
+
 async function screenOff() {
   if (!backlightOff) {
     const cur = await psBrightnessGet();
@@ -1449,6 +1458,25 @@ async function screenOn() {
   backlightSaveState();
   console.log('[screen] 已恢复亮屏（背光 ' + v + '）');
   return { ok, brightness: v };
+}
+
+// 息屏：纯黑遮罩 + 背光 0 + 保持型。恢复：两者一起撤。
+async function screenSleep(sid) {
+  let cover = { ok: false };
+  try { cover = privacyStart(String(sid || 'sleep').slice(0, 40), false); } catch (e) { cover = { ok: false, error: String((e && e.message) || e) }; }
+  privacy.hold = true;
+  const bl = await screenOff();
+  sleepStateSet(true);
+  console.log('[sleep] 息屏：遮罩=' + (cover && cover.ok) + ' 背光=' + (bl && bl.ok));
+  return { ok: true, sleeping: true, cover: !!(cover && cover.ok), backlight: !!(bl && bl.ok), brightness: (bl && bl.brightness) };
+}
+async function screenWake(why) {
+  privacy.hold = false;
+  try { privacyStop(why || '恢复亮屏'); } catch { }
+  const bl = await screenOn();
+  sleepStateSet(false);
+  console.log('[sleep] 恢复亮屏（' + (why || '手动') + '）背光=' + (bl && bl.brightness));
+  return { ok: true, sleeping: false, brightness: (bl && bl.brightness) };
 }
 
 function s2Running() { return !!S2.side; }
@@ -1790,7 +1818,8 @@ function s2OwnerIsPrimary(cid) {
 // 还在更新、没超最长时长"，任何一条不满足就撤窗口；服务端崩溃/被杀也会在几秒内自动解锁。
 const PRIVACY_STOP = join(HERE, 'privacy.stop');
 const PRIVACY_BEAT = join(HERE, 'privacy.beat');
-const privacy = { proc: null, owner: '', image: '', startedAt: 0, lastBeat: 0, lockInput: true };
+const privacy = { proc: null, owner: '', image: '', startedAt: 0, lastBeat: 0, lockInput: true, hold: false };
+// 2026-11-11：hold=true 表示"保持型息屏"——不因为手机没心跳就自动撤掉（人走了要一直黑着）。
 // 启动时清掉上一代残留（崩溃/被杀可能留下 stop/beat/hook 文件；留着会让新遮罩立刻退出或误报）
 for (const f of ['privacy.stop', 'privacy.beat', 'privacy.hook']) { try { unlinkSync(join(HERE, f)); } catch { } }
 
@@ -1872,7 +1901,7 @@ function privacyStart(sid, lockInput) {
 setInterval(() => {
   if (!privacy.proc) return;
   try { writeFileSync(PRIVACY_BEAT, String(Date.now())); } catch { }
-  if (privacy.lastBeat && Date.now() - privacy.lastBeat > 120000) privacyStop('控制端已断开');
+  if (!privacy.hold && privacy.lastBeat && Date.now() - privacy.lastBeat > 120000) privacyStop('控制端已断开');
 }, 3000).unref();
 
 function readBody(req, limit) {
@@ -6026,6 +6055,24 @@ async function handler(req, res) {
     }));
     return;
   }
+  // 息屏 v2：纯黑遮罩 + 背光 0 + 保持型
+  if (url.pathname === '/screen/sleep' && req.method === 'POST') {
+    let b = '';
+    req.on('data', (c) => { b += c; if (b.length > 2048) req.destroy(); });
+    req.on('end', () => {
+      let m = {}; try { m = JSON.parse(b || '{}'); } catch { }
+      screenSleep(m.sid || 'sleep').then((r) => {
+        try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(r)); } catch { }
+      });
+    });
+    return;
+  }
+  if (url.pathname === '/screen/wake' && req.method === 'POST') {
+    screenWake('手机恢复').then((r) => {
+      try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(r)); } catch { }
+    });
+    return;
+  }
   // 真息屏（背光 0，抓屏不受影响）
   if (url.pathname === '/screen/off' && req.method === 'POST') {
     screenOff().then((r) => {
@@ -6043,7 +6090,7 @@ async function handler(req, res) {
     psBrightnessGet().then((cur) => {
       try {
         res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        res.end(JSON.stringify({ ok: true, off: backlightOff, brightness: cur, saved: backlightSaved, supported: cur >= 0 }));
+        res.end(JSON.stringify({ ok: true, sleeping: sleepStateGet() || !!privacy.proc, cover: !!privacy.proc, off: backlightOff, brightness: cur, saved: backlightSaved, supported: cur >= 0 }));
       } catch { }
     });
     return;
@@ -6974,6 +7021,12 @@ for (const host of hosts) {
 // 两边会抢桌面复制（本机实测会 -40 秒退）。审查内部还有"编码器在跑就不降档"的保护，
 // 两道加起来保证不会因为审查本身把画面搞坏。
 setTimeout(() => { try { deviceAudit(); } catch { } }, 1200).unref?.();
+// 2026-11-11：如果上次是"息屏"状态（人不在），重启后继续息屏：重新盖遮罩 + 背光 0。
+setTimeout(() => {
+  try {
+    if (sleepStateGet()) { console.log('[sleep] 上次是息屏状态，继续息屏'); screenSleep('boot').catch(() => { }); }
+  } catch { }
+}, 4000).unref?.();
 
 // 2026-11-11：审查结果不能"一错到底"。
 // 实测坑：开机/部署时屏幕还锁着（或 RDP/虚拟机正接管），ddagrab 探针拿到 "access denied"

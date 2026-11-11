@@ -6866,25 +6866,22 @@ bindImg(img);
     const saySleep = (t, c) => { if (sleepMsg) { sleepMsg.textContent = t; sleepMsg.style.color = c || '#6b7078'; } };
     const paintSleep = (st) => {
       if (!sleepBtn) return;
-      const off = !!(st && st.off);
-      sleepBtn.textContent = off ? '恢复亮屏' : '真息屏（关背光）';
-      sleepBtn.style.background = off ? '#7a2f2f' : '#1f2a3a';
-      if (st && st.supported === false) {
-        sleepBtn.disabled = true;
-        saySleep('这台电脑的屏幕不支持程序调背光（外接显示器常见），请用下面的「防窥屏」遮罩代替', '#ffb454');
-      }
+      const on = !!(st && st.sleeping);
+      sleepBtn.textContent = on ? '恢复亮屏' : '息屏（挡住屏幕）';
+      sleepBtn.style.background = on ? '#7a2f2f' : '#1f2a3a';
+      if (on && sleepMsg) saySleep('息屏中：屏幕纯黑、看不到任何内容；手机照常。点「恢复亮屏」还原。', '#8CE58C');
     };
     const refreshSleep = () => fetch('/screen/state', { cache: 'no-store' }).then((r) => r.json()).then(paintSleep).catch(() => { });
     if (sleepBtn) sleepBtn.addEventListener('click', async () => {
       sleepBtn.disabled = true;
       try {
         const st = await (await fetch('/screen/state', { cache: 'no-store' })).json();
-        if (st && st.off) {
-          const r = await (await fetch('/screen/on', { method: 'POST' })).json();
+        if (st && st.sleeping) {
+          const r = await (await fetch('/screen/wake', { method: 'POST' })).json();
           saySleep('已恢复亮屏（背光 ' + (r && r.brightness) + '）', '#8CE58C');
         } else {
-          const r = await (await fetch('/screen/off', { method: 'POST' })).json();
-          if (r && r.ok) saySleep('已真息屏：屏幕不亮，手机照常能看能操作；再点一次恢复', '#8CE58C');
+          const r = await (await fetch('/screen/sleep', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ sid: dev }) })).json();
+          if (r && r.ok) saySleep('已息屏：电脑屏幕纯黑（看不到内容），你手机上照常能看能操作', '#8CE58C');
           else saySleep((r && r.message) || '息屏失败', '#ffb454');
         }
         await refreshSleep();
@@ -7463,10 +7460,11 @@ bindImg(img);
       // 但系统仍在正常合成，远程画面完全不受影响 —— 这才是"人不在电脑前"想要的效果。
       '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
       + '<button id="prvSleep" style="background:#1f2a3a;color:#bcd4ff;border:1px solid #2d4a6e;border-radius:9px;'
-      + 'padding:9px 15px;font-size:13px;cursor:pointer">真息屏（关背光）</button>'
+      + 'padding:9px 15px;font-size:13px;cursor:pointer">息屏（挡住屏幕）</button>'
       + '<span id="prvSleepMsg" style="font-size:12px;color:#6b7078;flex:1;min-width:160px;line-height:1.6">'
-      + '把显示器背光关到 0：屏幕真的不亮（省电、夜里没有光），但电脑照常运行、你手机上的画面完全正常。'
-      + '再点一次恢复；也会一直保持，直到你手动恢复。</span>'
+      + '电脑屏幕立刻变成纯黑（<b>什么都看不到</b>，别人看不到你的桌面），同时把背光降到 0；'
+      + '电脑照常运行，你手机上的画面和操作完全不受影响。'
+      + '会一直保持到你点「恢复亮屏」（最长 8 小时自动恢复）。</span>'
       + '</div>'
       + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">'
       + '下面的「防窥屏」更彻底：电脑本机会被一层锁屏图盖住，屏幕前的人看不到桌面、鼠标点不动；'
@@ -8665,7 +8663,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-11.2';
+export const PAGE_VER = '2026-11-11.3';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
