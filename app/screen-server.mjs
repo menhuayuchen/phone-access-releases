@@ -6367,6 +6367,12 @@ async function handler(req, res) {
       // 这里**不能**只看 sessions>0 —— 没有真实会话时（对方刚刷新/刚断开）也会被钻空子改掉主路档位。
       // 只要不是主人就拒绝；主人空闲 20 秒会自动释放（primaryOwnerAlive）。
       if (Number(m.stream) !== 2 && m.client && !s2OwnerIsPrimary(String(m.client))) {
+        // 2026-11-11：这条拒绝原来只回 JSON、不写日志，导致用户报"两台画质被强制成同一个"时，
+        // 日志里看不出到底是"开关没开"还是"这台设备被分到了共享主路"。现在留一条痕。
+        console.log('rtc264: 拒绝改档（不是主路主人 / 或 perSessionQuality 关闭）client=' + String(m.client || '-')
+          + ' stream=' + String(m.stream) + ' 请求 ' + m.width + 'x' + m.fps + '@' + m.kbps
+          + ' 当前主路 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
+          + (PER_SESSION_Q ? '' : '（perSessionQuality=false：所有设备共享主路，这是配置行为）'));
         qreply({ ok: true, changed: false, shared: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS,
           message: '当前与他人共享主路画质，这台设备的档位不会影响别人' });
         return;
@@ -7483,9 +7489,40 @@ function wireServer(s) {
   // 不在白名单里的 socket，注册晚了光标通道会被自己人掐掉。
   try { attachExpWs(s, KEY); } catch (e) { console.log('exp: /ws-exp 挂载失败（不影响主线）：' + (e && e.message)); }
   attachAudioWs(s, KEY);
-  s.on('error', (e) => console.error('screen-server: bind error — ' + (e.code || e.message)));
+  // 2026-11-11：EADDRINUSE 交给下面的 bindWithRetry 处理（等「未登录待机页」释放端口），
+  // 这里只报其它错误，否则每次重试都会刷一行。
+  s.on('error', (e) => { if (e && e.code !== 'EADDRINUSE') console.error('screen-server: bind error — ' + (e.code || e.message)); });
   return s;
 }
+// 2026-11-11：端口可能被「未登录待机页」（SYSTEM 进程，见 standby.mjs）占着。
+// 它会看到本进程写的 app-ready.json 后释放端口，所以这里**必须重试**：
+// 原来只打一行日志、进程就永久不监听，supervisor 会把它当成"没起来"无限重启。
+function bindWithRetry(server, port, host, proto) {
+  let attempt = 0;
+  const MAX = 40;          // 40 × 500ms = 最多等 20 秒
+  const tryBind = () => {
+    attempt++;
+    try { server.listen(port, host); } catch (e) { console.log('screen-server: listen 抛错 ' + ((e && e.code) || (e && e.message))); }
+  };
+  server.on('listening', () => {
+    console.log(`screen-server: ${proto}://${host}:${port}/` + (attempt > 1 ? ('（等了 ' + (attempt - 1) + ' 次重试）') : ''));
+  });
+  server.on('error', (e) => {
+    const code = e && e.code;
+    if (code === 'EADDRINUSE' && attempt < MAX) {
+      if (attempt === 1) console.log('screen-server: 端口 ' + port + ' 被占用（可能是未登录待机页），等它释放…');
+      setTimeout(tryBind, 500);
+      return;
+    }
+    console.error('screen-server: bind error — ' + (code || (e && e.message)));
+  });
+  tryBind();
+}
+// 2026-11-11：写「我已就绪」标记，交给「未登录待机页」（SYSTEM 进程 standby.mjs）看。
+// 它看到比自身启动更新的标记就释放 8660 并退出。**必须在第一次 listen 之前写**。
+const APP_READY_FILE = join(HERE, 'app-ready.json');
+try { writeFileSync(APP_READY_FILE, JSON.stringify({ at: Date.now(), pid: process.pid }), 'utf8'); } catch { }
+
 for (const host of hosts) {
   const isLanHost = LAN_V4.test(host);
   let proto = 'http';
@@ -7499,10 +7536,8 @@ for (const host of hosts) {
   }
   if (!s) s = createServer(handler);
   wireServer(s);   // 路由/长连接统一由 wireServer 挂（主监听 + 局域网 http 备用共用）
-  s.listen(port, host, () => {
-    started++;
-    console.log(`screen-server: ${proto}://${host}:${port}/`);
-  });
+  s.on('listening', () => { started++; });
+  bindWithRetry(s, port, host, proto);
 }
 
 // 2026-11-10（1.0.21）：启动后 1.2 秒跑一次设备审查（异步，绝不阻塞监听）。

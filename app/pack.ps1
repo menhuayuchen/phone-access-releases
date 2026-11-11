@@ -148,6 +148,9 @@ $appFiles = @(
   'install.cmd',
   'screen-server.mjs',
   'page.mjs',
+  # 2026-11-11：未登录待机页（开机没人登录时 8660 上显示一句人话）+ 它的安装/移除脚本
+  'standby.mjs',
+  'standby-task.ps1',
   'lock-screen.ps1',
   'rtc.mjs',
   'decode.mjs',
