@@ -23,6 +23,7 @@ param(
     [switch]$DisableExclude,
     [switch]$BlockHotkeys,
     [switch]$LockInput,
+    [switch]$WakeOnInput,
     [string]$HookFile = ''
 )
 
@@ -106,11 +107,16 @@ public static class HotkeyGuard {
     private static LowLevelProc msProc = MouseCallback;
     private static bool enabled = false;
     private static bool lockAll = false;
+    private static bool watchInput = false;
+    // 2026-11-11：息屏后"人走过去敲键盘/动鼠标就亮"。只认**真人输入**——远程控制是 SendInput 注入的，
+    // 带 LLKHF_INJECTED / LLMHF_INJECTED 标志，不计入（否则手机点一下就把屏幕点亮了）。
+    public static volatile bool LocalInput = false;
     public static bool Enabled { get { return enabled; } }
-    public static bool Start(bool lockEverything) {
+    public static bool Start(bool lockEverything, bool watchLocalInput) {
         lockAll = lockEverything;
+        watchInput = watchLocalInput;
         if (kbHook == IntPtr.Zero) kbHook = SetWindowsHookEx(WH_KEYBOARD_LL, kbProc, GetModuleHandle(null), 0);
-        if (lockAll && msHook == IntPtr.Zero) msHook = SetWindowsHookEx(WH_MOUSE_LL, msProc, GetModuleHandle(null), 0);
+        if ((lockAll || watchInput) && msHook == IntPtr.Zero) msHook = SetWindowsHookEx(WH_MOUSE_LL, msProc, GetModuleHandle(null), 0);
         enabled = kbHook != IntPtr.Zero && (!lockAll || msHook != IntPtr.Zero);
         return enabled;
     }
@@ -125,6 +131,7 @@ public static class HotkeyGuard {
             if (nCode >= 0 && enabled) {
                 KBDLLHOOKSTRUCT k = (KBDLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(KBDLLHOOKSTRUCT));
                 if ((k.flags & LLKHF_INJECTED) == 0) {
+                    LocalInput = true;
                     if (lockAll) return (IntPtr)1;
                     int msg = (int)wParam;
                     if (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN) {
@@ -147,9 +154,12 @@ public static class HotkeyGuard {
     }
     private static IntPtr MouseCallback(int nCode, IntPtr wParam, IntPtr lParam) {
         try {
-            if (nCode >= 0 && enabled && lockAll) {
+            if (nCode >= 0 && enabled && (lockAll || watchInput)) {
                 MSLLHOOKSTRUCT m = (MSLLHOOKSTRUCT)Marshal.PtrToStructure(lParam, typeof(MSLLHOOKSTRUCT));
-                if ((m.flags & LLMHF_INJECTED) == 0) return (IntPtr)1;
+                if ((m.flags & LLMHF_INJECTED) == 0) {
+                    LocalInput = true;
+                    if (lockAll) return (IntPtr)1;
+                }
             }
         } catch { }
         return CallNextHookEx(msHook, nCode, wParam, lParam);
@@ -160,7 +170,7 @@ public static class HotkeyGuard {
 
 $hookStarted = $false
 if ($BlockHotkeys -or $LockInput) {
-    try { $hookStarted = [HotkeyGuard]::Start([bool]$LockInput) } catch { $hookStarted = $false }
+    try { $hookStarted = [HotkeyGuard]::Start([bool]$LockInput, [bool]$WakeOnInput) } catch { $hookStarted = $false }
     if ($HookFile) { try { Set-Content -LiteralPath $HookFile -Value ($(if ($hookStarted) { 'ok' } else { 'fail' })) -Encoding ASCII } catch { } }
 }
 
@@ -229,6 +239,8 @@ try {
         [System.Windows.Forms.Application]::DoEvents()
         Start-Sleep -Milliseconds 80
         if ($StopFile -and (Test-Path -LiteralPath $StopFile)) { break }
+        # 2026-11-11：息屏后真人敲键盘/动鼠标 → 立刻退出遮罩（服务端会同时把背光还原）
+        if ($WakeOnInput -and [HotkeyGuard]::LocalInput) { break }
         if ($HoldSeconds -gt 0 -and ((Get-Date) - $start).TotalSeconds -ge $HoldSeconds) { break }
         if ($forms.Count -eq 0) { break }
         # 保命三件套：服务端进程没了 / 心跳文件过期 / 超过最长时长 —— 任何一条都立刻撤窗口，

@@ -1463,7 +1463,7 @@ async function screenOn() {
 // 息屏：纯黑遮罩 + 背光 0 + 保持型。恢复：两者一起撤。
 async function screenSleep(sid) {
   let cover = { ok: false };
-  try { cover = privacyStart(String(sid || 'sleep').slice(0, 40), false); } catch (e) { cover = { ok: false, error: String((e && e.message) || e) }; }
+  try { cover = privacyStart(String(sid || 'sleep').slice(0, 40), false, true); } catch (e) { cover = { ok: false, error: String((e && e.message) || e) }; }
   privacy.hold = true;
   const bl = await screenOff();
   sleepStateSet(true);
@@ -1858,7 +1858,7 @@ function privacyStop(reason) {
   }, 1000);
   console.log('privacy: 关闭（' + reason + '）');
 }
-function privacyStart(sid, lockInput) {
+function privacyStart(sid, lockInput, wakeOnInput) {
   if (privacy.proc) {
     return { ok: true, active: true, owner: privacy.owner === sid, note: '另一台设备已开启防窥屏（以先开的为准）' };
   }
@@ -1874,6 +1874,8 @@ function privacyStart(sid, lockInput) {
     '-StopFile', PRIVACY_STOP, '-BeatFile', PRIVACY_BEAT, '-ParentPid', String(process.pid), '-MaxMinutes', '480',
     '-BlockHotkeys', '-HookFile', hookFile];
   if (privacy.lockInput) args.push('-LockInput');
+  // 2026-11-11：息屏时加这个 —— 本机真人敲键盘/动鼠标就退出遮罩（远程注入的输入不算）
+  if (wakeOnInput) args.push('-WakeOnInput');
   if (privacy.image) args.push('-ImagePath', privacy.image);
   let child = null;
   try {
@@ -1889,6 +1891,14 @@ function privacyStart(sid, lockInput) {
     if (privacy.proc === child) {
       privacy.proc = null; privacy.owner = ''; privacy.startedAt = 0; privacy.lastBeat = 0;
       console.log('privacy: 锁屏窗口退出 code=' + code);
+      // 2026-11-11：息屏状态下遮罩自己退出了（本机敲键盘唤醒 / 到 8 小时上限 / 服务要退出）
+      // → 把背光也还原，否则屏幕会停在"黑的但没有遮罩"的怪状态。
+      try {
+        if (sleepStateGet()) {
+          console.log('[sleep] 遮罩已退出，自动恢复背光');
+          screenWake('本地输入唤醒').catch(() => { });
+        }
+      } catch { }
     }
     try { unlinkSync(PRIVACY_STOP); } catch { }
     try { unlinkSync(PRIVACY_BEAT); } catch { }
@@ -6081,7 +6091,9 @@ async function handler(req, res) {
     return;
   }
   if (url.pathname === '/screen/on' && req.method === 'POST') {
-    screenOn().then((r) => {
+    // 安全兜底：老页面（缓存没更新）点"恢复亮屏"调的是 /screen/on —— 这里一并撤掉遮罩，
+    // 否则会只剩"背光回来了但屏幕还被黑窗盖着"的怪状态。
+    screenWake('手机恢复(/screen/on)').then((r) => {
       try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(r)); } catch { }
     });
     return;
