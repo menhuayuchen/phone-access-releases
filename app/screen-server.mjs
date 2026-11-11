@@ -899,8 +899,8 @@ function h264AttachEncoder(proc) {
     } catch (e) { }
     // 单窗口模式下编码器死了，采集端也要一起收掉，否则 h264Start 会被 h264.cap 挡住
     if (h264.cap) { const c = h264.cap; h264.cap = null; try { c.kill(); } catch { } }
-    if (h264.clients.size > 0 || rtc264Alive()) {
-      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Start(); }, 1500);
+    if (h264AnyViewer()) {
+      setTimeout(() => { if (h264AnyViewer()) h264Start(); }, 1500);
     }
   });
   proc.on('error', (e) => { if (isCurrent()) h264.lastError = String(e.message || e); });
@@ -1048,17 +1048,17 @@ function h264StartWindow() {
     if (code === 2) {            // 客户区尺寸变了：重启整条管线
       h264.startQueued = true;
       h264Stop();
-      setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.killPending) h264Start(); }, 1200);
+      setTimeout(() => { if (h264AnyViewer() && !h264.proc && !h264.killPending) h264Start(); }, 1200);
     } else if (code === 3) {     // 窗口关了：回退全屏采集
       H264_WIN = 0;
       h264.startQueued = true;
       h264Stop();
-      setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.killPending) h264Start(); }, 1200);
+      setTimeout(() => { if (h264AnyViewer() && !h264.proc && !h264.killPending) h264Start(); }, 1200);
     } else {
       if (h264.proc) { try { h264.proc.kill(); } catch { } }
       // 采集端起来就挂了（没等到 SIZE）：稍后重试一次，别让画面一直黑着
-      if (rtc264Alive() || h264.clients.size > 0) {
-        setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.cap && !h264.killPending) h264Start(); }, 1500);
+      if (h264AnyViewer()) {
+        setTimeout(() => { if (h264AnyViewer() && !h264.proc && !h264.cap && !h264.killPending) h264Start(); }, 1500);
       }
     }
   });
@@ -1079,14 +1079,14 @@ function h264Stop() {
       if (!h264.killPending) return;
       try { proc.kill('SIGKILL'); } catch { }
       h264.killPending = false;
-      if (h264.startQueued && (rtc264Alive() || h264.clients.size > 0)) { h264.startQueued = false; h264Start(); }
+      if (h264.startQueued && h264AnyViewer()) { h264.startQueued = false; h264Start(); }
     }, 2500);
     proc.once('exit', () => {
       clearTimeout(t);
       h264.killPending = false;
       // 只有"确实有观众在等"才兑现排队的那次启动；否则会出现
       // stop→exit→start→stop 每 5 秒空转一轮（2026-11-05 晚踩过）
-      if (h264.startQueued && (rtc264Alive() || h264.clients.size > 0)) { h264.startQueued = false; h264Start(); }
+      if (h264.startQueued && h264AnyViewer()) { h264.startQueued = false; h264Start(); }
     });
   }
   h264.initInfo = null;
@@ -1184,6 +1184,18 @@ const rtc264Status = { at: 0, ok: false, sessions: 0, pending: 0, lastFrameMs: -
 
 function rtc264Alive() {
   return rtc264Status.ok && rtc264Status.sessions > 0 && Date.now() - rtc264Status.at < 15000;
+}
+
+// 2026-11-11（B2）：统一的"还有没有人在看画面"判据。
+// 原来这个判断散落在十几处、而且**只算了主路**（h264.clients + 主路侧车会话）。
+// 结果是：只有第二台设备在看时主路会话数是 0，15 秒后"没人看就停编码器"把 ffmpeg 杀掉，
+// 第二路画面直接冻住（实测 p1ses=0 / p2ses=1，20 秒后 ffmpeg 消失、framesIn 停在 1783）。
+// 现在把第二路侧车的会话也算进来，并且所有"要不要保活"的地方都走这一个函数。
+function h264AnyViewer() {
+  try { if (h264.clients.size > 0) return true; } catch { }
+  try { if (rtc264Alive()) return true; } catch { }
+  try { if (S2.status.sessions > 0) return true; } catch { }
+  return false;
 }
 
 function http264(reqPath, method, body, timeoutMs) {
@@ -1340,14 +1352,18 @@ function onHealth264() {
       rtc264RestartAt = now;
       console.log('rtc264: ' + rtc264Status.sessions + ' 路会话但 ' + rtc264Status.lastFrameMs + 'ms 没帧（编码器已跑 ' + Math.round(ranFor / 1000) + 's），重启编码器');
       h264Stop();
-      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Ensure(); }, 1200);
-      setTimeout(() => { if (rtc264Alive() || h264.clients.size > 0) h264Ensure(); }, 4000);
+      setTimeout(() => { if (h264AnyViewer()) h264Ensure(); }, 1200);
+      setTimeout(() => { if (h264AnyViewer()) h264Ensure(); }, 4000);
     }
     return;
   }
   if (!rtc264IdleSince) rtc264IdleSince = now;
+  // 2026-11-11（B2）：主路没人、但**第二路有成活的观众** → 编码器必须继续跑、而且要保证它在跑。
+  // 两路现在是同一只 ffmpeg：停主路 = 第二路一起冻。实测 p1ses=0 / p2ses=1 时会走到下面那条
+  // "停编码器"，第二路 framesIn 立刻卡住不动（画面冻结在最后一帧）。
+  if (S2.status.sessions > 0) { h264Ensure(); return; }
   // 空闲 45 秒才停编码器（原来 15 秒）：再打开页面/刷新时首帧更快，不用等 ffmpeg 重新拉起 
-  if (now - rtc264IdleSince > 45000 && h264.clients.size === 0 && h264.proc) {
+  if (now - rtc264IdleSince > 45000 && !h264AnyViewer() && h264.proc) {
     console.log('rtc264: 没有 WebRTC 会话也没有 WS 观众，停编码器');
     h264Stop();
     rtc264IdleSince = now;      // 重置：避免每 5 秒重复 kill（也让排队启动的条件失效）
@@ -1472,6 +1488,29 @@ function s2DegradeToShared(why) {
   S2.pending = Buffer.alloc(0);
   try { if (S2.proc) { const p = S2.proc; S2.proc = null; try { p.kill(); } catch { } } } catch { }
   s2DropFmp4Pipe();
+}
+
+// 等第二路侧车真的能接 HTTP 请求（= 已经 bind 好端口）。
+// 为什么必须等（2026-11-11 实测踩过）：/h264-stream-pick 一旦告诉页面"你走第二路"，
+// 页面会**立刻**发 offer；而侧车从 spawn 到 bind 大约要 0.2~0.4 秒，赶不上就是 ECONNREFUSED
+// → 代理回 502 → 页面卡在「连接中…」。当时 sidecar2.log 里连一行 offer 都没有，就是这个竞态。
+// 注意：侧车的健康检查是 **/health**（不是 /status —— /status 是 404，我第一次就写错了，
+// 于是探测永远"没就绪"，把第二路一直降级成共享主路）。
+function s2WaitReady(timeoutMs) {
+  const t0 = Date.now();
+  return new Promise((resolve) => {
+    const tick = () => {
+      s2Http('/health', 'GET', null, 400).then((j) => {
+        if (j && j.ok) return resolve(true);
+        if (Date.now() - t0 >= timeoutMs) return resolve(false);
+        setTimeout(tick, 150);
+      }).catch(() => {
+        if (Date.now() - t0 >= timeoutMs) return resolve(false);
+        setTimeout(tick, 150);
+      });
+    };
+    tick();
+  });
 }
 
 // 切换"单路 / 两路"必须重建 ffmpeg（输出个数变了）。做成脱抖 + 幂等，避免来回抖。
@@ -2150,7 +2189,7 @@ function attachH264Ws(server, key) {
       h264.clients.delete(ws);
       console.log('h264: viewer closed (' + h264.clients.size + ')');
       if (h264.clients.size === 0) {
-        h264.stopTimer = setTimeout(() => { if (h264.clients.size === 0 && !rtc264Alive()) h264Stop(); }, 15000);
+        h264.stopTimer = setTimeout(() => { if (!h264AnyViewer()) h264Stop(); }, 15000);
       }
     });
     ws.on('error', () => { });
@@ -5804,7 +5843,13 @@ async function handler(req, res) {
         res.writeHead(resp.statusCode || 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
         resp.pipe(res);
       });
-      r.on('error', () => { try { res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"error":"sidecar unavailable"}'); } catch { } });
+      // 2026-11-11：失败必须留痕。原来这里静默回 502，导致"第二路 offer 根本没到侧车"
+      // 这种问题在日志里完全看不见（只能靠 sidecar2.log 里没有 offer 行反推）。
+      r.on('error', (e) => {
+        console.log('rtc264: 信令代理失败 stream=' + (useStream2 ? 2 : 1) + ' port=' + sidecarPort + ' path=' + targetPath
+          + ' err=' + String((e && (e.code || e.message)) || e));
+        try { res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"error":"sidecar unavailable"}'); } catch { }
+      });
       r.setTimeout(8000, () => { try { r.destroy(); } catch { } });
       if (body.length) r.write(body);
       r.end();
@@ -6264,7 +6309,7 @@ async function handler(req, res) {
       console.log('h264: window mode -> ' + (H264_WIN ? ('hwnd ' + H264_WIN) : 'full screen'));
       if (h264.proc || h264.cap) h264Stop();
       h264.startQueued = true;
-      setTimeout(() => { if ((rtc264Alive() || h264.clients.size > 0) && !h264.proc && !h264.killPending) h264Start(); }, 600);
+      setTimeout(() => { if (h264AnyViewer() && !h264.proc && !h264.killPending) h264Start(); }, 600);
       res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
       res.end(JSON.stringify({ ok: true, win: H264_WIN }));
     });
@@ -6276,13 +6321,23 @@ async function handler(req, res) {
   if (url.pathname === '/h264-stream-pick' && req.method === 'POST') {
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
-    req.on('end', () => {
+    req.on('end', async () => {
       const jr = (code, obj) => { try { res.writeHead(code, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
       try {
         // 页面在启动阶段还不知道自己想要多宽（宽度只在设置面板里选），不传就用主路当前宽度
-        const r = s2PickStream(String(m.client || ''), Number(m.width), Number(m.fps), Number(m.kbps));
+        let r = s2PickStream(String(m.client || ''), Number(m.width), Number(m.fps), Number(m.kbps));
+        // 2026-11-11：给到第二路之前，必须确认侧车已经能接请求 —— 否则页面立刻发的 offer
+        // 会撞上 ECONNREFUSED（502），表现在用户侧就是「一直连接中」。最多等 1.5 秒。
+        if (r.stream === 2) {
+          const ready = await s2WaitReady(1500);
+          if (!ready) {
+            console.log('rtc264: [第二路] 侧车 1.5 秒内没就绪，本次退回共享主路（不黑屏优先）');
+            s2DegradeToShared('侧车未就绪');
+            r = { stream: 1, reason: 'second-not-ready', owner: false, profile: null };
+          }
+        }
         console.log('rtc264: 分配线路 stream=' + r.stream + '（' + r.reason + '）client=' + String(m.client || '-') + ' 请求 ' + m.width + 'x' + m.fps + '@' + m.kbps);
         jr(200, { ok: true, stream: r.stream, owner: r.owner === true, reason: r.reason, profile: r.profile || null, ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }, primary: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS } });
       } catch (e) {
@@ -6408,7 +6463,7 @@ async function handler(req, res) {
       } else {
         if (h264.proc) { try { h264.proc.kill(); } catch { } h264.proc = null; }
         h264.initInfo = null; h264.pending = Buffer.alloc(0); h264.tsUs = 0;
-        if (h264.clients.size > 0 || rtc264Alive()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
+        if (h264AnyViewer()) setTimeout(() => { if (!h264.proc) h264Ensure(); }, 300);
       }
       // 2026-11-10：设备审查兜底 —— 手调也不能超过这台机器能承受的上限（只降不升）
       try { deviceApplyCaps(); } catch { }
