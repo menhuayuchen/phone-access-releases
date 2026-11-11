@@ -165,4 +165,11 @@ $result = [pscustomobject]@{
     at        = (Get-Date).ToString('yyyy-MM-dd HH:mm:ss')
 }
 $out = $result | ConvertTo-Json -Depth 6 -Compress
+
+# 2026-11-11：提权运行时的黑窗口一闪就关、什么都看不到 —— 所以把结果落一份文件。
+# 排查"装了但没生效"时先看它（无文件 = 提权那一步没真正跑起来，比如 UAC 被取消）。
+try {
+    $resultFile = Join-Path $here 'standby-task.result.json'
+    [System.IO.File]::WriteAllText($resultFile, $out, (New-Object System.Text.UTF8Encoding($false)))
+} catch { }
 $out
