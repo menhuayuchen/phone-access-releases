@@ -3567,6 +3567,20 @@ async function tailscaleSummary() {
   out.ips = (Array.isArray(self.TailscaleIPs) ? self.TailscaleIPs : []).map(String).filter((x) => x && x.indexOf(':') < 0);
   out.online = !!self.Online;
   out.running = out.backendState === 'Running';
+  // 2026-11-11：节点密钥到期时间。Tailscale 默认 180 天后过期，到期那一刻**这台机器在手机上
+  // 所有入口会突然打不开**（要重新授权）。对我们的场景（人不在电脑前）这等于一次售后事故，
+  // 所以必须提前在页面里看得见，而不是等客户来报"昨天还好今天连不上"。
+  // 注意：关闭 key expiry 时 JSON 给的是 0001-01-01，要当成"不过期"（这是好事），不能算已过期。
+  try {
+    const kx = self.KeyExpiry ? new Date(self.KeyExpiry) : null;
+    if (kx && !isNaN(kx.getTime()) && kx.getFullYear() > 2000) {
+      out.keyExpiry = kx.toISOString();
+      out.keyExpiryDays = Math.floor((kx.getTime() - Date.now()) / 86400000);
+    } else {
+      out.keyExpiry = '';
+      out.keyExpiryDays = null;   // null = 已关闭过期
+    }
+  } catch { out.keyExpiry = ''; out.keyExpiryDays = null; }
   const peersObj = (j.Peer && typeof j.Peer === 'object') ? j.Peer : {};
   const peers = [];
   for (const k of Object.keys(peersObj)) {
@@ -7571,6 +7585,28 @@ setTimeout(() => {
     }).catch(() => { });
   } catch { }
 }, 3000).unref?.();
+
+// 2026-11-11：节点密钥到期巡检。默认 180 天，到期那天手机端所有入口会突然打不开。
+// 客户不会主动跑自检，所以这里每 6 小时自己看一眼，剩 ≤14 天就往日志里写一条醒目告警。
+// **只写日志、不进 /health**（/health 是 supervisor 的存活判据，不能因为告警被判死）。
+function logKeyExpiryWarning() {
+  tailscaleSummary().then((sum) => {
+    try {
+      if (!sum || !sum.installed) return;
+      const d = sum.keyExpiryDays;
+      if (typeof d !== 'number') {
+        if (sum.keyExpiryDays === null) return;   // 已关闭过期，正常
+        return;
+      }
+      if (d <= 14) {
+        console.log('[tailscale] 警告：节点密钥' + (d < 0 ? '已经过期' : ('还有 ' + d + ' 天到期（' + String(sum.keyExpiry || '').slice(0, 10) + '）'))
+          + '。到期后手机端所有入口会突然打不开。修法：Tailscale 后台 → Machines → 这台电脑 → ⋯ → Disable key expiry（关掉过期）。');
+      }
+    } catch { }
+  }).catch(() => { });
+}
+setTimeout(logKeyExpiryWarning, 6000).unref?.();
+setInterval(logKeyExpiryWarning, 6 * 60 * 60 * 1000).unref?.();
 
 // 2026-11-11：审查结果不能"一错到底"。
 // 实测坑：开机/部署时屏幕还锁着（或 RDP/虚拟机正接管），ddagrab 探针拿到 "access denied"

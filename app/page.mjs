@@ -4919,6 +4919,26 @@ bindImg(img);
       const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
       rows.push(setKv('本机地址', '<span style="color:#aeb3bb">' + escHtml(addr) + (s.dnsName ? ' · ' + escHtml(s.dnsName) : '') + '</span>'));
       rows.push(setKv('在线节点', '<span style="color:#aeb3bb">' + (s.onlinePeers || 0) + ' / ' + (s.peerTotal || 0) + '</span>'));
+      // 2026-11-11：节点密钥到期时间。Tailscale 默认 180 天过期，到期那一刻这台电脑在手机上
+      // **所有入口会突然打不开**（要重新授权）。对人不在电脑前的场景 = 一次售后事故，
+      // 所以提前显出来；≤14 天变黄、已过期变红，并给出"关掉过期"的一句话修法。
+      try {
+        if (s.keyExpiryDays === null) {
+          rows.push(setKv('密钥到期', '<span style="color:#8CE58C">不过期（已关闭）</span>'));
+        } else if (typeof s.keyExpiryDays === 'number') {
+          const kd = s.keyExpiryDays;
+          const kdate = String(s.keyExpiry || '').slice(0, 10);
+          const kcol = kd < 0 ? '#ff6b6b' : (kd <= 14 ? '#ffb454' : '#aeb3bb');
+          const ktxt = kd < 0 ? ('已经过期（' + kdate + '）') : (kd + ' 天后（' + kdate + '）');
+          rows.push(setKv('密钥到期', '<span style="color:' + kcol + '">' + escHtml(ktxt) + '</span>'));
+          if (kd <= 14) {
+            rows.push('<div style="margin-top:4px;padding:8px 10px;border:1px solid #4a3a1f;background:#1d1810;border-radius:8px;color:#ffb454;font-size:11.5px;line-height:1.7">'
+              + (kd < 0 ? '密钥已经过期，手机端现在打不开' : ('密钥 ' + kd + ' 天后过期'))
+              + '。到期后这台电脑在手机上<b>所有入口会突然打不开</b>，需要重新授权。<br>'
+              + '最省事的修法：Tailscale 后台 → <b>Machines</b> → 这台电脑 → 右侧 <b>⋯</b> → <b>Disable key expiry</b>（关掉过期）。点下面「后台地址」直接去。</div>');
+          }
+        }
+      } catch (e) { }
       // 2026-11-11 修正：原来写"免费账号只能加 5 台设备"是错的（那是很久以前的老额度）。
       // 官方定价页（tailscale.com/pricing，2026-11 查）个人版 Personal：$0、**设备不限台数**、
       // 最多 6 个用户账号、50 个「打了标签的资源」、临时资源每月 1000 分钟。
