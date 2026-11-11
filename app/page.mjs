@@ -1297,24 +1297,27 @@ function tryStartWC264(pc) {
 // 做法：解码帧进小队列，按 worker 合成的**均匀时间戳**用 requestAnimationFrame 逐帧呈现。
 //   成簇到达被缓成均匀播放；代价约 1~2 帧延迟（120fps 下 8~16ms）。
 //   积压超上限丢最旧的（宁可跳帧也不能越拖越久）；连续欠载时把缓冲从 2 帧加到最多 4 帧。
-const PQ = { q: [], playing: false, ts0: 0, base: 0, target: 2, raf: 0, drawn: 0, under: 0, over: 0, lastUnder: 0, lastPeriod: 8333, di: [], lastDrawAt: 0 };
+// 第二版（2026-11-11 晚）：**不再依赖 worker 的合成时间戳**，直接按**实测到达速率**定呈现周期。
+// 为什么改：第一版用合成时间戳当播放时钟，而它的步长来自 fpsHint；实测切档（120→90 自动降档）
+// 时 worker 还按旧步长累加，播放时钟整体跑偏，只能靠"追上/对齐"硬纠正，纠正瞬间又造成新抖动
+// （实测 240 个采样里 82 个是超长间隔）。到达速率本身就是内容帧率最可靠的来源，1 秒内自动跟随。
+const PQ = { q: [], playing: false, raf: 0, drawn: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0 };
 try { window.__pq = PQ; } catch (e) { }
 
 function pqStop() {
   const q = PQ.q;
   PQ.q = [];
   for (let i = 0; i < q.length; i++) { try { q[i].frame.close(); } catch (e) { } }
-  PQ.playing = false; PQ.ts0 = 0; PQ.base = 0;
+  PQ.playing = false; PQ.nextAt = 0; PQ.lastDrawAt = 0;
   if (PQ.raf) { try { cancelAnimationFrame(PQ.raf); } catch (e) { } PQ.raf = 0; }
 }
 
-function pqPeriodUs() {
-  const q = PQ.q;
-  if (q.length >= 2) {
-    const d = q[q.length - 1].ts - q[q.length - 2].ts;
-    if (d > 500 && d < 200000) { PQ.lastPeriod = d; return d; }
-  }
-  return PQ.lastPeriod;
+// 缓冲延迟：2 个帧周期，夹在 [10ms, 45ms]。按时间而非帧数 ——
+// 固定 2 帧的缓冲在 120fps 是 16.7ms（刚好）、30fps 变成 66ms（延迟白白翻四倍）。
+// boost 是欠载时自动加深的补偿（弱网/弱机），上限 +2 帧。
+function pqDelayMs(periodUs) {
+  const us = periodUs * (2 + Math.max(0, Math.min(2, PQ.boost)));
+  return Math.max(10, Math.min(60, us / 1000));
 }
 
 function pqSchedule() {
@@ -1325,18 +1328,24 @@ function pqSchedule() {
 function pqPush(frame, ts) {
   const w = window.__wc264;
   if (!w || !w.canvas || !w.ctx) { try { frame.close(); } catch (e) { } return; }
-  const q = PQ.q;
-  // 时间戳不再递增（重连 / 换档 / 解码器重建）→ 清空并重新锚定
-  if (q.length && !(ts > q[q.length - 1].ts)) {
-    for (let i = 0; i < q.length; i++) { try { q[i].frame.close(); } catch (e) { } }
-    PQ.q = []; PQ.playing = false;
+  const now = performance.now();
+  // 实测到达间隔 → 呈现周期。用**逐帧 EMA** 而不是"攒 60 帧再算"：
+  // 攒 60 帧在 30fps 下要 2 秒，前两秒还按默认 8.3ms 走，节奏全乱（离线实测容差内只 50%）。
+  // EMA 约 20 帧内收敛，切档时也能很快跟上。
+  if (PQ.lastArr) {
+    const d = now - PQ.lastArr;
+    if (d > 0.3 && d < 500) {
+      const dUs = d * 1000;
+      PQ.periodUs = Math.max(1000, Math.min(200000, PQ.periodUs * 0.9 + dUs * 0.1));
+    }
   }
-  PQ.q.push({ frame: frame, ts: ts });
-  const cap = PQ.target + 4;
-  while (PQ.q.length > cap) {
+  PQ.lastArr = now;
+  PQ.q.push(frame);
+  // 安全上限：积压太多说明播放侧跟不上（例如页面切后台），丢最旧的，别让延迟无上限增长
+  while (PQ.q.length > 8) {
     const old = PQ.q.shift();
     PQ.over++;
-    try { old.frame.close(); } catch (e) { }
+    try { old.close(); } catch (e) { }
   }
   pqSchedule();
 }
@@ -1345,52 +1354,39 @@ function pqTick() {
   PQ.raf = 0;
   const w = window.__wc264;
   if (!w || !w.on || !w.canvas || !w.ctx) { pqStop(); return; }
-  let q = PQ.q;
-  if (!q.length) { PQ.playing = false; PQ.lastDrawAt = 0; return; }   // 队列空：等下一帧重锚（rAF 停摆）
-  const period = pqPeriodUs();
+  const q = PQ.q;
   const now = performance.now();
-  if (!PQ.playing) {
-    // 起播（或欠载后恢复）：把播放时钟**压后 target 帧**再开始，让缓冲先建立起来。
-    // 这是"平滑"的关键 —— 锚到队首 (base=now) 等于零缓冲，成簇到达会立刻照抄成抖动。
-    PQ.ts0 = q[0].ts;
-    PQ.base = now + Math.max(1, PQ.target) * period / 1000;
-    PQ.playing = true;
+  // 注意单位：periodUs 是**微秒**（来自到达间隔统计），performance.now() 是**毫秒**。
+  // 这里统一换成毫秒再用，否则 nextAt 会被一次加进 8333ms，表现就是"画两帧后彻底不动"。
+  const periodMs = PQ.periodUs / 1000;
+  if (!PQ.playing) { PQ.nextAt = now + pqDelayMs(PQ.periodUs); PQ.playing = true; PQ.emptySince = 0; }
+  if (!q.length) {
+    // 队列空：**短暂**空（不到 2 个周期）保持节奏继续等，别重锚 ——
+    // 低帧率下来不及攒帧，一空就重锚会每帧多等一个 delay，节奏被打断
+    // （离线实测：30fps 容差内只有 50%、p90 出现 58ms 的翻倍间隔）。
+    // 真断流（超过 2 个周期）才重置，等重新攒够缓冲再播。
+    if (!PQ.emptySince) PQ.emptySince = now;
+    else if (now - PQ.emptySince > periodMs * 2) { PQ.playing = false; PQ.emptySince = 0; PQ.under++; }
+    PQ.starved = true;
+    pqSchedule();
+    return;
   }
-  // 延迟控制按**时间**而不是按帧数：rAF 240Hz 时 8.3ms 一帧的内容完全画得完，
-  // 按帧数裁只会白扔本来来得及显示的帧（实测只画出 99/120）。
-  while (PQ.q.length > 12) {
-    const old = PQ.q.shift();
-    PQ.over++;
-    try { old.frame.close(); } catch (e) { }
-  }
-  q = PQ.q;
-  if (!q.length) { PQ.playing = false; PQ.lastDrawAt = 0; return; }
-  let playTs = PQ.ts0 + (now - PQ.base) * 1000;
-  const newest = q[q.length - 1].ts;
-  // 缓冲过深（时钟落后太多）→ 追到"最新帧 - target 帧"：保持固定缓冲，又不让延迟越拖越久。
-  // 注意**不能**反向对齐（playTs < 队首时就锚到队首）—— 那会把缓冲清零，抖回去。
-  if (playTs < newest - (PQ.target + 3) * period) {
-    playTs = newest - PQ.target * period;
-    PQ.ts0 = q[0].ts;
-    PQ.base = now - (playTs - PQ.ts0) / 1000;
-  }
-  let pick = -1;
-  for (let i = 0; i < q.length; i++) { if (q[i].ts <= playTs) pick = i; else break; }
-  if (pick < 0) { pqSchedule(); return; }               // 还没到点：保持当前画面，不重画
-  for (let i = 0; i < pick; i++) { try { q[i].frame.close(); } catch (e) { } }
-  const it = q[pick];
-  q.splice(0, pick + 1);
+  PQ.emptySince = 0;
+  if (now + 0.4 < PQ.nextAt) { pqSchedule(); return; }    // 还没到点：保持当前画面，不重画
+  // 落后超过 2 个周期（切后台/卡顿回来）→ 直接对齐，不做"追赶播放"：
+  // 追赶会连着吐出几帧，反而更抖。
+  if (now - PQ.nextAt > periodMs * 2) PQ.nextAt = now;
+  const f = q.shift();
   try {
-    const c = w.canvas, x = w.ctx, f = it.frame;
+    const c = w.canvas, x = w.ctx;
     if (c.width !== f.displayWidth || c.height !== f.displayHeight) { c.width = f.displayWidth; c.height = f.displayHeight; }
     x.drawImage(f, 0, 0);
     w.frames++; w.lastFrameAt = Date.now();
-    // 出帧 = 活着：清连续失败计数并解除冷却（原逻辑不变，只是改由调度器在呈现时更新）
+    // 出帧 = 活着：清连续失败计数并解除冷却（看门狗逻辑不变，改由调度器在呈现时更新）
     if (w.restarts) w.restarts = 0;
     w.gaveUp = false;
     PQ.drawn++;
-    // 2026-11-11：呈现间隔采样（只留最近 240 个）。这是"画得匀不匀"的客观证据，
-    // 修复前在 120fps 内容上会出现大量 ~4ms 和 ~16ms 的间条（即用户看到的间断）。
+    // 呈现间隔采样（最近 240 个）：这是"画得匀不匀"的客观证据
     try {
       const _pd = performance.now();
       if (PQ.lastDrawAt) {
@@ -1400,17 +1396,45 @@ function pqTick() {
       PQ.lastDrawAt = _pd;
     } catch (e) { }
   } catch (e) { }
-  try { it.frame.close(); } catch (e) { }
-  // 欠载：画完就空了且已落后于播放时钟 → 说明到达比播放慢，加大缓冲
+  try { f.close(); } catch (e) { }
+  // 2026-11-11：排下一帧的时刻。
+  // ① 欠载过（队列空过）→ 从**现在重新起算一个完整周期**：此时 nextAt 已经落后，
+  //    若还按"最小间隔 0.6 周期"排就会提前，30fps 下变成 5 tick 而不是 8 tick
+  //    （离线实测容差内只有 2%）。
+  // ② 没欠载 → 正常 +1 周期，但禁止累积欠账：一旦某次晚了几毫秒，欠账会让接下来
+  //    连续几个 rAF 都"到点"→ 出现 4.17ms 连发（离线实测 90fps 下 83 个过挤间隔）。
+  if (PQ.starved) { PQ.nextAt = now + periodMs; PQ.starved = false; }
+  else PQ.nextAt = Math.max(PQ.nextAt + periodMs, now + periodMs * 0.6);
+  // 欠载时自动加深缓冲（上限 +2 帧），减少后续空 vsync；恢复顺畅后不自动回退，避免振荡
   if (!PQ.q.length) {
-    if ((playTs - it.ts) > pqPeriodUs() * 1.5) {
-      PQ.under++;
-      const t = Date.now();
-      if (t - PQ.lastUnder > 1000) { PQ.lastUnder = t; if (PQ.target < 4) PQ.target++; }
-    }
+    const t = Date.now();
+    if (t - (PQ.lastUnderAt || 0) > 1500) { PQ.lastUnderAt = t; if (PQ.boost < 2) PQ.boost++; }
   }
   pqSchedule();
 }
+
+// 2026-11-11：worker 的合成时间戳步长 = 1/fpsHint，但它只在 start() 时同步过一次。
+// 帧率一改（本机设置面板 / 另一台设备改共享主路 / 服务端自动降档），worker 还按旧步长
+// 累加时间戳 → 播放时钟和实际到达速度对不上 → 队列堆积、丢帧（实测 30→60fps 时
+// 播放时钟只有一半速度，240 个采样里 82 个是超长间隔）。
+// 这里每 5 秒校准一次（一个小 GET），任何来源的帧率变化都能在 5 秒内跟上。
+let _fpsSyncAt = 0, _fpsSyncLast = 0;
+setInterval(function () {
+  const w = window.__wc264;
+  if (!w || !w.on || !w.worker) return;
+  const now = Date.now();
+  if (now - _fpsSyncAt < 5000) return;
+  _fpsSyncAt = now;
+  try {
+    fetch('/h264-quality', { cache: 'no-store' }).then(function (r) { return r.json(); }).then(function (j) {
+      if (!j || !j.fps) return;
+      const f = Number(j.fps);
+      if (!(f > 0) || f === _fpsSyncLast) return;
+      _fpsSyncLast = f;
+      try { if (w.worker) w.worker.postMessage({ type: 'fps', fps: f }); } catch (e) { }
+    }).catch(function () { });
+  } catch (e) { }
+}, 1000);
 
 const WC264 = {
   on: false, worker: null, canvas: null, ctx: null, stats: null, frames: 0,
