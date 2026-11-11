@@ -3094,6 +3094,217 @@ async function tailscaleHttpsServeUrl(port) {
   return url;
 }
 
+// ---- Tailscale 网络体检 / 中继区域 / 公网暴露检测（2026-11-11，B1）-------------
+// 三件事都是**只读**：`netcheck` 只做网络探测，`funnel status` 只读 serve/funnel 配置。
+// 不写任何 Tailscale 配置、不登录后台、不改状态。
+//
+// 缓存与失败策略（刻意这样设计，别改回去）：
+//   · netcheck 要探 28 个 DERP 区域，实测 10~20 秒 → 成功结果缓存 60 秒，同一时刻只跑一个；
+//   · funnel status 很便宜（~90ms）→ 缓存 30 秒；
+//   · **失败一律不写永久状态**：返回 ok:false + error，页面显示「重试」按钮。
+//     这是 10287a02 那条教训：能力/状态缓存 + 页面硬门禁一旦没有恢复路径就会死锁。
+//   · 失败结果也**不缓存**，下一次调用会真再跑一遍（只由用户点按钮触发，不会自动轮询）。
+const DERP_CITY_ZH = {
+  sin: '新加坡', tok: '东京', nrt: '东京', hkg: '香港', syd: '悉尼', sfo: '旧金山',
+  sea: '西雅图', lax: '洛杉矶', nue: '纽伦堡', hel: '赫尔辛基', den: '丹佛', dfw: '达拉斯',
+  ord: '芝加哥', nyc: '纽约', iad: '阿什本', mia: '迈阿密', tor: '多伦多', fra: '法兰克福',
+  par: '巴黎', ams: '阿姆斯特丹', mad: '马德里', lhr: '伦敦', waw: '华沙', bom: '孟买',
+  nai: '内罗毕', jnb: '约翰内斯堡', dbi: '迪拜', sao: '圣保罗', hnl: '檀香山'
+};
+function derpZh(code) {
+  const c = String(code || '').trim().toLowerCase();
+  return DERP_CITY_ZH[c] || '';
+}
+
+// 纯函数：解析 `tailscale netcheck` 的**人类可读**输出（抽出来是为了能脱离网络单测）。
+// 为什么不用 `--format=json`：那个只给数字 region id（PreferredDERP: 3、RegionLatency 的键是 "3"），
+// 要还原成城市得自己维护一张 id→区域表；而人类可读版本来就写着 `sin: 107.2ms (Singapore)`，
+// 一次调用同时给出区域码、延迟、城市名。代价是输出格式若变要跟着改 —— 所以解析失败会如实报错并可重试。
+function parseNetcheckText(text) {
+  const out = {
+    ok: false, udp: null, ipv4: '', ipv6: '', symmetric: null, portMapping: null,
+    captivePortal: null, nearest: null, regions: [], hint: '', error: ''
+  };
+  const raw = String(text || '');
+  if (!raw.trim()) { out.error = 'netcheck 没有输出'; return out; }
+
+  const mUdp = raw.match(/^\s*\*?\s*UDP:\s*(true|false)/im);
+  if (mUdp) out.udp = /true/i.test(mUdp[1]);
+  const m4 = raw.match(/^\s*\*?\s*IPv4:\s*(?:yes|true)\s*,?\s*([^\r\n]*)/im);
+  if (m4) out.ipv4 = String(m4[1] || '').trim();
+  const m6 = raw.match(/^\s*\*?\s*IPv6:\s*(?:yes|true)\s*,?\s*([^\r\n]*)/im);
+  if (m6) out.ipv6 = String(m6[1] || '').trim();
+  const mSym = raw.match(/MappingVariesByDestIP:\s*(true|false)/i);
+  if (mSym) out.symmetric = /true/i.test(mSym[1]);
+  // 注意 PortMapping 正常输出是空的（行尾只有空格），所以"匹配到但内容为空"是有意义的信息：
+  // 意思是路由器没开 UPnP/NAT-PMP/PCP。
+  const mPm = raw.match(/^\s*\*?\s*PortMapping:[ \t]*([^\r\n]*)/im);
+  if (mPm) out.portMapping = String(mPm[1] || '').trim();
+  const mCp = raw.match(/CaptivePortal:\s*(true|false)/i);
+  if (mCp) out.captivePortal = /true/i.test(mCp[1]);
+  const mNear = raw.match(/Nearest DERP:\s*([^\r\n]+)/i);
+  if (mNear) out.nearestName = String(mNear[1] || '').trim();
+
+  // 形如 `\t\t- sin: 107.2ms (Singapore)`；没有延迟的行（如 `- hnl:  (Honolulu)`）直接跳过
+  const re = /^[ \t]*-[ \t]+([A-Za-z0-9]{2,5}):[ \t]+([0-9]+(?:\.[0-9]+)?)[ \t]*ms[ \t]*\(([^)]*)\)/gm;
+  let m;
+  while ((m = re.exec(raw)) !== null) {
+    const code = String(m[1] || '').toLowerCase();
+    out.regions.push({ code, ms: Number(m[2]), city: String(m[3] || '').trim(), zh: derpZh(code) });
+  }
+  out.regions.sort((a, b) => a.ms - b.ms);
+  if (out.regions.length) out.nearest = out.regions[0];
+
+  // 必须"认出至少一样东西"才算成功。否则 netcheck 被拦截、或将来输出格式变了，
+  // 我们会把一堆空值当"体检通过"报给用户 —— 那比报错更糟（单测发现过这个：传 'hello world' 曾返回 ok:true）。
+  const sawAnything = (out.udp !== null) || (out.symmetric !== null) || (out.portMapping !== null)
+    || (out.captivePortal !== null) || out.regions.length > 0 || !!out.nearestName;
+  if (!sawAnything) { out.error = 'netcheck 输出看不懂（版本变了，或者命令被拦截）'; return out; }
+
+  const issues = [];
+  if (out.captivePortal === true) issues.push('网络被「强制门户」拦住（公共 Wi-Fi 的登录页），要先在浏览器里登录一次才能稳定连接');
+  if (out.udp === false) issues.push('UDP 出不去 → 基本没法打洞，只能走中继，画面会更卡');
+  else if (out.symmetric === true) issues.push('对称 NAT → 打洞成功率低，4G／外网下多半走中继');
+  if (out.portMapping === '') issues.push('路由器没开 UPnP/NAT-PMP → 家庭网也可能打洞失败');
+  if (issues.length) out.hint = issues.join('；') + '。';
+  else if (out.udp === true) out.hint = '网络条件不错：UDP 可以出、NAT 能打洞，同网络下应该能直连。';
+  else out.hint = '';
+
+  if (out.nearest) {
+    out.relayNote = '最近中继 ' + (out.nearest.zh || out.nearest.city) + '（' + out.nearest.code.toUpperCase()
+      + '）' + out.nearest.ms + ' ms';
+  }
+  out.ok = true;
+  return out;
+}
+
+// 纯函数：解析 `tailscale funnel status`。
+// 实测（1.104.2）未开 funnel 时每个块头都带 `(tailnet only)`；开启后块头会带 Funnel 字样。
+// 判据：块头出现 funnel；再检查该块的 handler 是否指向本机画面端口。
+function parseFunnelStatus(text, screenPort) {
+  const raw = String(text || '');
+  const blocks = [];
+  let cur = null;
+  for (const line of raw.split(/\r?\n/)) {
+    const t = line.trim();
+    if (!t) { cur = null; continue; }
+    if (t.startsWith('|--') || t.startsWith('|=')) {
+      if (cur) cur.handlers.push(t.replace(/^\|[-=]+[ \t]*/, ''));
+      continue;
+    }
+    // 同一个端口会打多行块头（例如 http://机器名 和 http://机器名.ts.net 各一行），合并成一个块
+    if (cur && cur.handlers.length === 0) { cur.heads.push(t); continue; }
+    cur = { heads: [t], handlers: [] };
+    blocks.push(cur);
+  }
+  const isFunnelHead = (h) => /funnel[ \t]*[:=]?[ \t]*on|\([ \t]*funnel/i.test(h);
+  const on = blocks.some((b) => b.heads.some(isFunnelHead));
+  const port = Number(screenPort) || 0;
+  let exposingScreen = false;
+  if (on && port > 0) {
+    const marks = ['127.0.0.1:' + port, 'localhost:' + port, ':' + port + '/', ':' + port];
+    for (const b of blocks) {
+      if (!b.heads.some(isFunnelHead)) continue;
+      if (b.handlers.some((h) => marks.some((mk) => h.includes(mk)))) exposingScreen = true;
+    }
+  }
+  return {
+    ok: true,
+    on,
+    exposingScreen,
+    port,
+    blocks: blocks.slice(0, 6).map((b) => ({ heads: b.heads.slice(0, 3), handlers: b.handlers.slice(0, 4) })),
+    hint: on
+      ? (exposingScreen
+        ? 'Funnel 已开启，而且正在把本机画面端口暴露到公网 —— 和「只走 Tailscale 私网」的定位冲突，建议关掉。'
+        : 'Funnel 已开启：本机某些服务公网可达，和「只走私网」的定位冲突，建议关掉。')
+      : '没开 Funnel：只有你自己的 tailnet 能连到这台电脑（这是对的）。'
+  };
+}
+
+let _netcheckCache = { at: 0, data: null, running: false };
+const NETCHECK_TTL_MS = 60 * 1000;
+const NETCHECK_MIN_GAP_MS = 15 * 1000;
+
+function runNetcheckOnce() {
+  return new Promise((resolve) => {
+    const exe = resolveTailscaleExe();
+    if (!exe) {
+      return resolve({ ok: false, at: Date.now(), error: '这台电脑没装 Tailscale（或没在运行）', hint: '装好并登录后再体检。' });
+    }
+    // stderr 单独丢弃：实测它会写 `portmap: monitor: gateway and self IP changed ...` 这类日志。
+    // execFile 天然把 stdout/stderr 分开，不会像 shell 的 2>&1 那样混进来。
+    execFile(exe, ['netcheck'], { timeout: 45000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, (err, stdout, stderr) => {
+      const at = Date.now();
+      const parsed = parseNetcheckText(String(stdout || ''));
+      if (!parsed.ok) {
+        const se = String(stderr || '').split(/\r?\n/).map((x) => x.trim()).filter(Boolean).pop() || '';
+        return resolve({ ok: false, at, error: parsed.error || se || String((err && err.message) || 'netcheck 失败'), hint: '体检没成，可以直接重试。' });
+      }
+      parsed.at = at;
+      resolve(parsed);
+    });
+  });
+}
+
+async function tailscaleNetcheck(force) {
+  const now = Date.now();
+  const cached = _netcheckCache.data;
+  const age = cached ? (now - _netcheckCache.at) : -1;
+  const fresh = !!(cached && age >= 0 && age < NETCHECK_TTL_MS);
+  if (fresh && !force) return Object.assign({}, cached, { cached: true, ageMs: age });
+  if (_netcheckCache.running) {
+    const busyHint = '体检正在进行（约 10~20 秒），稍等一下再点。';
+    return cached ? Object.assign({}, cached, { cached: true, busy: true, ageMs: age, hint: busyHint })
+      : { ok: false, busy: true, at: now, hint: busyHint };
+  }
+  // 强制刷新也限速：15 秒内重复点只回缓存，避免把 netcheck 打成连续探测
+  if (cached && age >= 0 && age < NETCHECK_MIN_GAP_MS) return Object.assign({}, cached, { cached: true, ageMs: age });
+  _netcheckCache.running = true;
+  try {
+    const r = await runNetcheckOnce();
+    // 只缓存成功结果：失败不写永久状态，下一次点按钮会真再跑一遍
+    _netcheckCache = r.ok ? { at: Date.now(), data: r, running: false } : { at: 0, data: null, running: false };
+    return r;
+  } catch (e) {
+    _netcheckCache = { at: 0, data: null, running: false };
+    return { ok: false, at: Date.now(), error: String((e && e.message) || e), hint: '体检失败，可以直接重试。' };
+  }
+}
+
+let _funnelCache = { at: 0, data: null };
+const FUNNEL_TTL_MS = 30 * 1000;
+
+function runFunnelStatus(screenPort) {
+  return new Promise((resolve) => {
+    const port = Number(screenPort) || 0;
+    const exe = resolveTailscaleExe();
+    if (!exe) {
+      return resolve({ ok: false, on: false, exposingScreen: false, port, at: Date.now(), error: '这台电脑没装 Tailscale（或没在运行）', hint: '' });
+    }
+    execFile(exe, ['funnel', 'status'], { timeout: 15000, windowsHide: true, maxBuffer: 2 * 1024 * 1024 }, (err, stdout) => {
+      const raw = String(stdout || '');
+      const at = Date.now();
+      if (!raw.trim()) {
+        return resolve({ ok: false, on: false, exposingScreen: false, port, at, error: String((err && err.message) || 'funnel status 没有输出'), hint: '读不到 Funnel 状态，可以直接重试。' });
+      }
+      const r = parseFunnelStatus(raw, port);
+      r.at = at;
+      resolve(r);
+    });
+  });
+}
+
+async function tailscaleFunnelStatus(screenPort) {
+  const now = Date.now();
+  if (_funnelCache.data && (now - _funnelCache.at) < FUNNEL_TTL_MS) {
+    return Object.assign({}, _funnelCache.data, { cached: true });
+  }
+  const r = await runFunnelStatus(screenPort);
+  if (r.ok) _funnelCache = { at: Date.now(), data: r };
+  return r;
+}
+
 async function tailscaleSummary() {
   const t = await tailscaleStatusRaw();
   const out = {
@@ -3140,7 +3351,9 @@ async function tailscaleSummary() {
       os: String(p.OS || ''),
       online: !!p.Online,
       direct: !!String(p.CurAddr || '').trim(),      // 有 CurAddr = 走直连；没有 = 走 DERP 中继
-      relay: String(p.Relay || ''),
+      relay: String(p.Relay || '').toLowerCase(),
+      relayZh: derpZh(p.Relay),                      // 2026-11-11（B1）：sin→新加坡，页面直接说人话
+      peerRelay: !!p.PeerRelay,                      // 1.104.2 有这字段：走 tailnet 内 peer 中转
       tunnel: !!p.ExitNode
     });
   }
@@ -4089,11 +4302,32 @@ async function handler(req, res) {
           const screenPort = Number(cfgNow.ports && cfgNow.ports.screen) || 8660;
           sum.httpsUrl = await tailscaleHttpsServeUrl(screenPort);
           sum.httpsHint = sum.httpsUrl ? '' : '还没有开启远程 HTTPS 入口。点下面「一键开启远程 HTTPS」；如果提示没启用证书，去 Tailscale 后台 → DNS → HTTPS Certificates 点启用，再回来点一次。';
+          sum.screenPort = screenPort;
+          // 2026-11-11（B1）：公网暴露检测。注意**不要**把它接进 /health —— /health 是 supervisor
+          // 的存活判据，返回失败会被每 30 秒重启一次（等于自杀）。这里只做告警展示。
+          try { sum.funnel = await tailscaleFunnelStatus(screenPort); } catch (e) { sum.funnel = { ok: false, on: false, exposingScreen: false, port: screenPort, error: String((e && e.message) || e) }; }
           res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
           res.end(JSON.stringify(sum));
         } catch { }
       } catch { }
     })();
+    return;
+  }
+  // Tailscale 网络体检（2026-11-11，B1）：只读跑 `tailscale netcheck`，把"为什么卡"变成可读数。
+  // 一次 10~20 秒，所以结果内部缓存 60 秒；失败不缓存、也不写永久状态，页面据 ok/error 显示「重试」。
+  if (url.pathname === '/ts-netcheck') {
+    const force = url.searchParams.get('force') === '1';
+    tailscaleNetcheck(force).then((r) => {
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify(r));
+      } catch { }
+    }).catch((e) => {
+      try {
+        res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+        res.end(JSON.stringify({ ok: false, error: String((e && e.message) || e), hint: '体检失败，可以直接重试。' }));
+      } catch { }
+    });
     return;
   }
   // 一键拉起 Tailscale 安装包：只认安装目录里固定的 bin\tailscale-setup.exe，不接受任何参数。
@@ -7041,6 +7275,26 @@ setTimeout(() => {
     if (sleepStateGet()) { console.log('[sleep] 上次是息屏状态，继续息屏'); screenSleep('boot').catch(() => { }); }
   } catch { }
 }, 4000).unref?.();
+
+// 2026-11-11（B1）：启动后 3 秒查一次「公网暴露」（Tailscale Funnel）。
+// 只告警、不改任何状态、**不碰 /health**（/health 是 supervisor 的存活判据，不能因为告警被判死）。
+// 为什么要单独查：客户可能永远不打开设置页，但 Funnel 一旦开着，安全模型当场倒掉。
+setTimeout(() => {
+  try {
+    let scPort = 8660;
+    try {
+      const c = JSON.parse(readFileSync(join(HERE, 'product.config.json'), 'utf8').replace(/^\uFEFF/, ''));
+      scPort = Number(c.ports && c.ports.screen) || 8660;
+    } catch { }
+    tailscaleFunnelStatus(scPort).then((f) => {
+      try {
+        if (f && f.on) {
+          console.log('[funnel] 警告：Tailscale Funnel 已开启' + (f.exposingScreen ? '，而且正在暴露本机画面端口 ' + scPort : '') + ' —— ' + String((f && f.hint) || ''));
+        }
+      } catch { }
+    }).catch(() => { });
+  } catch { }
+}, 3000).unref?.();
 
 // 2026-11-11：审查结果不能"一错到底"。
 // 实测坑：开机/部署时屏幕还锁着（或 RDP/虚拟机正接管），ddagrab 探针拿到 "access denied"

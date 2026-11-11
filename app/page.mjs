@@ -4886,12 +4886,35 @@ bindImg(img);
   // 数据来自服务端 /tailscale-status：安装/启动/登录/在线 + 节点是直连还是中继 + 健康告警。
   function tsRowsHtml(s) {
     const rows = [];
+    // 2026-11-11（B1）：把中继区域码翻成人话（sin → 新加坡（SIN））。relayZh 由服务端 tailscaleSummary 给。
+    const relayLabel = (p) => {
+      const code = String(p.relay || '').toUpperCase();
+      const zh = String(p.relayZh || '');
+      if (p.peerRelay) return 'peer 中转' + (zh ? '·' + zh : '');
+      if (zh && code) return zh + '（' + code + '）';
+      if (zh) return zh;
+      return code || '未知区域';
+    };
     const ok = !!(s.running && s.online);
     rows.push('<div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">'
       + setPill(ok, '已连接', s.installed ? '未连接' : '未安装')
       + '<span style="color:#868c96;font-size:12px">'
       + escHtml(s.installed ? ((s.version ? 'Tailscale ' + s.version : 'Tailscale') + (s.backendState ? ' · ' + s.backendState : '')) : '这台电脑还没装 Tailscale')
       + '</span></div>');
+    // 2026-11-11（B1）：公网暴露告警。放在最上面 —— 这是"安全模型被拆掉"级别的提示，不该藏在下面。
+    // 注意：只告警、不动 /health（那是 supervisor 的存活判据）。
+    if (s.funnel && s.funnel.on) {
+      rows.push('<div style="margin-top:10px;padding:10px 12px;border:1px solid #7a2b2b;background:#1f1113;border-radius:9px;color:#ff9b9b;font-size:12px;line-height:1.75">'
+        + '<b>⚠ 检测到 Tailscale Funnel 已开启</b><br>'
+        + (s.funnel.exposingScreen
+          ? '它正在把<b>本机画面端口 ' + escHtml(String(s.funnel.port || '')) + '</b> 暴露到公网 —— 这会让「只走私网、不暴露公网」的承诺失效，只剩网址里的密钥这一道门。<br>'
+          : '本机某些服务已经公网可达，和本产品「只走 Tailscale 私网」的定位冲突。<br>')
+        + '关掉：在电脑上打开终端执行 <code style="color:#ffd0d0;user-select:all">tailscale funnel reset</code>，'
+        + '或去 Tailscale 后台 → Machines → 这台电脑 → 关掉 Funnel。'
+        + '</div>');
+    } else if (s.funnel && s.funnel.ok === false) {
+      rows.push('<div style="margin-top:8px;color:#6b7078;font-size:11px;line-height:1.6">公网暴露检查没读到结果（' + escHtml(s.funnel.error || '未知原因') + '），不影响使用。</div>');
+    }
     if (s.installed) {
       const addr = (s.ips && s.ips[0]) ? s.ips[0] : '—';
       rows.push(setKv('本机地址', '<span style="color:#aeb3bb">' + escHtml(addr) + (s.dnsName ? ' · ' + escHtml(s.dnsName) : '') + '</span>'));
@@ -4944,7 +4967,7 @@ bindImg(img);
           + escHtml(p.host) + (p.os ? ' <span style="color:#6b7078">(' + escHtml(p.os) + ')</span>' : '') + '</span>'
           + (p.online
             ? ('<span style="color:' + (p.direct ? '#8CE58C' : '#ffb454') + '">' + (p.direct ? '直连' : '中继') + '</span>'
-              + (!p.direct && p.relay ? '<span style="color:#6b7078;font-size:11px">' + escHtml(p.relay) + '</span>' : ''))
+              + (!p.direct ? '<span style="color:#6b7078;font-size:11px">' + escHtml(relayLabel(p)) + '</span>' : ''))
             : '<span style="color:#6b7078">离线</span>')
           + '</div>');
       });
@@ -4962,6 +4985,65 @@ bindImg(img);
         + 'padding:9px 15px;font-size:13px;cursor:pointer">安装 Tailscale</button>');
       if (s.error) rows.push('<div style="color:#6b7078;font-size:11px;margin-top:6px">' + escHtml(s.error) + '</div>');
     }
+    // 2026-11-11（B1）：公网暴露检查通过的安静提示（不占大块版面，只在末尾一行）
+    if (s.funnel && s.funnel.ok && !s.funnel.on) {
+      rows.push('<div style="margin-top:8px;color:#5f8f66;font-size:11px;line-height:1.6">公网暴露检查：没开 Funnel —— 只有你自己的 tailnet 能连到这台电脑。</div>');
+    }
+    // 2026-11-11（B1）：网络体检。按需触发（一次 10~20 秒），失败可重试。
+    if (s.installed) {
+      rows.push('<div style="margin-top:12px;padding:10px 12px;border:1px solid #262932;border-radius:9px;background:#0f1014">'
+        + '<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">'
+        + '<span style="color:#aeb3bb;font-size:12.5px;font-weight:600">网络体检</span>'
+        + '<button id="tsNetcheckBtn" data-tsnc="1" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;'
+        + 'padding:5px 11px;font-size:11.5px;cursor:pointer">运行体检</button>'
+        + '<span style="color:#6b7078;font-size:11px">约 10~20 秒</span></div>'
+        + '<div id="tsNetcheck" style="margin-top:8px;color:#868c96;font-size:12px;line-height:1.8">'
+        + '还没体检。点上面的按钮，能查出「能不能打洞、最近的中继在哪、为什么卡」。</div>'
+        + '</div>');
+    }
+    return rows.join('');
+  }
+  // 2026-11-11（B1）：网络体检结果的渲染。
+  // 刻意把「失败」也渲染成可重试的按钮 —— 10287a02：任何失败态都必须有恢复路径，不能一错到底。
+  function netcheckInner(r) {
+    const retryBtn = '<div style="margin-top:8px"><button id="tsNetcheckRetry" data-tsnc="1" '
+      + 'style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;'
+      + 'font-size:11.5px;cursor:pointer">重试</button></div>';
+    if (!r) return '<span style="color:#ff6b6b">没拿到体检结果（网络或服务异常），可以重试。</span>' + retryBtn;
+    if (r.busy) return '<span style="color:#868c96">' + escHtml(r.hint || '正在体检…') + '</span>';
+    if (!r.ok) return '<span style="color:#ff6b6b">体检没成功：' + escHtml(r.error || '未知原因') + '</span>' + retryBtn;
+    const rows = [];
+    rows.push(setKv('UDP', r.udp === true
+      ? '<span style="color:#8CE58C">可以出（打洞有戏）</span>'
+      : (r.udp === false ? '<span style="color:#ffb454">出不去（只能走中继）</span>' : '<span style="color:#868c96">—</span>')));
+    rows.push(setKv('NAT', r.symmetric === true
+      ? '<span style="color:#ffb454">对称 NAT（打洞成功率低）</span>'
+      : (r.symmetric === false ? '<span style="color:#8CE58C">锥形 NAT（能打洞）</span>' : '<span style="color:#868c96">—</span>')));
+    rows.push(setKv('端口映射', r.portMapping
+      ? '<span style="color:#8CE58C">' + escHtml(r.portMapping) + '</span>'
+      : '<span style="color:#ffb454">没开 UPnP / NAT-PMP</span>'));
+    if (r.nearest) {
+      rows.push(setKv('最近中继', '<span style="color:#aeb3bb">' + escHtml(String(r.nearest.zh || r.nearest.city || ''))
+        + '（' + escHtml(String(r.nearest.code || '').toUpperCase()) + '） ' + escHtml(String(r.nearest.ms)) + ' ms</span>'));
+    }
+    if (r.regions && r.regions.length > 1) {
+      const nearCode = (r.nearest && r.nearest.code) || '';
+      const others = r.regions.slice(0, 6).filter((x) => x.code !== nearCode);
+      if (others.length) {
+        rows.push('<div style="margin-top:6px;color:#6b7078;font-size:11.5px;line-height:1.85">其他中继：'
+          + others.map((x) => escHtml(String(x.zh || x.city || x.code) + ' ' + x.ms + 'ms')).join(' · ') + '</div>');
+      }
+    }
+    if (r.hint) {
+      rows.push('<div style="margin-top:8px;padding:8px 10px;border-radius:8px;background:#1a1c22;border:1px solid #2b3138;'
+        + 'color:#aeb3bb;font-size:12px;line-height:1.7">' + escHtml(r.hint) + '</div>');
+    }
+    if (r.ageMs && r.ageMs > 3000) {
+      rows.push('<div style="margin-top:6px;color:#6b7078;font-size:11px">结果来自 ' + Math.round(r.ageMs / 1000) + ' 秒前（缓存）</div>');
+    }
+    rows.push('<div style="margin-top:8px"><button id="tsNetcheckRetry" data-tsnc="1" '
+      + 'style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 11px;'
+      + 'font-size:11.5px;cursor:pointer">再体检一次</button></div>');
     return rows.join('');
   }
   function tsBind(box) {
@@ -4970,12 +5052,32 @@ bindImg(img);
     const btn = box.querySelector('#tsRefresh');
     if (!bodyEl) return;
     const setMsg = (t, c) => { if (msgEl) { msgEl.textContent = t; msgEl.style.color = c || '#868c96'; } };
+    // 2026-11-11（B1）：网络体检按钮。结果区每次重新渲染后按钮是新建的，所以绑定要放在渲染之后调。
+    const bindNetcheck = () => {
+      const ncEl = bodyEl.querySelector('#tsNetcheck');
+      const btnNc = bodyEl.querySelector('#tsNetcheckBtn');
+      const run = async () => {
+        if (!ncEl) return;
+        if (btnNc) { btnNc.disabled = true; btnNc.style.opacity = '.6'; btnNc.textContent = '体检中…'; }
+        ncEl.innerHTML = '<span style="color:#868c96">正在探测（约 10~20 秒，别关掉这一页）…</span>';
+        let r = null;
+        try {
+          r = await fetch('/ts-netcheck?force=1&_=' + Date.now(), { cache: 'no-store' }).then((x) => x.json());
+        } catch (e) { r = null; }
+        ncEl.innerHTML = netcheckInner(r);
+        if (btnNc) { btnNc.disabled = false; btnNc.style.opacity = '1'; btnNc.textContent = '运行体检'; }
+        const rt = ncEl.querySelector('#tsNetcheckRetry');
+        if (rt) rt.addEventListener('click', run);
+      };
+      if (btnNc) btnNc.addEventListener('click', run);
+    };
     const load = async () => {
       bodyEl.innerHTML = '<span style="color:#868c96">正在检测…</span>';
       let s = null;
       try { s = await fetch('/tailscale-status?_=' + Date.now(), { cache: 'no-store' }).then((r) => r.json()); } catch (e) { s = null; }
       if (!s) { bodyEl.innerHTML = '<span style="color:#ff6b6b">检测失败：读不到 Tailscale 状态。</span>'; return; }
       bodyEl.innerHTML = tsRowsHtml(s);
+      bindNetcheck();
       const adminCopy = bodyEl.querySelector('#tsAdminCopy');
   if (adminCopy) adminCopy.addEventListener('click', () => {
     const u = 'https://login.tailscale.com/admin/dns';
