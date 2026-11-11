@@ -1198,6 +1198,24 @@ function h264AnyViewer() {
   return false;
 }
 
+// 2026-11-11（C 方案副作用修正）：**只看主路**有没有人在看。
+// 用途是判断"现在拆两路会不会打断别人"：拆两路必须重建主编码器（输出个数 2→1），
+// 正在看主路的人会断流 1~4 秒。所以第二路空了以后不能立刻拆，要等主路也没人看。
+//
+// 为什么要有 30 秒记忆窗口（实测）：rtc264Status 由 5 秒一次的 /health 轮询刷新，
+// 只要有一次请求超时/失败就 ok=false，"主路有人看"会**瞬间变假**。
+// 实测那一瞬间刚打印完"先不拆"，5 秒后就把两路拆了 —— 在真有第二路时会重建主编码器、
+// 打断正在看的主路，等于修复失效。加了窗口后偶发抖动不会误拆；
+// 观众真的走了最多晚 30 秒收摊，没有任何副作用。
+let primarySeenAt = 0;
+function h264PrimaryViewer() {
+  let seen = false;
+  try { if (h264.clients.size > 0) seen = true; } catch { }
+  try { if (rtc264Alive()) seen = true; } catch { }
+  if (seen) primarySeenAt = Date.now();
+  return seen || (Date.now() - primarySeenAt < 30000);
+}
+
 function http264(reqPath, method, body, timeoutMs) {
   return new Promise((resolve, reject) => {
     const req = http.request({
@@ -1963,8 +1981,22 @@ function s2Poll() {
       if (CFG264.audioSync && (!S2.audio || S2.audio.destroyed)) s2ConnectAudio();
     } else {
       if (!S2.idleSince) S2.idleSince = Date.now();
-      // 第二路没人看 45 秒 → 整路收掉（连侧车一起），不留进程
-      if (Date.now() - S2.idleSince > 45000) s2StopAll('45 秒没有观众');
+      const _idleMs = Date.now() - S2.idleSince;
+      // 2026-11-11 修正：第二路没人看了，但**先别急着拆**。
+      // 拆两路一定会重建主编码器（输出个数 2→1），正在看主路的人会断流 1~4 秒 ——
+      // 实测这就是"第二台设备一进一出，第一台就不停重连、画面静止"的根源。
+      // 规则：主路还有人看 → 保持两路（多一个 NVENC 会话，代价可接受，且 rejoin 时零重建）；
+      //       主路也没人看了 → 才真正收摊（那时重建谁也打扰不到）。
+      if (_idleMs > 45000) {
+        if (h264PrimaryViewer()) {
+          if (!S2.deferLogAt || Date.now() - S2.deferLogAt > 10 * 60 * 1000) {
+            S2.deferLogAt = Date.now();
+            console.log('rtc264: [第二路] 已空 ' + Math.round(_idleMs / 1000) + ' 秒，但主路有观众在看 —— 先不拆（拆会重建主编码器、打断主路）');
+          }
+        } else {
+          s2StopAll('45 秒没有观众，且主路也没人看');
+        }
+      }
     }
   }).catch(() => { S2.status.ok = false; });
 }
