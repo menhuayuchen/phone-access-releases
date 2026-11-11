@@ -6813,6 +6813,8 @@ bindImg(img);
         tog.disabled = active && !mine;
       }
       if (imgMsg) imgMsg.textContent = st && st.hasImage ? '当前：自定义图' : '当前：纯黑';
+      const sb = box.querySelector('#prvSleep');
+      if (sb) sb.textContent = (active && mine) ? '恢复亮屏' : '一键息屏（本机黑屏）';
       if (lockCb && active && mine) lockCb.checked = st.lockInput !== false;
       if (mine) { setMsg('已开启（电脑本机已遮住' + (st && st.lockInput ? '，键盘鼠标已锁' : (st && st.hotkeys ? '，仅拦快捷键' : '')) + '）', '#8CE58C'); startBeat(); }
       else if (active) setMsg('另一台设备已开启（以先开的为准）', '#ffb454');
@@ -6829,6 +6831,29 @@ bindImg(img);
         await refresh();
       } catch (e) { setMsg('操作失败：' + (e && e.message), '#ff9d9d'); }
       tog.disabled = false;
+    });
+    // 2026-11-11：一键息屏 = 用黑屏遮罩把本机盖住（不锁键鼠），远程照常可见。
+    // 为什么不用"关显示器"：实测真关屏（DPMS）后桌面复制抓不到（access denied / 挂住），远程就黑了。
+    const sleepBtn = box.querySelector('#prvSleep');
+    const sleepMsg = box.querySelector('#prvSleepMsg');
+    const saySleep = (t, c) => { if (sleepMsg) { sleepMsg.textContent = t; sleepMsg.style.color = c || '#6b7078'; } };
+    if (sleepBtn) sleepBtn.addEventListener('click', async () => {
+      sleepBtn.disabled = true;
+      try {
+        if (window.__prvMine) {
+          await post('/privacy/off', { sid: dev });
+          stopBeat();
+          saySleep('已恢复亮屏', '#8CE58C');
+        } else {
+          const r = await post('/privacy/on', { sid: dev, lock: false });
+          if (r && r.ok && r.owner) {
+            startBeat();
+            saySleep('已息屏：电脑本机全黑，画面只在你手机上看得到；再点一次恢复', '#8CE58C');
+          } else saySleep('开不了（可能另一台设备正在用）', '#ffb454');
+        }
+        await refresh();
+      } catch (e) { saySleep('操作失败：' + (e && e.message), '#ff9d9d'); }
+      sleepBtn.disabled = false;
     });
     // 「锁住电脑前的键盘和鼠标」：默认开；开着的时候改选项 → 重启一次遮罩让它生效
     if (lockCb) lockCb.addEventListener('change', async () => {
@@ -7395,8 +7420,18 @@ bindImg(img);
 
     // 防窥屏（privacy mode）：盖住电脑本机屏幕，手机端不受影响
     body += setSection('防窥屏',
-      '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">'
-      + '开启后，电脑本机会被一层锁屏图盖住：屏幕前的人看不到桌面、鼠标点不动；'
+      // 2026-11-11：一键息屏。实测结论：**真正把显示器电源关掉（DPMS）时，桌面复制抓不到画面**
+      // （探针不是报 access denied 就是直接挂住不出帧），远程就瞎了。
+      // 所以这里的"息屏"用防窥屏的黑屏遮罩实现：本机屏幕全黑、看不到任何东西，
+      // 但系统仍在正常合成，远程画面完全不受影响 —— 这才是"人不在电脑前"想要的效果。
+      '<div style="display:flex;gap:10px;align-items:center;margin-bottom:12px;flex-wrap:wrap">'
+      + '<button id="prvSleep" style="background:#1f2a3a;color:#bcd4ff;border:1px solid #2d4a6e;border-radius:9px;'
+      + 'padding:9px 15px;font-size:13px;cursor:pointer">一键息屏（本机黑屏）</button>'
+      + '<span id="prvSleepMsg" style="font-size:12px;color:#6b7078;flex:1;min-width:160px;line-height:1.6">'
+      + '点一下电脑屏幕立刻全黑，而你手机上的画面和操作完全不受影响；再点一次恢复。</span>'
+      + '</div>'
+      + '<div style="color:#aeb3bb;font-size:12.5px;line-height:1.75">'
+      + '下面的「防窥屏」更彻底：电脑本机会被一层锁屏图盖住，屏幕前的人看不到桌面、鼠标点不动；'
       + '<b>你手机上的画面和控制不受影响</b>。<br>'
       + '别的设备再开启不会抢（以先开的为准）；你关掉或断开后自动解除。最长 8 小时自动解除，防止把电脑锁死。'
       + '</div>'
