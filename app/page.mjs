@@ -1472,17 +1472,28 @@ let _rafCount = 0, _rafHz = 0, _rafLastAt = performance.now();
 (function () {
   try {
     if (!/[?&]fs=1(&|$)/.test(location.search)) return;
-    const go = function () {
-      try {
-        const el = document.documentElement;
-        if (el.requestFullscreen && !document.fullscreenElement) {
-          el.requestFullscreen().catch(function () { });
-        }
-        try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(function () { }); } catch (e) { }
-      } catch (e) { }
+    let tries = 0;
+    window.__paFsTries = 0;
+    window.__paFsErr = '';
+    const cleanup = function () {
       try { document.removeEventListener('pointerdown', go, true); } catch (e) { }
       try { document.removeEventListener('touchend', go, true); } catch (e) { }
     };
+    const go = function () {
+      if (document.fullscreenElement) { window.__paFsTries = tries; cleanup(); return; }
+      tries++;
+      window.__paFsTries = tries;
+      try {
+        const el = document.documentElement;
+        if (!el.requestFullscreen) { window.__paFsErr = 'no-api'; return; }
+        const p = el.requestFullscreen();
+        if (p && p.catch) p.catch(function (e) { window.__paFsErr = String((e && e.name) || e); });
+      } catch (e) { window.__paFsErr = String((e && e.message) || e); }
+      try { if (screen.orientation && screen.orientation.lock) screen.orientation.lock('landscape').catch(function () { }); } catch (e) { }
+    };
+    // 2026-11-11：**每次点击都重试**，直到真的进了全屏才解绑。
+    // 原来只试一次就解绑 —— 第一次点击如果因为"没有用户手势/被页面 preventDefault"被拒，
+    // 后面就再也不会有反应，从日志里只能看到 全屏=0，无法判断是没点到还是被拒。
     document.addEventListener('pointerdown', go, true);
     document.addEventListener('touchend', go, true);
   } catch (e) { }
@@ -2510,6 +2521,8 @@ async function rtc264Stats() {
           // 2026-11-11：全屏状态 / WebCodecs 是否启用 / <video> 自己解出的帧率。
           // ?fs=1 看全屏能否放开高刷；?wc=0 看 video 路径能否绕过 canvas 合成限制。
           fs: !!document.fullscreenElement,
+          fsTries: (window.__paFsTries | 0),
+          fsErr: String(window.__paFsErr || '').slice(0, 40),
           wc: !!_wd.on,
           vidFps: Math.round((_wd._hudVidFps || 0) * 10) / 10,
           dpr: Math.round((window.devicePixelRatio || 0) * 100) / 100,
