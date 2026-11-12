@@ -22,12 +22,14 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.join(__dirname, '..');
-const FFMPEG = path.join(ROOT, 'app', 'bin', 'ffmpeg.exe');
 const OUTDIR = path.join(ROOT, '.encab');
 
 const argv = process.argv.slice(2);
 const arg = (n, d) => { const i = argv.indexOf('--' + n); return i >= 0 && argv[i + 1] ? argv[i + 1] : d; };
 const flag = (n) => argv.includes('--' + n);
+// 2026-11-12：可指定另一个 ffmpeg（例如重编的 HEVC 版），默认用生产自带的那个
+const FF_OVERRIDE = arg('ffmpeg', '');
+const FFMPEG = FF_OVERRIDE ? path.resolve(FF_OVERRIDE) : path.join(ROOT, 'app', 'bin', 'ffmpeg.exe');
 const SECONDS = Number(arg('seconds', '8'));
 const FPS = Number(arg('fps', '120'));
 const KBPS = Number(arg('kbps', '20000'));
@@ -54,18 +56,22 @@ function boxes(buf, start, end) {
   return out;
 }
 
-function nalTypes(data) {
-  // 输入是 AVCC（4 字节长度前缀）还是 Annex-B？fMP4 里是 AVCC
+function nalTypes(data, hevc) {
+  // 输入是 AVCC/HVCC（4 字节长度前缀），fMP4 里都是这种
+  // 2026-11-12：HEVC 的 NAL 头是 2 字节，type=(b0>>1)&0x3f；H.264 是 1 字节 type=b0&0x1f
   const types = [];
   let o = 0;
   for (let guard = 0; guard < 64 && o + 4 <= data.length; guard++) {
     const len = data.readUInt32BE(o);
     if (len <= 0 || o + 4 + len > data.length) break;
-    types.push(data[o + 4] & 0x1f);
+    types.push(hevc ? ((data[o + 4] >> 1) & 0x3f) : (data[o + 4] & 0x1f));
     o += 4 + len;
   }
   return types;
 }
+
+// HEVC 关键帧：IRAP 类型 16~21（BLA_W_LP..CRA）
+function isHevcIrap(t) { return t >= 16 && t <= 21; }
 
 function seiPayloadTypes(data) {
   // 扫 NAL 6（SEI），返回里面的 payloadType 列表（恢复点 SEI = 6）
@@ -100,6 +106,8 @@ function seiPayloadTypes(data) {
 function parseMp4(file) {
   const buf = fs.readFileSync(file);
   const top = boxes(buf, 0, buf.length);
+  // 2026-11-12：HEVC 的 fMP4 里参数集盒叫 hvcC（H.264 是 avcC），据此判断码流类型
+  const hevc = buf.includes('hvcC');
   let sps = null, pps = null;
   for (const b of top) {
     if (b.type !== 'moov') continue;
@@ -163,11 +171,11 @@ function parseMp4(file) {
           if (hasCto) q += 4;
           const data = payload.subarray(off, off + size);
           off += size;
-          const nt = nalTypes(data);
+          const nt = nalTypes(data, hevc);
           const sync = !!(sflags & 0x10000);
-          const hasIdr = nt.includes(5);
+          const hasIdr = hevc ? nt.some(isHevcIrap) : nt.includes(5);
           frames.push({
-            size, dur, sync, hasIdr, nal: nt, sei: seiPayloadTypes(data),
+            size, dur, sync, hasIdr, nal: nt, sei: hevc ? [] : seiPayloadTypes(data),
             key: sync || hasIdr,
           });
         }
@@ -222,11 +230,18 @@ function summarize(name, r, seconds) {
 // ---------- 变体参数 ----------
 function argsFor(variant, outFile) {
   // 抓屏与主路生产参数逐条对齐（见 app/screen-server.mjs h264Start/h264EncOnly）
-  const enc = [
-    '-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1',
-    '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2',
-    '-b:v', String(KBPS) + 'K',
-  ];
+  // 2026-11-12：HEVC 变体（用 --ffmpeg 指向带 hevc_nvenc 的重编版）
+  //   hev  = HEVC / CBR 20Mbps / GOP 0.5s（与 base 对齐）
+  //   hevi = HEVC + intra-refresh + 每 0.5s 强制真 IDR（与 piri60_0.5 对齐）
+  //   q264 / qhev = H.264 / HEVC 的"等质量"对比：VBR + CQ 22，比平均码率
+  const isHevc = variant === 'hev' || variant === 'hevi' || variant === 'qhev';
+  const vbrCq = variant === 'q264' || variant === 'qhev';
+  const enc = vbrCq
+    ? ['-c:v', isHevc ? 'hevc_nvenc' : 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1',
+       '-rc', 'vbr', '-cq', '22', '-b:v', '40000K', '-maxrate', '40000K', '-bufsize', '80000K']
+    : ['-c:v', isHevc ? 'hevc_nvenc' : 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1',
+       '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2',
+       '-b:v', String(KBPS) + 'K'];
   let gop = Math.max(1, Math.round(FPS / 2));
   const extra = [];
   if (variant === 'base') {
@@ -245,6 +260,13 @@ function argsFor(variant, outFile) {
     extra.push('-intra-refresh', '1', '-forced-idr', '1', '-force_key_frames', `expr:gte(t,n_forced*${every})`);
   } else if (variant === 'nosc') {
     extra.push('-no-scenecut', '1');
+  } else if (variant === 'hev') {
+    // HEVC / CBR / GOP 0.5s —— 与 base 对齐
+  } else if (variant === 'hevi') {
+    // HEVC + 渐进刷新 + 每 0.5 秒强制真 IDR —— 与 piri60_0.5 对齐
+    extra.push('-intra-refresh', '1', '-forced-idr', '1', '-force_key_frames', 'expr:gte(t,n_forced*0.5)');
+  } else if (variant === 'q264' || variant === 'qhev') {
+    // 等质量对比（VBR CQ22），码率由内容决定
   } else if (variant.startsWith('pir') && variant.endsWith('n')) {
     // pir60n = PIR + 关掉 scenecut（场景切换不再插大 I 帧）
     gop = Number(variant.slice(3, -1)) || Math.round(FPS / 2);
@@ -261,6 +283,7 @@ function argsFor(variant, outFile) {
     '-filter_complex', `[0:v]hwdownload,format=bgra,scale=${W}:-2:flags=lanczos+accurate_rnd[v]`,
     '-map', '[v]', '-pix_fmt', 'nv12', '-r', String(FPS),
     ...enc, '-g', String(gop), '-bf', '0', ...extra,
+    ...(isHevc ? ['-tag:v', 'hvc1'] : []),
     '-t', String(SECONDS),
     '-f', 'mp4', '-movflags', 'frag_keyframe+empty_moov+default_base_moof+separate_moof',
     '-frag_duration', '5000', '-flush_packets', '1', outFile,
