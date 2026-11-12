@@ -1347,6 +1347,18 @@ function pqPush(frame, ts) {
     }
   }
   PQ.lastArr = now;
+  // 2026-11-12：**硬性自愈**（APK 实测到的死锁）。
+  // 现象：diag 里出现「解=120 画=0」、缓冲估成 32 秒、over/under 同时涨 ——
+  // 解码还在跑、帧也在到，但呈现循环彻底停摆，而且**不会自己恢复**
+  // （nextAt 卡在未来 / rAF 链断掉）。用户侧就是"画面定住 / 卡死"。
+  // 这里加保险：只要超过 300ms 没真正画过，且队列已经攒到 2 帧，就强制重锚重新起播。
+  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 300 && PQ.q.length >= 1) {
+    PQ.playing = false;
+    PQ.nextAt = 0;
+    PQ.emptySince = 0;
+    PQ.stalls = (PQ.stalls || 0) + 1;
+    console.log('[pq] 呈现停摆 ' + Math.round(now - PQ.lastDrawAt) + 'ms，强制重锚');
+  }
   PQ.q.push(frame);
   PQ.arrived++;   // 到达计数（= 解码帧率）。HUD 用它算"流有多少帧"，不拿画到屏幕的帧数冒充
   // 安全上限：积压太多说明播放侧跟不上（例如页面切后台），丢最旧的，别让延迟无上限增长
@@ -1402,6 +1414,7 @@ function pqTick() {
     try { sk.close(); } catch (e) { }
   }
   const f = q.shift();
+  PQ.lastDrawAt = now;
   const _drawT0 = performance.now();
   try {
     const c = w.canvas, x = w.ctx;
@@ -2595,6 +2608,7 @@ async function rtc264Stats() {
           // 屏幕/浏览器上限（raf=60）还是我们渲染跟不上（raf=120 而 drawn=60）。
           raf: _rafHz,
           dispRate: (typeof _dispRate === 'number') ? _dispRate : 0,
+          stalls: ((window.__pq || {}).stalls) || 0,
           drawnHz: Math.round((_wd._hudDrawFps || 0) * 10) / 10,
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
           // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
