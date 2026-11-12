@@ -1369,6 +1369,8 @@ async function offerSessionCodec(desired) {
   } catch { }
   const noOtherViewer = liveSessions === 0 && (!h264.clients || h264.clients.size === 0);
   const needSwitch = !h264.proc || (H264_CODEC !== desired);
+  // 这次 offer 本身就是"马上要有人看"：立刻清空空闲计时，别让 5 秒轮询把刚起的编码器停掉。
+  rtc264IdleSince = 0;
   try { h264Ensure(desired, noOtherViewer); } catch { }
   // 切 codec 要 kill+重启 ffmpeg，耗时长一些；同 codec 只要等第一段 moov。
   const ii = await waitInit(needSwitch ? 5000 : 2500);
@@ -1763,6 +1765,14 @@ function onHealth264() {
     return;
   }
   if (!rtc264IdleSince) rtc264IdleSince = now;
+  // 2026-11-12 HEVC P1（首次手机灰度踩到）：页面刚发 offer、侧车 session 还没 answer（pending>0）时
+  // rtc264Status.sessions 仍是 0。如果此时"空闲计时"已经超过 45 秒，下面的空闲判断会把**刚开始的
+  // 编码器停掉** → 手机端一帧都收不到 → 2.8 秒后回落 H.264。这里把 pending 也当成"马上有人看"。
+  if (rtc264Status.pending > 0) {
+    rtc264IdleSince = 0;
+    h264Ensure();
+    return;
+  }
   // 2026-11-11（B2）：主路没人、但**第二路有成活的观众** → 编码器必须继续跑、而且要保证它在跑。
   // 两路现在是同一只 ffmpeg：停主路 = 第二路一起冻。实测 p1ses=0 / p2ses=1 时会走到下面那条
   // "停编码器"，第二路 framesIn 立刻卡住不动（画面冻结在最后一帧）。
