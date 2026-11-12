@@ -1436,7 +1436,9 @@ async function hqSetMode(mode, fps, kbps) {
 async function hqApplyMode(autoFps, autoKbps, fps, kbps) {
   HQMODE.autoFps = !!autoFps;
   HQMODE.autoKbps = !!autoKbps;
-  if (HQMODE.autoFps) HQMODE.mode = 'auto'; else if (HQMODE.autoKbps) HQMODE.mode = 'mixed'; else HQMODE.mode = 'manual';
+  // mode 只是内部状态：只有"两项都自动"才叫 auto；把 autoFps=true + autoKbps=false
+  // 误标成 auto 会让"固定"逻辑把它当成全自动（实测踩过：勾了固定却被自动取消）。
+  HQMODE.mode = (HQMODE.autoFps && HQMODE.autoKbps) ? 'auto' : ((HQMODE.autoFps || HQMODE.autoKbps) ? 'mixed' : 'manual');
   var j = await hqGet();
   var jc = (j && j.caps) || {}, jcc = jc.caps || {};
   var capF = Number(jcc.maxFps || jc.fps) || 120;
@@ -6201,7 +6203,6 @@ bindImg(img);
         localStorage.setItem('hqPin', HQMODE.pin ? '1' : '0');
         localStorage.setItem('hqAutoFps', HQMODE.autoFps ? '1' : '0');
         localStorage.setItem('hqAutoKbps', HQMODE.autoKbps ? '1' : '0');
-        if (HQMODE.pin && HQMODE.mode === 'auto') { localStorage.setItem('hqPin', '0'); HQMODE.pin = false; pinCb.checked = false; }
       } catch (e) { }
       paintModeRow();
       setMsg(HQMODE.pin ? '已固定当前选择（下次打开沿用）' : '已取消固定（下次打开回到全自动）', '#8CE58C');
@@ -6347,15 +6348,16 @@ bindImg(img);
             if (fpsChanged) RTC264.downgraded = false;
           } catch (e) { }
           updateFlow();
-          // 2026-11-12（透明化）：用户手动改档 = 切到手动模式（本次会话），并把选择记成"我的档位"。
-          // 默认仍是"下次打开回自动"——除非他点过「改回我的手选」（那会同时把 hqPin=1）。
+          // 2026-11-12（透明化）：用户手动改档 = 把"这项"改成手动，并把值记成"我的档位"。
+          // 注意：**不能**无条件关掉 AUTOQ —— 用户可能是在「码率自动」模式下只改了帧率，
+          // 那种情况码率必须继续自动（否则界面写着"码率自动"、实际却不自适应 = 骗人）。
           try {
-            HQMODE.mode = 'manual';
+            HQMODE.mode = (HQMODE.autoFps || HQMODE.autoKbps) ? 'mixed' : 'manual';
             HQMODE.lastFps = Number(j.fps) || HQMODE.lastFps;
             HQMODE.lastKbps = Number(j.kbps) || HQMODE.lastKbps;
             HQMODE.autoFrom = 0; HQMODE.autoTo = 0; HQMODE.autoAt = 0;   // 用户拍板，自动降档记录清零
-            if (typeof AUTOQ === 'object' && AUTOQ) AUTOQ.on = false;
-            try { localStorage.setItem('hqAuto', '0'); } catch (e) { }
+            if (typeof AUTOQ === 'object' && AUTOQ) AUTOQ.on = !!HQMODE.autoKbps;
+            try { localStorage.setItem('hqAuto', HQMODE.autoKbps ? '1' : '0'); } catch (e) { }
             if (typeof paintAuto === 'function') paintAuto();
             if (typeof hqBadgePaint === 'function') hqBadgePaint();
           } catch (e) { }
@@ -8582,7 +8584,7 @@ bindImg(img);
       + '<label>分辨率 <select id="hqW" class="paSel"><option value="1280">1280</option><option value="1600">1600</option><option value="1920">1920</option><option value="2560">2560（原生·需设备支持）</option></select></label>'
       + '<label>帧率 <select id="hqFps" class="paSel"><option value="30">30</option><option value="60">60</option><option value="90">90</option><option value="120">120</option><option value="240">240（需设备支持）</option></select></label>'
       + '<label>码率 <select id="hqKbps" class="paSel"><option value="8000">8 Mbps（≈3.4 GB/时）</option><option value="12000">12 Mbps（≈5.3 GB/时）</option><option value="15000">15 Mbps（≈6.7 GB/时）</option><option value="20000">20 Mbps（≈8.9 GB/时）</option><option value="30000">30 Mbps（≈13.4 GB/时）</option><option value="50000">50 Mbps（≈22.5 GB/时）</option><option value="80000">80 Mbps（≈36 GB/时）</option><option value="100000">100 Mbps（≈45 GB/时）</option></select></label>'
-      + '<button id="hqAuto" title="按网络自动调码率：丢包就降、稳定再升" style="background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer">自动</button>'
+      + '<button id="hqAuto" title="全部自动/全部手动（等价于下面四个按钮）" style="display:none;background:#2a2d36;color:#c9ccd1;border:1px solid #3a3e4a;border-radius:9px;padding:7px 12px;font-size:12.5px;cursor:pointer">自动</button>'
       + '</div>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
       + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。50/80/100 Mbps 属于高负载档：只建议在局域网/Tailscale 直连时用，4G 一定卡。</div>'

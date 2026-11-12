@@ -6763,11 +6763,14 @@ async function handler(req, res) {
       let __same = true;
       for (const kk of Object.keys(__before)) { if (__before[kk] !== __after[kk]) { __same = false; break; } }
       // 2026-11-12（透明化）：记录/清除"自动降档"。
-      // auto:true = 页面自己做的临时调整（不落盘）；不带 auto = 用户显式选择（清空记录）。
+      // auto:true = 页面自己做的临时调整（记录 from→to 供页面解释）；
+      // 用户显式下发（不带 auto）**无论帧率有没有变**都清空记录 —— 否则"手动 120→90"
+      // 这条旧记录会一直挂着，用户点了"全手动 120"仍显示被降过档。
       try {
-        if (!__same && Number(__before.fps) !== Number(H264_FPS)) {
-          if (m.auto === true) H264_AUTO = { at: Date.now(), from: Math.round(Number(__before.fps) || 0), to: Math.round(H264_FPS) || 0 };
-          else H264_AUTO = { at: 0, from: 0, to: 0 };
+        if (m.auto === true) {
+          if (Number(__before.fps) !== Number(H264_FPS)) H264_AUTO = { at: Date.now(), from: Math.round(Number(__before.fps) || 0), to: Math.round(H264_FPS) || 0 };
+        } else {
+          H264_AUTO = { at: 0, from: 0, to: 0 };
         }
       } catch (e) { }
       try { if (!__same) console.log('h264: 画质变更 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps  client=' + String(m.client || '-') + ' stream=' + String(m.stream || 1) + ' auto=' + (m.auto === true)); } catch { }
