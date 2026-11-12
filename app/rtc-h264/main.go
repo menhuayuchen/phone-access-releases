@@ -10,10 +10,13 @@
 //  4. /health 给 Node 侧做会话/帧龄观测，用来按需启停 ffmpeg；
 //  5. HTTP 只监听 127.0.0.1（由 Node 同源代理），不再对外暴露信令端口。
 //
-// 编译（2026-11-10 起必须这样）：go build -trimpath -buildvcs=false -o rtc-h264.exe .
+// 编译（2026-11-10 起必须这样）：go build -trimpath -buildvcs=false -ldflags "-s -w" -o rtc-h264.exe .
 //   `-trimpath` 不能省：不加的话 Go 会把构建机的绝对路径写进 exe（实测泄漏
 //   `C:/Users/<用户名>/.../go/src/...` 与 `D:/download/办共/...` 上千处），
 //   发布包里一搜就出来，属于隐私泄漏。
+//   `-ldflags "-s -w"`（2026-11-12 起）：去掉符号表/DWARF，16.18MB → 11.09MB（安装包小 5MB），
+//   同时消掉未裁剪二进制里一处随机字节被发布审查的"强特征扫描"误报成 `dsh`（word boundary）。
+//   排查 panic 栈不受影响（Go 的 pclntab 还在）。
 package main
 
 import (
