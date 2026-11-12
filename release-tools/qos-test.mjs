@@ -141,7 +141,12 @@ async function main() {
         if (p) phase.diag.push(p);
       }
       const h = await getJson('http://127.0.0.1:9801/health', 5000);
-      if (h) { phase.health.push(h); phase.drops.push(Number(h.dropped) || 0); }
+      if (h) {
+        phase.health.push(h);
+        phase.drops.push(Number(h.dropped) || 0);
+        phase.audioQ = phase.audioQ || [];
+        phase.audioQ.push(Number(h.audioQueued) || 0);
+      }
       const dg = phase.diag[phase.diag.length - 1];
       if (dg) phase.bufs.push(dg.buf);
       if (n % 5 === 0) {
@@ -180,6 +185,15 @@ async function main() {
     console.log('  到达间隔 ms   : p90 ' + f1(avg(cadP90)) + ' / max ' + f1(Math.max(0, ...cadMax)) + '  (理想 ' + f1(1000 / p.fps) + ')');
     console.log('  呈现停摆次数  : ' + Math.max(0, stallsDelta) + '（本档增量）   编码器重启 ' + p.restarts + '   [lag] ' + p.lag);
     console.log('  音频          : 丢 ' + Math.max(0, audioDrop) + ' B / 写超时 ' + Math.max(0, audioTo) + ' 次（本档增量）  采样率 ' + f1(p.audio.rate) + 'Hz');
+    // 2026-11-12：音画同步与延迟（用已有信号推导，不需要额外设备）
+    const aq = (p.audioQ || []).filter(Number.isFinite);
+    const audioMs = aq.map(function (q) { return q * 10; });              // 音频延迟
+    const videoMs = buf.map(function (b) { return b + 8; });               // 视频延迟（缓冲 + 一个解码间隔）
+    const skew = [];
+    for (let i = 0; i < Math.min(audioMs.length, videoMs.length); i++) skew.push(Math.abs(audioMs[i] - videoMs[i]));
+    console.log('  音频延迟 ms   : 中位 ' + f1(pct(audioMs, 50)) + ' / p90 ' + f1(pct(audioMs, 90)) + '  (队列 ' + f1(avg(aq)) + ' 块 x10ms)');
+    console.log('  视频延迟 ms   : 中位 ' + f1(pct(videoMs, 50)) + ' / p90 ' + f1(pct(videoMs, 90)) + '  (缓冲+解码)');
+    console.log('  音画偏差 ms   : 中位 ' + f1(pct(skew, 50)) + ' / p90 ' + f1(pct(skew, 90)) + ' / 最大 ' + f1(Math.max(0, ...skew)));
     console.log('  侧车丢帧累计  : ' + (p.drops.length ? p.drops[p.drops.length - 1] : '-'));
 
     if (ratio < 0.9) fails.push(p.fps + 'fps: 画出/屏幕 ' + (ratio * 100).toFixed(0) + '% < 90%');
@@ -187,6 +201,7 @@ async function main() {
     if (stallsDelta > 0) fails.push(p.fps + 'fps: 呈现停摆 ' + stallsDelta + ' 次');
     if (p.lag > 0) fails.push(p.fps + 'fps: 事件循环卡顿 ' + p.lag + ' 次');
     if (audioDrop > 0) fails.push(p.fps + 'fps: 音频丢 ' + audioDrop + 'B');
+    if (pct(skew, 90) > 150) fails.push(p.fps + 'fps: 音画偏差 p90 ' + f1(pct(skew, 90)) + 'ms > 150ms');
     if (d.length === 0) fails.push(p.fps + 'fps: 没收到手机端诊断（页面没在跑？）');
   }
 

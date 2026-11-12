@@ -31,7 +31,7 @@ function Head([string]$t) { Write-Host ''; Say ('==== ' + $t) 'Cyan' }
 
 # ---- 0. 参数与版本 ------------------------------------------------------
 if (-not $Track) { throw '必须指定 -Track selfuse 或 -Track release' }
-if ($Track -ne 'selfuse' -and $Track -ne 'release') { throw ('未知轨道：' + $Track) }
+if ($Track -ne 'selfuse' -and $Track -ne 'release' -and $Track -ne 'exp') { throw ('未知轨道：' + $Track + '（可用：selfuse / release / exp）') }
 
 $cfgPath = Join-Path $app 'product.config.json'
 if (-not (Test-Path -LiteralPath $cfgPath)) { throw ('找不到 ' + $cfgPath) }
@@ -42,7 +42,7 @@ if ($Version -ne $srcCfg.version) {
 }
 if (-not (Test-Path -LiteralPath $dist)) { $null = New-Item -ItemType Directory -Path $dist }
 
-$outName = 'LightScreen-Setup-v' + $Version + '-' + $Track + '.exe'
+$outName = 'LightScreen-Setup-v' + $Version + '-' + $Track + '.exe'   # exp 轨道产物叫 LightScreen-Setup-vX.Y.Z-exp.exe
 $outFile = Join-Path $dist $outName
 if (Test-Path -LiteralPath $outFile) {
   Remove-Item -LiteralPath $outFile -Force
@@ -52,7 +52,7 @@ if (Test-Path -LiteralPath $outFile) {
 Say ('轨道：' + $Track + '   版本：' + $Version) 'White'
 
 # ---- 1. 按轨道打包 ------------------------------------------------------
-if ($Track -eq 'selfuse') {
+if ($Track -eq 'selfuse' -or $Track -eq 'exp') {
   Head '1/3 自用版：pack.ps1（app\ 原样，不 scrub）'
   $selfDist = Join-Path $root '.selfuse\dist'
   if (Test-Path -LiteralPath $selfDist) { Remove-Item -LiteralPath $selfDist -Recurse -Force }
@@ -74,7 +74,7 @@ else {
 
 # ---- 2. 验收：包里的 profile / 版本 / 真光标都得对 ----------------------
 Head '3/3 验收'
-$wantProfile = if ($Track -eq 'selfuse') { 'selfuse' } else { 'release' }
+$wantProfile = if ($Track -eq 'selfuse' -or $Track -eq 'exp') { 'selfuse' } else { 'release' }
 $cfgOut = Join-Path $pkgDir 'product.config.json'
 if (-not (Test-Path -LiteralPath $cfgOut)) { throw ('包里找不到 product.config.json：' + $cfgOut) }
 $outCfg = (Get-Content -LiteralPath $cfgOut -Raw -Encoding UTF8) | ConvertFrom-Json

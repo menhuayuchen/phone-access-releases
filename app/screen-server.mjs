@@ -1170,7 +1170,24 @@ function spsPpsPrefix() {
   }
   return Buffer.concat(out);
 }
+// 2026-11-12：**触屏反馈延迟**探针（用户要求测"单指拖动画面变化是否正常"）。
+// 原理：从"收到触摸事件"到"编码器产出下一帧"的间隔，就是手指动到画面开始变的核心延迟
+// （不含网络传输）。单指拖动时会连续出事件，取每段连续拖动的第一次事件做样本，
+// 避免同一次拖动里几十个事件反复计入。
+const TOUCH_PROBE = { at: 0, lastEventAt: 0, samples: [], acc: 0 };
 function feed264(key, data) {
+  // 触屏反馈探针结算：有未结算的触摸点 → 记录"触摸到出帧"的间隔
+  try {
+    if (TOUCH_PROBE.at) {
+      const _d = Date.now() - TOUCH_PROBE.at;
+      TOUCH_PROBE.at = 0;
+      if (_d >= 0 && _d < 2000) {
+        TOUCH_PROBE.samples.push(_d);
+        if (TOUCH_PROBE.samples.length > 200) TOUCH_PROBE.samples.shift();
+        TOUCH_PROBE.acc += _d;
+      }
+    }
+  } catch { }
   if (!conn264 || conn264.destroyed || !conn264.writable) return;
   // 2026-11-11：投递节奏观测（查"画面间断感"用）。
   // 这里量的是 Node 把帧交侧车的时刻间隔，跟手机端 cad= 一起看就能定位抖动发生在
@@ -6716,7 +6733,7 @@ async function handler(req, res) {
           // 2026-11-11：全屏状态 / WebCodecs 是否启用 / <video> 自己解出的帧率
           + ' 全屏=' + (m.fs ? 1 : 0) + ' wc=' + (m.wc ? 1 : 0) + ' vid=' + (Math.round((Number(m.vidFps) || 0) * 10) / 10)
           // 2026-11-12：WebCodecs 可用性细分（WebView 里 wc=0 时到底缺哪个）
-          + ' tf=' + n(m.tf) + ' vd=' + n(m.vd) + ' stalls=' + n(m.stalls) + ' 雪崩=' + n(m.avalanches)
+          + ' tf=' + n(m.tf) + ' vd=' + n(m.vd) + ' stalls=' + n(m.stalls) + ' 雪崩=' + n(m.avalanches) + ' 停摆间隔=' + String(m.stallGaps || '') + ' 跟手=' + String(m.touchVis || '')
           + ' fs试=' + n(m.fsTries) + (m.fsErr ? (' fs错=' + String(m.fsErr)) : '')
           + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));
@@ -6833,7 +6850,8 @@ async function handler(req, res) {
       // 2026-11-11：投递节奏（ms）。Node→侧车的帧间隔，用来和手机端 cad= 对照：
       // 这里就成簇（p50 远小于理论间隔、p90 很大）→ 问题在 ffmpeg/Node 产帧；
       // 这里均匀而手机端 cad 成簇 → 问题在侧车发送或浏览器接收侧。
-      feedCad: feedCad,
+      touchMs: (function(){ try { const s = TOUCH_PROBE.samples; if (!s.length) return null; const a = s.slice().sort((x,y)=>x-y); return { n: s.length, p50: a[Math.floor(a.length*0.5)], p90: a[Math.floor(a.length*0.9)], max: a[a.length-1] }; } catch { return null; } })(),
+    feedCad: feedCad,
       // 2026-11-10（1.0.21）：设备审查等级（good/basic/fallback）与它的画质上限
       device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, notes: DEVICE.notes },
       lastError: h264.lastError
@@ -7088,6 +7106,12 @@ async function handler(req, res) {
   }
 
   if (url.pathname === '/input' && req.method === 'POST') {
+    // 触屏反馈探针：只在"一段连续输入"的**第一个事件**打点（间隔 >120ms 视为新一段）
+    try {
+      const _t = Date.now();
+      if (_t - TOUCH_PROBE.lastEventAt > 120) TOUCH_PROBE.at = _t;
+      TOUCH_PROBE.lastEventAt = _t;
+    } catch { }
     let body = '';
     req.on('data', (c) => { body += c; if (body.length > 64 * 1024) req.destroy(); });
     req.on('end', () => {

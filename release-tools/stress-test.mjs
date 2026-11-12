@@ -182,8 +182,13 @@ function stopActions() { for (const a of actions) { if (a.timer) clearInterval(a
 const QC = { fps: 120, width: 1920, kbps: 50000 };
 async function setQuality(patch) {
   Object.assign(QC, patch || {});
-  await postJson(K(BASE + '/h264-stream-pick'), { client: CLIENT, width: QC.width, fps: QC.fps, kbps: QC.kbps });
-  return await postJson(K(BASE + '/h264-quality'), { width: QC.width, fps: QC.fps, kbps: QC.kbps, client: CLIENT, stream: 1 });
+  // 先认领线路，拿到**实际分到的 stream** 再改档位。
+  // 关键：手机占着主路时，我们作为第二台设备会分到 stream=2；若仍按 stream=1 提交，
+  // 服务端当成"共享主路的访客"直接拒绝（shared:true），压测就变成空转。
+  const pick = await postJson(K(BASE + '/h264-stream-pick'), { client: CLIENT, width: QC.width, fps: QC.fps, kbps: QC.kbps });
+  const stream = pick && pick.stream ? pick.stream : 1;
+  const r = await postJson(K(BASE + '/h264-quality'), { width: QC.width, fps: QC.fps, kbps: QC.kbps, client: CLIENT, stream: stream });
+  return { pick, stream, r };
 }
 
 function buildScenario(name) {

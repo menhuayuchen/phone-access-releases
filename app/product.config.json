@@ -141,7 +141,7 @@
     "features": {
         "realCursor": true
     },
-    "version": "1.0.21",
+    "version": "1.0.22",
     "_update说明": "「检查更新」的数据源（2026-11-02 改版：国内默认 Gitee，GitHub 只做备选）。① gitee: { owner, repo } —— 拉 Gitee 发行版列表，在 tag 形如 vX.Y.Z 的产品版本里挑最高版本，把它的 exe 直链当默认下载源（国内实测约 2MB/s）。注意不要依赖 Gitee 的 /releases/latest：那个接口返回『最近创建的发行版』，补传旧版归档后会指向旧版。② github: { owner, repo } —— 备选下载源；Gitee 拿不到版本时才用它取版本号（国内 api.github.com 很慢/常被墙）。③ url: 任意返回 JSON 的地址，格式 { \"version\": \"1.0.1\", \"notes\": \"...\", \"url\": \"下载页\" }。④ mirror：老字段，填一个能直连的 exe 地址；只有它的版本号与本机一致时才用（老客户兼容），新版本一律走 Gitee。⑤ mirrorPage + mirrorPageNote：手动下载页（蓝奏云分享页 + 密码），设置面板里**常驻**显示为『安装备选』，不点检查更新也能看到。都留空 = 不做联网检查。注意：只有客户主动点「检查更新」才会联网，产品平时不主动连接任何服务器。",
     "update": {
         "gitee": {
