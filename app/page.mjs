@@ -1362,7 +1362,13 @@ function pqTick() {
   const now = performance.now();
   // 注意单位：periodUs 是**微秒**（来自到达间隔统计），performance.now() 是**毫秒**。
   // 这里统一换成毫秒再用，否则 nextAt 会被一次加进 8333ms，表现就是"画两帧后彻底不动"。
-  const periodMs = PQ.periodUs / 1000;
+  // 2026-11-12：呈现周期取「内容周期」与「屏幕周期」的**较大者**。
+  // 手机上常见的是屏幕 60Hz + 内容 120fps：原来仍按 8.3ms 排，但 rAF 只给 16.7ms，
+  // 结果队列积压、随机丢帧（PQ.over 一直涨），观感就是细微不均匀。
+  // 按较大者排 = 主动按屏幕能力**均匀抽帧**，队列保持浅、不丢、节奏稳。
+  const _rHz = (typeof _rafHz === 'number' && _rafHz > 20) ? _rafHz : 0;
+  const _dispMs = _rHz ? (1000 / _rHz) : 0;
+  const periodMs = Math.max(PQ.periodUs / 1000, _dispMs);
   if (!PQ.playing) { PQ.nextAt = now + pqDelayMs(PQ.periodUs); PQ.playing = true; PQ.emptySince = 0; }
   if (!q.length) {
     // 队列空：**短暂**空（不到 2 个周期）保持节奏继续等，别重锚 ——
@@ -1380,6 +1386,15 @@ function pqTick() {
   // 落后超过 2 个周期（切后台/卡顿回来）→ 直接对齐，不做"追赶播放"：
   // 追赶会连着吐出几帧，反而更抖。
   if (now - PQ.nextAt > periodMs * 2) PQ.nextAt = now;
+  // 2026-11-12：内容帧率高于屏幕时（如 60Hz 屏播 120fps），**按比例均匀抽帧**：
+  // 一次呈现之间该跳过几帧就算几帧，直接丢掉；否则队列会一路涨到上限再被动丢，
+  // 丢的时刻不均匀，观感就是细微卡顿。
+  const _contentMs = PQ.periodUs / 1000;
+  const _skip = Math.max(0, Math.round(periodMs / Math.max(0.5, _contentMs)) - 1);
+  for (let i = 0; i < _skip && q.length > 1; i++) {
+    const sk = q.shift();
+    try { sk.close(); } catch (e) { }
+  }
   const f = q.shift();
   const _drawT0 = performance.now();
   try {

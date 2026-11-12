@@ -44,10 +44,10 @@ function runCase(fps, opts) {
 
   // —— 载入被测代码 ——
   const factory = new Function(
-    'window', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame',
+    'window', 'performance', 'requestAnimationFrame', 'cancelAnimationFrame', '_rafHz',
     code + '\n; return { PQ: PQ, pqPush: pqPush, pqStop: pqStop };'
   );
-  const api = factory({ __wc264: wc }, perf, requestAnimationFrame, cancelAnimationFrame);
+  const api = factory({ __wc264: wc }, perf, requestAnimationFrame, cancelAnimationFrame, rafHz);
 
   // —— 按成簇模式投放帧（平均间隔 = periodMs，但一半挤在一半、一半拉开） ——
   // 成簇模式取自线上实测：p50 ≈ 0.6×period、p90 ≈ 1.9×period（120fps 下 5.2ms / 15.4ms）。
