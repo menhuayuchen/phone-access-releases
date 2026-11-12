@@ -55,8 +55,13 @@ function runCase(fps, opts) {
   let k = 0;
   const frames = [];
   while (t < seconds * 1000) {
+    // 2026-11-12：加上**真实到达模型的两种坏形态**（线上实测的 p90/max）：
+    //   ① 成簇：一半挤在一起、一半拉开（p50≈0.6×period、p90≈1.9×period）
+    //   ② 长断档：每 3 秒注入一次 340ms 空档（线上 diag 里 max=342ms 就是这个）
+    // 只有在这套模型下都稳，算法才允许上线。
     const sparse = (k % 2) === 1;
-    const d = sparse ? periodMs * (1 + jitter * 0.75) : periodMs * (1 - jitter * 0.75);
+    let d = sparse ? periodMs * (1 + jitter * 0.75) : periodMs * (1 - jitter * 0.75);
+    if ((k % Math.max(8, Math.round(3000 / periodMs))) === 0) d += 340;   // 长断档
     t += Math.max(0.5, d);
     k++;
     const f = { displayWidth: 1920, displayHeight: 1200, close() { } };

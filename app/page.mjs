@@ -1337,6 +1337,18 @@ function pqSchedule() {
   try { PQ.raf = requestAnimationFrame(pqTick); } catch (e) { }
 }
 
+// 2026-11-12：**端到端跟手度探针**（用户反馈"画面不跟手"）。
+// 量的是"手指按下/拖动"到"之后画出的第 2 帧"的时间 —— 这才是用户真实感受到的延迟：
+// 触屏上报 + 服务端应用输入 + 编码 + 传输 + 解码 + 呈现，全部包含在内。
+// 只统计每个动作一次（同一段拖动不重复计）。
+try {
+  window.addEventListener('pointerdown', function () { PQ.touchAt = performance.now(); PQ.touchSkip = 0; }, { passive: true });
+  window.addEventListener('pointermove', function () {
+    // 拖动：每 200ms 取一次样本，避免高频事件把数组刷爆
+    if (!PQ.touchAt || performance.now() - PQ.touchAt > 200) { PQ.touchAt = performance.now(); PQ.touchSkip = 0; }
+  }, { passive: true });
+} catch (e) { }
+
 function pqPush(frame, ts) {
   const w = window.__wc264;
   if (!w || !w.canvas || !w.ctx) { try { frame.close(); } catch (e) { } return; }
@@ -1357,11 +1369,14 @@ function pqPush(frame, ts) {
   // 解码还在跑、帧也在到，但呈现循环彻底停摆，而且**不会自己恢复**
   // （nextAt 卡在未来 / rAF 链断掉）。用户侧就是"画面定住 / 卡死"。
   // 这里加保险：只要超过 300ms 没真正画过，且队列已经攒到 2 帧，就强制重锚重新起播。
-  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 300 && PQ.q.length >= 1) {
+  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 1000 && PQ.q.length >= 1) {
     PQ.playing = false;
     PQ.nextAt = 0;
     PQ.emptySince = 0;
     PQ.stalls = (PQ.stalls || 0) + 1;
+      PQ.stallGaps = PQ.stallGaps || [];
+      PQ.stallGaps.push(Math.round(now - PQ.lastDrawAt));
+      if (PQ.stallGaps.length > 12) PQ.stallGaps.shift();
     console.log('[pq] 呈现停摆 ' + Math.round(now - PQ.lastDrawAt) + 'ms，强制重锚');
   }
   // 2026-11-12（画质压测后加）：**缓冲雪崩看门狗**。
@@ -1370,7 +1385,7 @@ function pqPush(frame, ts) {
   // 升级为：① 停摆超 1 秒 → 丢掉所有旧帧只留最新（把延迟强制拉回当前）；
   //        ② 一分钟内连续 3 次 → 判定接收端不可用，整条重建（rtc264Retry）；
   //        ③ 计数进 diag（avalanches=），以后能直接看还发不发生。
-  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 1000) {
+  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 2500) {
     PQ.avalanches = (PQ.avalanches || 0) + 1;
     if (!PQ.firstAvalancheAt || now - PQ.firstAvalancheAt > 60000) PQ.firstAvalancheAt = now;
     while (PQ.q.length > 1) {
@@ -1462,6 +1477,21 @@ function pqTick() {
   // 每次 rAF 取队尾，把中间的全关掉。这样每个 vsync 都有新内容，簇不再造成丢帧。
   const f = q.shift();   // 2026-11-12 回滚：试过"每个 vsync 取最新帧"，离线测试把 120Hz/120fps 从 120/s 打掉一半，退回原逻辑，改法待重做。
   PQ.lastDrawAt = now;
+  // 跟手度结算：触摸后画出的第 2 帧作为样本（第 1 帧多半还是触摸前的旧内容）
+  try {
+    if (PQ.touchAt) {
+      PQ.touchSkip = (PQ.touchSkip || 0) + 1;
+      if (PQ.touchSkip >= 2) {
+        const _vis = now - PQ.touchAt;
+        if (_vis >= 0 && _vis < 3000) {
+          PQ.touchVis = PQ.touchVis || [];
+          PQ.touchVis.push(Math.round(_vis));
+          if (PQ.touchVis.length > 40) PQ.touchVis.shift();
+        }
+        PQ.touchAt = 0; PQ.touchSkip = 0;
+      }
+    }
+  } catch (e) { }
   const _drawT0 = performance.now();
   try {
     const c = w.canvas, x = w.ctx;
@@ -1788,7 +1818,16 @@ function wc264WatchLoss() {
 // 注意：这段必须在**最外层作用域**（rtc264Stats 里要用 autoqTag；放进设置面板的闭包里会
 // 变成 ReferenceError 被 catch 吞掉，表现就是状态栏一直停在「WebRTC264 连接中」）。
 const AUTOQ = { on: false, kbps: 12000, lastApply: 0, badStreak: 0, goodStreak: 0, lastLost: 0, lastRecv: 0 };
-try { AUTOQ.on = localStorage.getItem('hqAuto') === '1'; AUTOQ.kbps = Number(localStorage.getItem('hqAutoKbps')) || 12000; } catch (e) { }
+// 2026-11-12：**默认开启**丢包自适应码率（用户没手动关过就开）。
+// 实测证据：lost=624 / rtp=11904 ≈ 5.2% 丢包、pli=143（关键帧请求 143 次）→ 画面一顿一顿。
+// 这套机制本来就是治它的，但默认关闭等于白写。
+// 注意：不再在启动时套用 AUTOQ.kbps（原来会一加载就把用户设的 50M 压成 12M），
+// 只有真的连续两次丢包超 3% 才降档。
+try {
+  const _hqAuto = localStorage.getItem('hqAuto');
+  AUTOQ.on = (_hqAuto === null) ? true : (_hqAuto === '1');
+  AUTOQ.kbps = Number(localStorage.getItem('hqAutoKbps')) || 12000;
+} catch (e) { }
 function autoqTag() { return AUTOQ.on ? (' · 自动' + Math.round(AUTOQ.kbps / 1000) + 'M') : ''; }
 async function autoqApply(kbps) {
   AUTOQ.kbps = Math.max(6000, Math.min(20000, Math.round(Number(kbps) || 12000)));
@@ -1821,7 +1860,7 @@ function autoqTick() {
   }).catch(function () { });
 }
 setInterval(function () { try { autoqTick(); } catch (e) { } }, 4000);
-try { if (AUTOQ.on) setTimeout(function () { autoqApply(AUTOQ.kbps); }, 1500); } catch (e) { }
+// 2026-11-12：删掉启动即降码率（只在真检测到丢包时才降，避免一加载就把画质压到 12M）
 
 // ---- 单窗口采集（实验）--------------------------------------------------------
 // 选中窗口时把句柄交给服务端，用 PrintWindow 只抓这个窗口（被挡住也能抓到），
@@ -2669,6 +2708,8 @@ async function rtc264Stats() {
           dispRate: (typeof _dispRate === 'number') ? _dispRate : 0,
           stalls: ((window.__pq || {}).stalls) || 0,
           avalanches: ((window.__pq || {}).avalanches) || 0,
+          stallGaps: (((window.__pq || {}).stallGaps) || []).join('|'),
+          touchVis: (((window.__pq || {}).touchVis) || []).join('|'),
           drawnHz: Math.round((_wd._hudDrawFps || 0) * 10) / 10,
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
           // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
@@ -9332,7 +9373,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-12.6';
+export const PAGE_VER = '2026-11-13.2';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
