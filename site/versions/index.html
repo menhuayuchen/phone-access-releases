@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>更新记录 · 轻屏 · 轻器</title>
-<meta name="description" content="轻屏的版本更新记录：每个版本改了什么、修了什么。当前 v1.0.21（2026-11-10）。">
+<meta name="description" content="轻屏的版本更新记录：每个版本改了什么、修了什么。当前 v1.0.22（2026-11-12）。">
 <meta name="theme-color" content="#F6F4EF">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="更新记录 · 轻屏">
-<meta property="og:description" content="每个版本改了什么、修了什么。当前 v1.0.21。">
+<meta property="og:description" content="每个版本改了什么、修了什么。当前 v1.0.22。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="轻器">
 <meta property="og:url" content="https://menhuayuchen.github.io/phone-access-releases/versions/">
@@ -32,7 +32,7 @@
       <a href="../about/">关于 / 授权</a>
       <a href="../">返回首页</a>
     </nav>
-    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.21</span>
+    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.22</span>
   </div>
   <div class="nav__prog" data-progress></div>
 </header>
@@ -47,18 +47,18 @@
 
     <div class="vhead" style="margin-top:clamp(22px,3vw,32px)">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <b style="font-size:1.05rem;letter-spacing:.03em">轻屏 v1.0.21</b>
+        <b style="font-size:1.05rem;letter-spacing:.03em">轻屏 v1.0.22</b>
         <span class="badge">当前版本</span>
         <span class="mono dim">2026-11-10</span>
       </div>
       <div class="vhead__grid">
-        <div class="vhead__c"><b>v1.0.21</b><span>版本</span></div>
-        <div class="vhead__c"><b>92.3 MB</b><span>安装包大小</span></div>
+        <div class="vhead__c"><b>v1.0.22</b><span>版本</span></div>
+        <div class="vhead__c"><b>92.4 MB</b><span>安装包大小</span></div>
         <div class="vhead__c"><b>9FE56E19…</b><span>SHA256 前 8 位</span></div>
         <div class="vhead__c"><b>免费</b><span>无专业版 / 无账号</span></div>
       </div>
       <div class="vhead__actions">
-        <a class="btn btn--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.21/LightScreen-Setup-v1.0.21-release.exe">下载最新版</a>
+        <a class="btn btn--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.22/LightScreen-Setup-v1.0.22-release.exe">下载最新版</a>
         <a class="btn btn--paper" href="../light-screen/#download">校验与安装说明</a>
       </div>
     </div>
@@ -70,12 +70,36 @@
     <div class="timeline">
       <article class="ver ver--now">
         <div class="ver__rail">
-          <span class="ver__date">2026-11-10</span>
+          <span class="ver__date">2026-11-12</span>
           <span class="ver__tag">当前</span>
         </div>
         <div class="ver__body">
           <span class="ver__dot" aria-hidden="true"></span>
-          <h2 class="ver__h">v1.0.21 <span class="badge">最新</span></h2>
+          <h2 class="ver__h">v1.0.22 <span class="badge">最新</span></h2>
+          <p class="ver__sub">画面更连贯、更稳；画质设置改成"按项自动"，并且把实际生效值写在画面上。</p>
+          <ul class="ver__list">
+            <li>关键帧突发治理：关键帧体积 <b>310KB → 114KB</b>，浏览器补帧请求 29 → 2 次，弱网抖动不再一顿一顿。</li>
+            <li>修好"<b>解码 120 帧只画 95 帧</b>"：手机画出 95 → 118~120，本机 77 → 120，30/60/240 档都能画满。</li>
+            <li>手机<b>变暗/切后台</b>不再被误判成"停摆"而重建接收端、永久降档（隐藏 3 分钟实测 0 重建）。</li>
+            <li>画质设置透明化：<b>全自动 / 帧率自动 / 码率自动 / 全手动</b>可选；自动调整永不覆盖你的选择，顶部直接显示实际 fps/码率与被临时降档的原因。</li>
+            <li>稳定性：5 场景压测事件循环卡顿 0、音频丢字节 0；编码器崩溃 1.1~3.8 秒自动恢复。</li>
+            <li>新增<b>息屏 v3</b>（真关背光、本机真人键鼠唤醒）、未登录待机页、Tailscale 三件只读诊断、页面热更新。</li>
+          </ul>
+          <div class="ver__links">
+            <a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.22" target="_blank" rel="noreferrer">GITEE 发布页</a>
+            <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.22" target="_blank" rel="noreferrer">GITHUB</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="ver">
+        <div class="ver__rail">
+          <span class="ver__date">2026-11-10</span>
+          <span class="ver__tag">归档</span>
+        </div>
+        <div class="ver__body">
+          <span class="ver__dot" aria-hidden="true"></span>
+          <h2 class="ver__h">v1.0.21</h2>
           <p class="ver__sub">花屏、黑屏等待、音画不同步一起修掉了；弱电脑自动降档，两台设备也不再互相打断。</p>
           <ul class="ver__list">
             <li>修好<b>画面大幅变化时的花屏</b>：丢包后立刻等关键帧、重传缓存加大 4 倍、切分辨率时重建解码器。</li>
@@ -218,14 +242,14 @@
         <svg class="brand__m" viewBox="0 0 20 20" aria-hidden="true"><rect x=".5" y=".5" width="8" height="8" fill="currentColor"/><rect x="11.5" y=".5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x=".5" y="11.5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x="11.5" y="11.5" width="8" height="8" fill="#0BD8B6"/></svg>
         轻器
       </a>
-      <p class="mono" style="margin:0">更新记录 · 当前 v1.0.21</p>
+      <p class="mono" style="margin:0">更新记录 · 当前 v1.0.22</p>
     </div>
     <div class="foot__grid">
       <div>
         <h2 class="foot__h">当前版本</h2>
         <ul>
-          <li class="mono">轻屏 v1.0.21</li>
-          <li class="mono">96,782,132 B</li>
+          <li class="mono">轻屏 v1.0.22</li>
+          <li class="mono">96,851,639 B</li>
           <li class="mono">2026-11-10</li>
         </ul>
       </div>
@@ -255,7 +279,7 @@
       </div>
     </div>
     <div class="foot__bot">
-      <span>© 2026 轻器 · 轻屏 v1.0.21</span>
+      <span>© 2026 轻器 · 轻屏 v1.0.22</span>
       <span>旧版归档在发布页</span>
     </div>
   </div>
