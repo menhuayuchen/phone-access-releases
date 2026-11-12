@@ -186,13 +186,19 @@ let H264_QF = cfgH264.qualityFirst === true;
 //   现状 -g 60 → 每 0.5 秒一个 IDR，单帧 330~490KB（p99 371KB，>300KB 的帧 9 个/5 秒），
 //   而普通帧中位数只有 10KB —— **关键帧是 30~40 倍的单帧突发**，等于每半秒往链路上
 //   倒 3000 个 RTP 包，无线/Tailscale 段一乱就丢包、NACK 重传，表现就是"规律性顿一下"。
-//   换 -intra-refresh 后（IDR 间隔保持不变，仍是 0.5 秒）：
+//   换 -intra-refresh 后（IDR 间隔保持不变）：
 //   关键帧 max 187KB、p99 118KB、>300KB 的帧 1 个/5 秒，平均码率与帧率完全不变。
+//   真机：关键帧 310KB→114KB，浏览器 PLI（要关键帧）29 次→2 次。
 //
-// 取值：刷新周期（帧数）。0 = 关闭（走原来的周期性 IDR，行为完全不变）；
-// 60 = 120fps 下 0.5 秒刷完一轮。**关键帧间隔跟着它走**，保证新连入/丢包恢复的
-// 等待时间和以前一样，不会因为渐进刷新把恢复变慢。
-let H264_IR = Math.max(0, Math.min(600, Math.round(Number(cfgH264.intraRefresh) || 0)));
+// 单位是**毫秒**（默认 500 = 每 0.5 秒刷完一轮、同时每 0.5 秒强制一个真 IDR）。
+// 为什么用时间而不是帧数：帧数语义会随帧率变化 —— 60 帧在 120fps 是 0.5 秒、在 30fps 是 2 秒，
+// 低帧率档的新连入/丢包恢复会被拖慢 4 倍。用毫秒，任何帧率下关键帧间隔都稳定 0.5 秒。
+// 0 = 关闭（走原来的周期性 IDR，行为完全不变）。
+let H264_IR_MS = Math.max(0, Math.min(5000, Math.round(Number(cfgH264.intraRefreshMs) || 0)));
+// 兼容旧键名 intraRefresh（单位是**帧**）：按启动时的帧率换算成毫秒，避免老配置失效。
+if (!H264_IR_MS && Number(cfgH264.intraRefresh) > 0) {
+  H264_IR_MS = Math.max(100, Math.min(5000, Math.round(Number(cfgH264.intraRefresh) / Math.max(10, H264_FPS) * 1000)));
+}
 // 2026-11-06 已移除 GPU 侧缩放实验（ddagrab video_size 是裁剪、scale_d3d11 在本机创建 NV12 纹理失败）。
 // 单窗口采集（实验）：>0 时用 win-capture.exe 抓这个窗口，0 = 普通全屏 ddagrab
 let H264_WIN = 0;
@@ -216,7 +222,7 @@ function saveH264QualityState() {
   try {
     // 存 H264_REQ（用户显式选择），不是被设备审查压过的生效值
     const q = H264_REQ || { width: H264_W, fps: H264_FPS, kbps: H264_KBPS };
-    writeFileSync(H264Q_STATE, JSON.stringify({ width: q.width, fps: q.fps, kbps: q.kbps, ir: H264_IR, at: Date.now() }), 'utf8');
+    writeFileSync(H264Q_STATE, JSON.stringify({ width: q.width, fps: q.fps, kbps: q.kbps, irMs: H264_IR_MS, at: Date.now() }), 'utf8');
   } catch { }
 }
 function loadH264QualityState() {
@@ -231,13 +237,17 @@ function loadH264QualityState() {
       H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
       used = true;
     }
-    // intra-refresh 也随画质落盘：改过之后重启服务不该悄悄退回周期性 IDR
-    if (s && s.ir !== undefined && Number.isFinite(Number(s.ir))) {
-      H264_IR = Math.max(0, Math.min(600, Math.round(Number(s.ir))));
+    // intra-refresh 也随画质落盘：改过之后重启服务不该悄悄退回周期性 IDR。
+    // 单位毫秒（irMs）；老状态文件里的 ir 是"帧"，按当前帧率换算，避免升级后语义错位。
+    if (s && s.irMs !== undefined && Number.isFinite(Number(s.irMs))) {
+      H264_IR_MS = Math.max(0, Math.min(5000, Math.round(Number(s.irMs))));
+      used = true;
+    } else if (s && s.ir !== undefined && Number.isFinite(Number(s.ir))) {
+      H264_IR_MS = Math.max(0, Math.min(5000, Math.round(Number(s.ir) / Math.max(10, H264_FPS) * 1000)));
       used = true;
     }
     if (used) { try { console.log('h264: 恢复上次画质 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
-      + (H264_IR > 0 ? ('（渐进刷新 ' + H264_IR + ' 帧）') : '') + '（来自 h264-quality.state.json）'); } catch { } }
+      + (H264_IR_MS > 0 ? ('（渐进刷新 ' + H264_IR_MS + 'ms/轮）') : '') + '（来自 h264-quality.state.json）'); } catch { } }
   } catch { }
 }
 // 启动时立刻恢复（deviceAudit 1.2 秒后还会按设备能力再封一次顶，只降不升）
@@ -833,21 +843,22 @@ function h264Filter() {
 }
 
 // 2026-11-12（intra-refresh）：GOP 与关键帧间隔。
-// 关闭时（H264_IR<=0）返回原样：GOP = fps/2（0.5 秒），由编码器周期性插 IDR。
-// 打开时：GOP = 刷新周期（帧），并**按时间强制关键帧**，间隔就等于刷新周期 ——
-//   这样"新设备连入 / 丢包恢复"等待关键帧的时间和现在完全一样（0.5 秒），
-//   不会因为渐进刷新把恢复变慢；同时关键帧体积实测从 330~490KB 降到 ~110KB。
+// 关闭时（H264_IR_MS<=0）返回原样：GOP = fps/2（0.5 秒），由编码器周期性插 IDR。
+// 打开时：GOP = 一个刷新周期折合的帧数（按**时间**算，任何帧率下都是 0.5 秒），
+//   同时按同样的时间间隔强制真关键帧 —— 这样"新设备连入 / 丢包恢复"等待关键帧的时间
+//   在任何帧率下都是 0.5 秒（用帧数会走样：60 帧在 30fps 是 2 秒）；关键帧体积实测
+//   从 330~490KB 降到 ~110KB。
 //   注意 -forced-idr 1 必须给：ffmpeg 默认把强制关键帧当成 FORCEINTRA，
 //   在 -intra-refresh 模式下不会产生真正的 IDR（实测 5 秒里一个 IDR 都没有）。
 function h264GopArgs(fps) {
   const f = Math.max(1, Math.round(Number(fps) || H264_FPS));
-  if (!(H264_IR > 0) || H264_ENCODER !== 'nvenc') {
+  if (!(H264_IR_MS > 0) || H264_ENCODER !== 'nvenc') {
     return { gop: String(Math.max(1, Math.round(f / 2))), extra: [] };
   }
-  const gop = String(Math.max(1, Math.min(600, Math.round(H264_IR))));
-  const sec = (Number(gop) / f).toFixed(3);
+  const gopN = Math.max(1, Math.min(600, Math.round(f * H264_IR_MS / 1000)));
+  const sec = (gopN / f).toFixed(3);
   return {
-    gop,
+    gop: String(gopN),
     extra: ['-intra-refresh', '1', '-forced-idr', '1', '-force_key_frames', 'expr:gte(t,n_forced*' + sec + ')'],
   };
 }
@@ -1012,7 +1023,7 @@ function h264Start() {
     args.push(...h264EncArgs());
   }
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
-    + (H264_IR > 0 ? (' 渐进刷新(' + H264_IR + '帧/轮)') : '')
+    + (H264_IR_MS > 0 ? (' 渐进刷新(' + H264_IR_MS + 'ms/轮)') : '')
     + (dual ? (' + 第二路 ' + (S2.profile ? S2.profile.w : '?') + 'x@' + (S2.profile ? S2.profile.fps : '?') + ' 一次采集两路编码') : ''));
   h264ResetCounters();
   let proc = null;
@@ -6617,7 +6628,7 @@ async function handler(req, res) {
   }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
-    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR, mon: H264_MON, maxCapture: CAP_W });
+    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, irMs: H264_IR_MS, ir: H264_IR_MS, mon: H264_MON, maxCapture: CAP_W });
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
@@ -6627,7 +6638,7 @@ async function handler(req, res) {
       // 原来是无条件 kill+spawn：两台设备各调一次画质就互相打断一次，
       // 谁先谁后都在重启，画面反复黑 1~2 秒，弱网下很容易把接收端拖进重试/回落。
       const __before = {
-        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR,
+        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR_MS,
         mon: H264_MON, rect: JSON.stringify(H264_RECT || null), native: H264_NATIVE
       };
       let m = {};
@@ -6665,10 +6676,13 @@ async function handler(req, res) {
         else H264_RECT = rr;
       } else if (m.rect === null) H264_RECT = null;
       if (typeof m.qf === 'boolean' && m.qf !== H264_QF) { H264_QF = m.qf; saveH264QualityFirst(H264_QF); }
-      // 2026-11-12（intra-refresh）：渐进式刷新周期（帧）。0 = 关闭。
+      // 2026-11-12（intra-refresh）：渐进式刷新周期（**毫秒**）。0 = 关闭。
       // 故意做成"跟画质一起下发"的字段：页面/命令行调一次就生效并落盘，重启后不掉。
-      if (m.ir !== undefined && Number.isFinite(Number(m.ir))) {
-        H264_IR = Math.max(0, Math.min(600, Math.round(Number(m.ir))));
+      // 兼容旧调用 ir（单位帧）：按当前帧率换算成毫秒。
+      if (m.irMs !== undefined && Number.isFinite(Number(m.irMs))) {
+        H264_IR_MS = Math.max(0, Math.min(5000, Math.round(Number(m.irMs))));
+      } else if (m.ir !== undefined && Number.isFinite(Number(m.ir))) {
+        H264_IR_MS = Math.max(0, Math.min(5000, Math.round(Number(m.ir) / Math.max(10, Number.isFinite(f) ? f : H264_FPS) * 1000)));
       }
       // 2026-11-09：这里也走实验模式的上下限（否则页面调 240fps/100Mbps 会被静默压回 60/40000）。
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(fpsCap, Math.round(f)));
@@ -6732,7 +6746,7 @@ async function handler(req, res) {
       // 2026-11-10：但**只有参数真的变了才重启** —— 幂等。两台设备各自下发画质时，
       // 后一台如果只是"重复告诉服务端它已经是这个档位"，就不该再打断前一台的画面。
       const __after = {
-        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR,
+        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR_MS,
         mon: H264_MON, rect: JSON.stringify(H264_RECT || null), native: H264_NATIVE
       };
       let __same = true;
@@ -6762,7 +6776,7 @@ async function handler(req, res) {
         }
       } catch { }
       try { if (m.auto !== true) saveH264QualityState(); } catch { }
-      qreply({ ok: true, changed: !__same, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR, mon: H264_MON,
+      qreply({ ok: true, changed: !__same, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, irMs: H264_IR_MS, ir: H264_IR_MS, mon: H264_MON,
         device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
     });
     return;
@@ -6925,7 +6939,7 @@ async function handler(req, res) {
       mon: H264_MON,
       qf: H264_QF,
       // 2026-11-12（intra-refresh）：渐进刷新周期（帧），0 = 关闭（周期性 IDR）
-      ir: H264_IR,
+      irMs: H264_IR_MS, ir: H264_IR_MS,
       // 2026-11-12：关键帧体积统计（5 秒窗口）。kf.maxKB=单帧峰值, keyMaxKB/keyAvgKB=关键帧体积,
       // over300=超过 300KB 的帧数（>300KB 基本必丢包，是"顿一下"的直接来源）
       kf: kfStat,
