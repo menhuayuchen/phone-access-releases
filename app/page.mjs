@@ -2284,17 +2284,24 @@ async function startRtc264() {
   // 2026-11-11（C 方案）：建会话前先问服务端"我该走哪一路"。
   // 只在没有/超过 20 秒没问过时才问（重连循环里不必每次都问）。
   try {
-    if (!R.streamAt || Date.now() - R.streamAt > 20000) {
+    const wantCodecNow = (h264.codec === 'hevc') ? 'hevc' : 'h264';
+    if (!R.streamAt || Date.now() - R.streamAt > 20000 || R.pickedCodec !== wantCodecNow) {
       const wantF = Number((function () { try { return localStorage.getItem('hqFps'); } catch (e) { return 0; } })() || R.inFps || 0);
       const wantK = Number((function () { try { return localStorage.getItem('hqKbps'); } catch (e) { return 0; } })() || 0);
       const pk = await (await fetch('/h264-stream-pick', {
         method: 'POST', headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ fps: wantF || 0, kbps: wantK || 0, client: paClientId() })
+        body: JSON.stringify({
+          fps: wantF || 0, kbps: wantK || 0, client: paClientId(),
+          // 2026-11-12：告诉服务端这台设备能用什么 codec。H.264-only 设备会被分到第二路，
+          // 主路继续 HEVC，避免为了它把正在看 HEVC 的其他人切回 H.264。
+          codec: wantCodecNow
+        })
       })).json();
       if (pk && pk.ok) {
         R.stream = (Number(pk.stream) === 2) ? 2 : 1;
         R.ownsPrimary = pk.owner === true;      // 只有主路主人能改主路档位
         R.streamAt = Date.now();
+        R.pickedCodec = wantCodecNow;
       }
     }
   } catch (e) { }
@@ -3345,6 +3352,9 @@ function hevcToH264(why) {
     }).catch(function () { });
   } catch (e) { }
   h264.codec = 'h264';
+  // 2026-11-12：codec 变了必须重新问一次走哪一路 —— 否则 20 秒内的 stream-pick 结果会被复用，
+  // 这台设备还按 stream=1 发 h264 offer，主路被别人 HEVC 占着时又拿到 HEVC 会话，回落打转。
+  try { R.streamAt = 0; R.pickedCodec = ''; } catch (e) { }
   try { clearTimeout(R.hevcTimer); } catch (e) { }
   // 回落期间保留最后一帧（不黑屏），5 秒后无论如何恢复常规清理逻辑
   try { R.keepFrameUntil = Date.now() + 5000; } catch (e) { }
@@ -6392,7 +6402,9 @@ bindImg(img);
               width: Number(wSel.value) || j.width,
               fps: wantF >= 30 ? wantF : Number(j.fps),
               kbps: wantK >= 2000 ? wantK : Number(j.kbps),
-              client: paClientId()
+              client: paClientId(),
+              // 2026-11-12：同 startRtc264，codec 能力随 stream-pick 一起报给服务端
+              codec: (h264.codec === 'hevc') ? 'hevc' : 'h264'
             };
             const pk = await (await fetch('/h264-stream-pick', {
               method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(pickBody)
@@ -6400,6 +6412,7 @@ bindImg(img);
             if (pk && pk.ok) {
               RTC264.stream = (Number(pk.stream) === 2) ? 2 : 1;
               RTC264.ownsPrimary = pk.owner === true;
+              RTC264.pickedCodec = pickBody.codec;
               try { window.__paStream = RTC264.stream; } catch (e) { }
               if (RTC264.stream === 2) {
                 setMsg('这台设备用独立画质（' + pickBody.fps + 'fps / ' + Math.round(pickBody.kbps / 1000) + 'Mbps），不影响别人', '#8CE58C');

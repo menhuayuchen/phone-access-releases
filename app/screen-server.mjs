@@ -1124,6 +1124,12 @@ function h264Start() {
   // 2026-11-12 HEVC P1：每一次真正起编码器都按"当前请求的 codec"落地。
   if (H264_WANT_CODEC === 'hevc' && !HEVC_AVAIL) H264_WANT_CODEC = 'h264';
   H264_CODEC = H264_WANT_CODEC;
+  // 2026-11-12：主路都退回 H.264 了，就不需要"codec 回落第二路"（省一份 GPU 编码）；
+  // 真正有第二路观众时 h264Ensure 不会走到这里（会把 S2 会话算作其他人）。
+  if (H264_CODEC !== 'hevc' && S2.codecFallback) {
+    S2.codecFallback = false;
+    S2.profile = null;
+  }
   // 2026-11-08：桌面复制不可用（虚拟机等）时不要再起 ffmpeg，否则会无限秒退重试
   if (h264TemporarilyUnavailable()) { h264.lastError = H264_REASON; return; }
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
@@ -1338,6 +1344,18 @@ function h264Ensure(wantCodec, force) {
     console.log('h264: 请求 codec=' + H264_WANT_CODEC + '，重启编码器切换（当前 ' + H264_CODEC + (force ? '，force' : '') + '）');
     h264.startQueued = true;
     h264Stop();
+    // 2026-11-12：codec 切换本身来自一个正在建立的 offer（此刻侧车还没有会话，
+    // h264Stop 的 exit 回调会按"有没有观众"决定不启动，于是 offer 等到 503）。
+    // 这里在旧 ffmpeg 退干净后主动兑现这次切换；若 offer 最终没成，编码器空闲 45 秒会被看门狗收掉。
+    let _switchTries = 0;
+    const _kickSwitch = () => {
+      if (h264.proc || h264.killPending) {
+        if (++_switchTries < 25) setTimeout(_kickSwitch, 250);
+        return;
+      }
+      if (h264.startQueued) { h264.startQueued = false; h264Start(); }
+    };
+    setTimeout(_kickSwitch, 250);
     return;
   }
   if (h264.killPending) { h264.startQueued = true; return; }
@@ -1818,6 +1836,8 @@ const S2 = {
   audio: null, audioRetry: 0,
   proc: null, pending: Buffer.alloc(0), initInfo: null, startedAt: 0, killPending: false,
   profile: null,                 // { w, h, fps, kbps }
+  // 2026-11-12：第二路是"codec 回落专用"时置 true —— 主路 HEVC 不动，H.264-only 设备走这路。
+  codecFallback: false,
   status: { ok: false, sessions: 0, framesIn: 0, at: 0 },
   idleSince: 0, lastError: '', frames: 0
 };
@@ -1844,9 +1864,11 @@ let dualSwitchTimer = null;
 
 // 现在该不该跑两路？
 function h264WantDual() {
-  if (!PER_SESSION_Q) return false;                 // 总开关关着（默认）
+  // 2026-11-12：codec 回落例外 —— 主路 HEVC、有 H.264-only 设备要第二路时，
+  // 即使 perSessionQuality 没开也要跑"一次采集两路编码"（主 HEVC + 第二路 H.264）。
+  if (!PER_SESSION_Q && !S2.codecFallback) return false;
   if (!H264_ENABLED) return false;
-  if (!S2.profile) return false;                    // 没有第二台设备要独立档位
+  if (!S2.profile) return false;                    // 没有第二台设备要独立档位/独立 codec
   if (h264TemporarilyUnavailable()) return false;
   if (H264_WIN > 0) return false;                   // 单窗口采集不支持两路，退回共享主路
   if (Date.now() < dualFailUntil) return false;     // 刚失败过，熔断中
@@ -1897,6 +1919,7 @@ function s2DropFmp4Pipe() {
 function s2DegradeToShared(why) {
   console.log('rtc264: [第二路] 降级为共享主路（' + why + '）');
   S2.profile = null;
+  S2.codecFallback = false;
   S2.ownerClient = '';
   S2.ownerAt = 0;
   S2.initInfo = null;
@@ -2344,6 +2367,7 @@ function s2ApplyProfile(w, fps, kbps) {
 function s2StopAll(why) {
   console.log('rtc264: [第二路] 关闭（' + why + '）');
   S2.profile = null;
+  S2.codecFallback = false;
   s2StopEncoder();
   if (S2.feed) { try { S2.feed.destroy(); } catch { } S2.feed = null; }
   if (S2.audio) { try { S2.audio.destroy(); } catch { } S2.audio = null; }
@@ -2444,8 +2468,28 @@ function s2BudgetFps(w, fps) {
 // 2026-11-11（第二轮修正）：按**设备认领**分配，而不是"有没有人在看"。
 // 上一版实测出两个坑：①两台设备都被分到第二路（于是共用一份画质、还只能选到 1920/90）
 // ②第二路自己的低上限把 2560/120/240 "吃掉"，表现就是"画质设置被搞坏了"。
-function s2PickStream(clientId, w, fps, kbps) {
+function s2PickStream(clientId, w, fps, kbps, opts) {
   const cid = String(clientId || '').slice(0, 40);
+  // 2026-11-12：这台设备能接受的 codec（页面把能力门禁结果传上来）+ 主路当前有没有 HEVC 观众。
+  // 这是"全局默认 HEVC、H.264 只作设备不支持时回落"能同时服务两类设备的关键：
+  // H.264-only 设备走第二路（S2 本来就是 H.264），主路 HEVC 不动。
+  const wantCodec = (opts && opts.codec === 'h264') ? 'h264' : 'hevc';
+  const mainHevcLive = !!(opts && opts.mainHevcLive);
+  if (wantCodec === 'h264' && H264_CODEC === 'hevc' && (mainHevcLive || S2.status.sessions > 0)) {
+    if (!S2.profile) {
+      // 用主路同档做第二路：不为回落设备单独调档，避免两路参数不同反复重建主编码器
+      S2.profile = { w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS };
+      S2.codecFallback = true;
+      s2StartSidecar();
+    } else {
+      S2.codecFallback = true;
+    }
+    if (!S2.ownerClient || Date.now() - (S2.ownerAt || 0) > 90 * 1000) { S2.ownerClient = cid; }
+    S2.ownerAt = Date.now();
+    console.log('rtc264: [第二路] codec 回落：主路 HEVC，本设备走 H.264 第二路（client=' + (cid || '-') + '）');
+    try { s2StartEncoder(); } catch { }
+    return { stream: 2, reason: 'codec-fallback', owner: false, profile: S2.profile };
+  }
   // 总开关关闭：所有设备共享主路。第一台成为主人（可改档位），其余只读。
   if (!PER_SESSION_Q) {
     if (!cid || !primaryOwnerAlive() || PRIMARY_OWNER.client === cid) {
@@ -6889,19 +6933,35 @@ async function handler(req, res) {
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
       try {
+        // 2026-11-12：先问主路有没有 HEVC 观众（/health 的 hevcSessions 是实时的）。
+        // 有 → H.264-only 设备分到第二路（主路 HEVC 不动）；没有 → 走主路，让主编码器直接切 H.264。
+        let mainHevcLive = false;
+        try {
+          const hMain = await http264('/health', 'GET', null, 700);
+          mainHevcLive = Number(hMain && hMain.hevcSessions) > 0;
+        } catch { }
         // 页面在启动阶段还不知道自己想要多宽（宽度只在设置面板里选），不传就用主路当前宽度
-        let r = s2PickStream(String(m.client || ''), Number(m.width), Number(m.fps), Number(m.kbps));
+        let r = s2PickStream(String(m.client || ''), Number(m.width), Number(m.fps), Number(m.kbps), {
+          codec: String(m.codec || ''),
+          mainHevcLive: mainHevcLive
+        });
         // 2026-11-11：给到第二路之前，必须确认侧车已经能接请求 —— 否则页面立刻发的 offer
         // 会撞上 ECONNREFUSED（502），表现在用户侧就是「一直连接中」。最多等 1.5 秒。
         if (r.stream === 2) {
-          const ready = await s2WaitReady(1500);
+          const ready = await s2WaitReady(r.reason === 'codec-fallback' ? 2500 : 1500);
           if (!ready) {
-            console.log('rtc264: [第二路] 侧车 1.5 秒内没就绪，本次退回共享主路（不黑屏优先）');
-            s2DegradeToShared('侧车未就绪');
-            r = { stream: 1, reason: 'second-not-ready', owner: false, profile: null };
+            if (r.reason === 'codec-fallback') {
+              // codec 回落不能退回主路：主路是 HEVC，退回去会给 H.264-only 设备一个 HEVC 会话。
+              // 仍返回第二路，页面重试/侧车稍后就绪；最坏是页面多试一次，不会黑屏错编。
+              console.log('rtc264: [第二路] codec 回落侧车还没就绪，仍返回第二路（页面会重试）');
+            } else {
+              console.log('rtc264: [第二路] 侧车 1.5 秒内没就绪，本次退回共享主路（不黑屏优先）');
+              s2DegradeToShared('侧车未就绪');
+              r = { stream: 1, reason: 'second-not-ready', owner: false, profile: null };
+            }
           }
         }
-        console.log('rtc264: 分配线路 stream=' + r.stream + '（' + r.reason + '）client=' + String(m.client || '-') + ' 请求 ' + m.width + 'x' + m.fps + '@' + m.kbps);
+        console.log('rtc264: 分配线路 stream=' + r.stream + '（' + r.reason + '）client=' + String(m.client || '-') + ' codec=' + String(m.codec || '-') + ' 请求 ' + m.width + 'x' + m.fps + '@' + m.kbps);
         jr(200, { ok: true, stream: r.stream, owner: r.owner === true, reason: r.reason, profile: r.profile || null, ceilings: { fps: fpsCap, kbps: kbpsCap, width: CAP_W }, primary: { width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS } });
       } catch (e) {
         jr(200, { ok: true, stream: 1, reason: 'error:' + String((e && e.message) || e) });
