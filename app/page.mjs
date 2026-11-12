@@ -520,6 +520,10 @@ body.ha-right #paHandle {
     <!-- 2026-11-11：全屏常驻入口。真机实测：全屏**不会**提高刷新率（raf 仍 60），
          但能去掉浏览器工具栏、多出显示面积、锁横屏 —— 对远控观看本身就是体验提升。 -->
     <button id="fsBtn" title="全屏观看（隐藏浏览器工具栏，多一点画面面积）">全屏</button>
+    <!-- 2026-11-12：**只在 Android 壳（APK）里显示**：修改电脑地址。
+         浏览器里没有 window.paAppBridge，这个按钮保持隐藏（下面有 JS 控制）。
+         用户要求：不要 App 上的浮层按钮，入口要放进页面自己的「更多」里。 -->
+    <button id="appAddrBtn" style="display:none" title="修改电脑地址">改地址</button>
   </div>
   <select id="src" style="display:none"><option value="m-1">全部屏幕</option></select>
   <!-- 2026-11-09：断线时原来只能刷新页面；给一个明确入口 -->
@@ -1487,14 +1491,24 @@ function _quantizeRate(hz) {
   return best;
 }
 (function rafProbe() {
+  // 最近 8 秒的 rAF 采样。用**最高值**当作"屏幕能力上限"，而不是平均值：
+  // APK 实测 rAF 在 60~120 之间来回切（系统省电策略），平均会落到 ~91Hz，
+  // 平均/直接量化都会把目标定成 90，于是"屏幕明明 120 却只画 90"。
+  // 取最高值 = 按屏幕真实能力排；只有当系统**持续**压低（8 秒内最高也只有 60）
+  // 才真的降档，避免被短暂降频误伤。
+  const _ring = [];
   function tick() {
     _rafCount++;
     const n = performance.now();
     if (n - _rafLastAt >= 1000) {
       _rafHz = Math.round(_rafCount * 1000 / (n - _rafLastAt));
       _rafCount = 0; _rafLastAt = n;
-      // 稳定化：同一个量化档位连续 3 次（≈3 秒）才真正切换
-      const q = _quantizeRate(_rafHz);
+      _ring.push(_rafHz);
+      if (_ring.length > 8) _ring.shift();
+      let cap = 0;
+      for (let i = 0; i < _ring.length; i++) if (_ring[i] > cap) cap = _ring[i];
+      const q = _quantizeRate(cap);
+      // 滞后：同一个量化档位连续 3 次（≈3 秒）才真正切换
       if (q === _dispRate) { _dispCand = 0; _dispCandCount = 0; }
       else if (q === _dispCand) {
         _dispCandCount++;
@@ -3353,6 +3367,28 @@ btnCrisp.addEventListener('click', async () => {
   if (state.audio) startPcmAudio();     // 声音统一走 PCM 通道（H.264 只传画面）
   buzz(8);
 });
+
+// 2026-11-12：Android 壳（APK）里的"改地址"入口。
+// APK 通过 addJavascriptInterface 注入 window.paAppBridge；浏览器里它不存在，
+// 所以这个按钮只在 APK 里出现（用户明确要求：入口放进页面自己的「更多」，不要 App 浮层）。
+(function () {
+  var b = null;
+  try { b = document.getElementById('appAddrBtn'); } catch (e) { return; }
+  if (!b) return;
+  var br = null;
+  try { br = window.paAppBridge || null; } catch (e) { }
+  if (!br) { try { b.style.display = 'none'; } catch (e) { } return; }
+  try { b.style.display = ''; } catch (e) { }
+  try {
+    var v = (br.version && br.version()) || '';
+    if (v) b.title = '修改电脑地址（App ' + v + '）';
+  } catch (e) { }
+  b.addEventListener('click', function (e) {
+    e.preventDefault(); e.stopPropagation();
+    try { br.openSettings(); } catch (e2) { }
+    try { if (window.paCloseSheet) window.paCloseSheet(); } catch (e3) { }
+  });
+})();
 
 // 2026-11-11：全屏常驻入口（实测：不会提高刷新率，但面积更大、去掉浏览器工具栏、锁横屏）
 (function () {
