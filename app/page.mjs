@@ -2334,7 +2334,15 @@ async function rtc264Stats() {
         // 启动宽限：连上后的前 15 秒出帧率天然偏低（解码器预热 + 首批关键帧），不参与判断。
         // 实测启动瞬间 worker 也会因为首批突发重建 1~2 次，两个信号凑一起会误判成"设备吃不下"。
         const _warm = _now - (R.playStart || 0) < 15000;
-        if (!_warm && _need && _rsHot && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 90000) {
+        // 2026-11-12（A 方案：跟随实际刷新率）：新增第二条降档依据。
+        // 实测手机上：屏幕 120Hz，但 **WebView 的 rAF 只给到 ~104** → 编码 120 时
+        // 每 5 帧就丢 1 帧（diag 里 over 一直涨），画面反而比"编码降到屏幕能给的值"更抖。
+        // 这条不要求 worker 重建（_rsHot），只看持续性的出帧不足，且用稳定后的 _dispRate
+        // 判断，避免被瞬时抖动误伤。步进仍走标准档位（30/60/90/120/240）。
+        const _dispLow = (typeof _dispRate === 'number' && _dispRate >= 60 &&
+                          _in > 0 && _dispRate < _in * 0.88);
+        const _need2 = !_warm && _dispLow && _avgDraw > 0 && _avgDraw < _in * 0.92;
+        if (((_need && _rsHot) || _need2) && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 90000) {
           RTC264.downshifting = true;
           RTC264.lastDown = _now;
           RTC264.goodTicks = 0;
