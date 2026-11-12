@@ -1373,7 +1373,7 @@ function pqPush(frame, ts) {
 function pqTick() {
   PQ.raf = 0;
   const w = window.__wc264;
-  if (!w || !w.on || !w.canvas || !w.ctx) { pqStop(); return; }
+  if (!w || !w.canvas || !w.ctx) { pqStop(); return; }
   const q = PQ.q;
   const now = performance.now();
   // 注意单位：periodUs 是**微秒**（来自到达间隔统计），performance.now() 是**毫秒**。
