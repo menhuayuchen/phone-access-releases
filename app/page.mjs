@@ -1400,7 +1400,15 @@ function pqTick() {
     return;
   }
   PQ.emptySince = 0;
-  if (now + 0.4 < PQ.nextAt) { pqSchedule(); return; }    // 还没到点：保持当前画面，不重画
+  // 2026-11-12（v2）：内容帧率 ≥ 屏幕帧率时（常见：120fps 内容 + 120Hz 屏），
+  // **每个 rAF 就该画一帧**，不再做"到点没到点"的判断。
+  //
+  // 为什么：那个 judgement 依赖 nextAt 的累加，一旦因为周期估计跳动/丢帧而漂到未来，
+  // 就会出现 diag 里那种「解=120 画=0/17」—— 解码满、屏幕满，但我们自己在空转。
+  // 用户实测显示只有 ~100 而不是 120，主要就是这里少画了。
+  const _cMs = PQ.periodUs / 1000;
+  const _everyTick = _cMs <= (_dispMs + 1.2);
+  if (!_everyTick && now + 0.4 < PQ.nextAt) { pqSchedule(); return; }   // 还没到点：保持当前画面，不重画
   // 落后超过 2 个周期（切后台/卡顿回来）→ 直接对齐，不做"追赶播放"：
   // 追赶会连着吐出几帧，反而更抖。
   if (now - PQ.nextAt > periodMs * 2) PQ.nextAt = now;
