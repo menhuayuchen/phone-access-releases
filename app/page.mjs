@@ -14,6 +14,11 @@ const PAGE_HTML = String.raw`<!doctype html>
      所以清单必须靠页面里签出来的短时 token 过鉴权；裸 GET /manifest.json 仍然是 401。
      原来的 ?v=2 作用不变：把手机上缓存过的旧清单（带过密钥、max-age=86400）换成新 URL。 -->
 <link rel="manifest" href="__MANIFEST_HREF__">
+<!-- 2026-11-12：浏览器标签图标改成**与官网一致的品牌标志**（2x2 四块）。
+     图形与配色照抄官网 favicon（menhuayuchen.github.io/phone-access-releases/light-screen/）：
+     底色 #05070A，左上象牙实心、右上与左下 30%、右下青绿 #0BD8B6。
+     用 data: SVG 内联，不额外发请求，也不占服务端路由。 -->
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect width='64' height='64' fill='%2305070A'/%3E%3Crect x='11' y='11' width='19' height='19' fill='%23EEEEEC'/%3E%3Crect x='34' y='11' width='19' height='19' fill='%23EEEEEC' opacity='.3'/%3E%3Crect x='11' y='34' width='19' height='19' fill='%23EEEEEC' opacity='.3'/%3E%3Crect x='34' y='34' width='19' height='19' fill='%230BD8B6'/%3E%3C/svg%3E">
 <meta name="theme-color" content="#0A0B0D">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -9288,7 +9293,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-12.1';
+export const PAGE_VER = '2026-11-12.2';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))
