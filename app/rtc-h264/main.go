@@ -43,7 +43,7 @@ import (
 	"github.com/pion/webrtc/v4"
 )
 
-const sidecarVersion = "0.5.2"   // 2026-11-10：丢帧置 needKey + gap 标记 + NACK 缓存 1024->4096
+const sidecarVersion = "0.6.0"   // 2026-11-12：HEVC P1（H265 打包 + H265 SDP fmtp/sprop + codec 选择）
 
 // 2026-11-08 P1b：两轨共用同一个时钟原点（epoch）——视频按"帧到达侧车的时刻"、
 // 音频按"内容累计时间 + epoch 起点"。之前视频轨用 TrackLocalStaticSample，
@@ -66,9 +66,10 @@ type frame struct {
 
 type session struct {
 	id        string
+	codec     string // "h264" | "hevc"（日志/诊断用）
 	pc        *webrtc.PeerConnection
 	track     *webrtc.TrackLocalStaticRTP
-	payloader *codecs.H264Payloader
+	payloader rtp.Payloader // H264Payloader 或 H265Payloader（RFC 7798 单 NAL + FU）
 	vSeq      uint16
 	vTsCache  uint32
 	vHasTs    bool
@@ -196,7 +197,10 @@ func (s *session) feed(f frame) {
 var (
 	audioEnabled bool
 	api          *webrtc.API
-	sampleDur    = time.Second / 60
+	// settingEngine 是全局 ICE/端口配置。H264 会话用全局 api（默认 codec 表，保持 1.0.22 行为）；
+	// HEVC 会话在 newHEVCAPI 里用它复制一份，只注册 H265+Opus。
+	settingEngine webrtc.SettingEngine
+	sampleDur     = time.Second / 60
 	// packetMTU 与 Pion 内部 outboundMTU 一致（1200，扣掉 12 字节 RTP 头）。
 	packetMTU = uint16(1188)
 
@@ -403,22 +407,52 @@ func lanIPs() []string {
 
 // ---------------------------------------------------------------- 会话管理
 
-func newSession() (*session, error) {
-	pc, err := api.NewPeerConnection(webrtc.Configuration{})
+func newSession(opts offerOpts) (*session, error) {
+	hevc := opts.isHEVC()
+	var pc *webrtc.PeerConnection
+	var err error
+	if hevc {
+		a, aerr := newHEVCAPI(h265Fmtp(opts), &settingEngine)
+		if aerr != nil {
+			return nil, aerr
+		}
+		pc, err = a.NewPeerConnection(webrtc.Configuration{})
+	} else {
+		pc, err = api.NewPeerConnection(webrtc.Configuration{})
+	}
 	if err != nil {
 		return nil, err
 	}
 	id := randHex(6)
 	// 2026-11-08 P1b：视频轨改成 TrackLocalStaticRTP（自己给真实到达时间戳），
 	// 不再用 TrackLocalStaticSample 的"每帧 +1/fps"合成时间戳。
-	track, err := webrtc.NewTrackLocalStaticRTP(webrtc.RTPCodecCapability{
-		MimeType:    webrtc.MimeTypeH264,
-		ClockRate:   90000,
-		// 2026-11-10：原来写死 42c032（Baseline 3.2），但实际编码是 Main profile（日志 avc1.4D4032）。
-		// 接收端按 SDP 声明配置解码器，声明 Baseline 却收到 Main 帧，iPhone 的 VideoToolbox 会解码异常/退回软解，
-		// 表现为积压 → 缓冲一路涨（安卓和 iPhone 17 Pro 都一样）。改成与实际编码一致的 Main 3.2。
-		SDPFmtpLine: "profile-level-id=4D0032;packetization-mode=1;level-asymmetry-allowed=1",
-	}, "video", "pa-"+id)
+	codecName := "h264"
+	var vcodec webrtc.RTPCodecCapability
+	var pay rtp.Payloader
+	if hevc {
+		// 2026-11-12 HEVC P1：H265 的 fmtp 同时进 MediaEngine（见 newHEVCAPI）和 Track，
+		// 前者决定 offer 里的 a=fmtp（Chrome 靠它匹配 profile-id=1），后者参与答案匹配。
+		codecName = "hevc"
+		vcodec = webrtc.RTPCodecCapability{
+			MimeType:    webrtc.MimeTypeH265,
+			ClockRate:   90000,
+			SDPFmtpLine: h265Fmtp(opts),
+		}
+		// SkipAggregation：只发"单 NAL / FU"两种包，不发 AP（聚合包）。
+		// VPS/SPS/PPS 各占一个 RTP 包，IRAP 按 FU 分片；这是 RFC 7798 里最保守的组合。
+		pay = &codecs.H265Payloader{SkipAggregation: true}
+	} else {
+		vcodec = webrtc.RTPCodecCapability{
+			MimeType:  webrtc.MimeTypeH264,
+			ClockRate: 90000,
+			// 2026-11-10：原来写死 42c032（Baseline 3.2），但实际编码是 Main profile（日志 avc1.4D4032）。
+			// 接收端按 SDP 声明配置解码器，声明 Baseline 却收到 Main 帧，iPhone 的 VideoToolbox 会解码异常/退回软解，
+			// 表现为积压 → 缓冲一路涨（安卓和 iPhone 17 Pro 都一样）。改成与实际编码一致的 Main 3.2。
+			SDPFmtpLine: "profile-level-id=4D0032;packetization-mode=1;level-asymmetry-allowed=1",
+		}
+		pay = &codecs.H264Payloader{}
+	}
+	track, err := webrtc.NewTrackLocalStaticRTP(vcodec, "video", "pa-"+id)
 	if err != nil {
 		pc.Close()
 		return nil, err
@@ -441,9 +475,10 @@ func newSession() (*session, error) {
 	}
 	s := &session{
 		id:        id,
+		codec:     codecName,
 		pc:        pc,
 		track:     track,
-		payloader: &codecs.H264Payloader{},
+		payloader: pay,
 		aTrack:    aTrack,
 		ch:        make(chan frame, 30),   // 2026-11-10：3 太浅。实测 100fps 时丢帧率 18.5%（每 5 帧丢 1 帧），而 H.264 的 P 帧依赖前序帧，丢一帧就会连锁花屏。30 帧≈0.3 秒缓冲。
 		done:      make(chan struct{}),
@@ -558,6 +593,23 @@ func writeJSON(w http.ResponseWriter, code int, v any) {
 }
 
 func handleOffer(w http.ResponseWriter, r *http.Request) {
+	// 2026-11-12 HEVC P1：/offer 可选带 JSON body（Node 从 hvcC 解出来的 sprop/profile/level）。
+	// 也支持 ?codec=hevc 便于单测/手工验证（不带 sprop 也能跑：参数集在关键帧码流里）。
+	var opts offerOpts
+	if r.Body != nil {
+		if b, err := io.ReadAll(io.LimitReader(r.Body, 64<<10)); err == nil && len(b) > 0 {
+			_ = json.Unmarshal(b, &opts)
+		}
+	}
+	if q := strings.TrimSpace(r.URL.Query().Get("codec")); q != "" {
+		opts.Codec = q
+	}
+	if opts.isHEVC() {
+		opts.Codec = "hevc"
+	} else {
+		opts.Codec = "h264"
+	}
+
 	// 先清掉长时间没 answer 的残留，避免页面反复重试把表撑大
 	mu.Lock()
 	for id, s := range sessions {
@@ -569,7 +621,7 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	}
 	mu.Unlock()
 
-	s, err := newSession()
+	s, err := newSession(opts)
 	if err != nil {
 		logf("offer: new session 失败: %v", err)
 		writeJSON(w, 500, map[string]string{"error": err.Error()})
@@ -605,12 +657,19 @@ func handleOffer(w http.ResponseWriter, r *http.Request) {
 	turnMu.Lock()
 	tp, tu, tw, tok, th := turnPort, turnUser, turnPass, turnOK, turnHost
 	turnMu.Unlock()
-	logf("session %s offer 就绪（sdp %d 字节，已有 %d 路会话）", s.id, len(ld.SDP), liveCount())
+	if s.codec == "hevc" {
+		logf("session %s offer 就绪（HEVC：%s；sdp %d 字节，已有 %d 路会话）", s.id,
+			describeSprop("vps", opts.SpropVPS)+" "+describeSprop("sps", opts.SpropSPS)+" "+describeSprop("pps", opts.SpropPPS),
+			len(ld.SDP), liveCount())
+	} else {
+		logf("session %s offer 就绪（sdp %d 字节，已有 %d 路会话）", s.id, len(ld.SDP), liveCount())
+	}
 	writeJSON(w, 200, map[string]any{
 		"ok":       true,
 		"sid":      s.id,
 		"type":     "offer",
 		"sdp":      ld.SDP,
+		"codec":    s.codec,
 		"turnOk":   tok,
 		"turnPort": tp,
 		"turnUser": tu,
@@ -774,6 +833,14 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	n := len(live)
+	h264Live, hevcLive := 0, 0
+	for _, s := range live {
+		if s.codec == "hevc" {
+			hevcLive++
+		} else {
+			h264Live++
+		}
+	}
 	mu.Unlock()
 	turnMu.Lock()
 	tok, tp := turnOK, turnPort
@@ -790,6 +857,8 @@ func handleHealth(w http.ResponseWriter, r *http.Request) {
 		"version":      sidecarVersion,
 		"uptimeSec":    int64(time.Since(startedAt).Seconds()),
 		"sessions":     n,
+		"h264Sessions": h264Live,
+		"hevcSessions": hevcLive,
 		"pending":      pending,
 		"lastFrameMs":  age,
 		"framesIn":     framesIn.Load(),
@@ -833,8 +902,9 @@ const pageHTML = `<!doctype html><html><head><meta charset="utf-8">
 (async()=>{
  const s=document.getElementById('s');
  const relay=new URLSearchParams(location.search).get('relay')==='1';
+ const codec=new URLSearchParams(location.search).get('codec')||'h264';
  try{
-  const o=await (await fetch('/offer',{method:'POST'})).json();
+  const o=await (await fetch('/offer',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({codec})})).json();
   if(!o||!o.sdp) throw new Error('no offer');
   const ice=[{urls:'stun:stun.cloudflare.com:3478'}];
   if(o.turnOk&&o.turnPort) ice.unshift({urls:'turn:'+location.hostname+':'+o.turnPort+'?transport=udp',username:o.turnUser,credential:o.turnPass});
@@ -910,7 +980,7 @@ func main() {
 		logf("register codecs: %v", err)
 		os.Exit(1)
 	}
-	se := webrtc.SettingEngine{}
+	se := &settingEngine
 	ips := tailnetIPs()
 	// 局域网/热点（离线模式）也要能直连：把本机局域网 IPv4 一起作为 host 候选广播
 	lan := lanIPs()
@@ -938,7 +1008,7 @@ func main() {
 		ir.Add(nackFactory)
 		logf("NACK responder 已启用（缓存 4096 包，丢包可重传）")
 	}
-	api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(se), webrtc.WithInterceptorRegistry(ir))
+	api = webrtc.NewAPI(webrtc.WithMediaEngine(me), webrtc.WithSettingEngine(*se), webrtc.WithInterceptorRegistry(ir))
 
 	if *turnPort > 0 {
 		go startTurn(ips, *turnPort, *turnIP)

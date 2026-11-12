@@ -292,6 +292,39 @@ if (H264_ENABLED && H264_ENCODER === 'nvenc') {
 H264_NATIVE = H264_ZEROCOPY && H264_W >= CAP_W && H264_W >= 2560;
 console.log('h264: encoder=' + H264_ENCODER + (H264_ENABLED ? '' : '（h264 未启用）') + ' 零拷贝=' + (H264_ZEROCOPY ? '可用' : '不可用（走过滤器）'));
 
+// ---- HEVC（H.265）P1 灰度开关（2026-11-12）--------------------------------
+// 默认必须是 H.264：只有 screen.h264.codec === "hevc" 才启用这条编码路径，
+// 或页面用 ?codec=hevc 显式请求（服务端仍会再验一遍能力，能上才上）。
+// 之所以要单独探测 hevc_nvenc：生产自带的精简 ffmpeg（4.32MB）**完全没有 HEVC**，
+// 直接按配置起 hevc_nvenc 会秒退 → 清晰模式整条挂掉。探测不到就回落 H.264，只留一行日志。
+const H264_CODEC_CFG = (String(cfgH264.codec || '').toLowerCase() === 'hevc') ? 'hevc' : 'h264';
+let H264_CODEC = H264_CODEC_CFG;
+let H264_WANT_CODEC = H264_CODEC_CFG;   // 下一次 h264Start 使用的编码器 codec
+let HEVC_AVAIL = false;
+let HEVC_WHY = '';
+try {
+  if (!H264_ENABLED) {
+    HEVC_WHY = '清晰模式（编码器）未启用';
+  } else if (H264_ENCODER !== 'nvenc') {
+    HEVC_WHY = '没有 NVENC 硬件编码（HEVC 只有 hevc_nvenc 这一条硬编路）';
+  } else {
+    const encOut = execFileSync(FFMPEG_EXE, ['-hide_banner', '-encoders'], {
+      timeout: 8000, windowsHide: true, stdio: ['ignore', 'pipe', 'ignore']
+    }).toString();
+    if (/hevc_nvenc/.test(encOut)) HEVC_AVAIL = true;
+    else HEVC_WHY = '当前 ffmpeg 不含 hevc_nvenc（需要换含 HEVC 的 ffmpeg）';
+  }
+} catch (e) {
+  HEVC_WHY = 'ffmpeg 能力探测失败：' + ((e && (e.message || e)) || e);
+}
+if (H264_CODEC_CFG === 'hevc' && !HEVC_AVAIL) {
+  H264_CODEC = 'h264';
+  H264_WANT_CODEC = 'h264';
+  console.log('h264: 配置要求 HEVC，但本机不可用（' + HEVC_WHY + '）→ 已回落 H.264');
+} else if (HEVC_AVAIL) {
+  console.log('h264: HEVC 可用（hevc_nvenc 已就绪），当前编码器 codec=' + H264_CODEC);
+}
+
 // ---- 设备审查（2026-11-10，1.0.21）-----------------------------------------
 // 为什么要有：1.0.21 起发布版和自用版用**同一套**画质上限（帧率/码率/分辨率）。
 // "客户机器扛不住"不能再靠发布版偷偷降档来兜，必须由这台机器自己判断能跑多高：
@@ -549,13 +582,16 @@ const h264 = {
 function h264SendInit(ws) {
   if (!h264.initInfo || !ws) return;
   try {
+    const ii = h264.initInfo;
+    const desc = ii.hvcC || ii.avcC;
     ws.send(JSON.stringify({
       type: 'h264-init',
-      codec: h264.initInfo.codec,
-      description: h264.initInfo.avcC ? h264.initInfo.avcC.toString('base64') : '',
-      timescale: h264.initInfo.timescale,
-      width: h264.initInfo.width,
-      height: h264.initInfo.height
+      codec: ii.codec,
+      kind: ii.kind || 'h264',
+      description: desc ? desc.toString('base64') : '',
+      timescale: ii.timescale,
+      width: ii.width,
+      height: ii.height
     }));
   } catch { }
 }
@@ -577,8 +613,10 @@ function mp4Boxes(buf, start, end) {
 }
 
 function h264ParseMoov(buf) {
-  // 找 moov → trak → mdia → minf → stbl → stsd → avc1 → avcC，以及 mdhd timescale
-  let avcC = null, timescale = 1000, width = 0, height = 0;
+  // 找 moov → trak → mdia → minf → stbl → stsd → avc1/hvc1 → avcC/hvcC，以及 mdhd timescale
+  // 2026-11-12 HEVC P1：HEVC 的 sample entry 是 hvc1（ffmpeg -tag:v hvc1）或 hev1；
+  // 结构位置与 avc1 完全一样（VisualSampleEntry 固定 78 字节后才挂子 box）。
+  let avcC = null, hvcC = null, sampleEntry = '', timescale = 1000, width = 0, height = 0;
   for (const moov of mp4Boxes(buf, 0, buf.length)) {
     if (moov.type !== 'moov') continue;
     for (const trak of mp4Boxes(buf, moov.start + moov.header, moov.end)) {
@@ -597,13 +635,14 @@ function h264ParseMoov(buf) {
             for (const stbl of mp4Boxes(buf, minf.start + minf.header, minf.end)) {
               if (stbl.type !== 'stsd') continue;
               for (const stsd of mp4Boxes(buf, stbl.start + stbl.header + 8, stbl.end)) {
-                if (stsd.type !== 'avc1') continue;
+                if (stsd.type !== 'avc1' && stsd.type !== 'hvc1' && stsd.type !== 'hev1') continue;
+                sampleEntry = stsd.type;
                 const w = buf.readUInt16BE(stsd.start + 32), h = buf.readUInt16BE(stsd.start + 34);
                 if (w) width = w;
                 if (h) height = h;
-                for (const avc of mp4Boxes(buf, stsd.start + stsd.header + 78, stsd.end)) {
-                  if (avc.type !== 'avcC') continue;
-                  avcC = Buffer.from(buf.subarray(avc.start + avc.header, avc.end));
+                for (const c of mp4Boxes(buf, stsd.start + stsd.header + 78, stsd.end)) {
+                  if (c.type === 'avcC') avcC = Buffer.from(buf.subarray(c.start + c.header, c.end));
+                  else if (c.type === 'hvcC') hvcC = Buffer.from(buf.subarray(c.start + c.header, c.end));
                 }
               }
             }
@@ -612,7 +651,7 @@ function h264ParseMoov(buf) {
       }
     }
   }
-  return { avcC, timescale, width, height };
+  return { avcC, hvcC, sampleEntry, timescale, width, height };
 }
 
 function h264CodecString(avcC) {
@@ -621,8 +660,68 @@ function h264CodecString(avcC) {
   return 'avc1.' + hex(avcC[1]) + hex(avcC[2]) + hex(avcC[3]);
 }
 
-function h264ExtractSamples(moof, mdat) {
+// ---- HEVC 辅助（2026-11-12 P1）---------------------------------------------
+// hvcC = HEVCDecoderConfigurationRecord（ISO/IEC 14496-15 §8.3.3.1）。
+// 解析出 VPS/SPS/PPS 三组参数集，并推出 WebCodecs 需要的 codec 字符串
+// （RFC 6381：hvc1.<profile_space><profile_idc>.<compat_flags>.<tier><level>[.<constraint>]）。
+function hevcHvcCInfo(rec) {
+  if (!rec || rec.length < 23) return null;
+  const out = {
+    profile: rec[1] & 0x1f,
+    tier: (rec[1] >> 5) & 1,
+    level: rec[12],
+    arrays: [],
+    vps: [], sps: [], pps: [],
+  };
+  let o = 23;
+  const numArrays = rec[22];
+  for (let a = 0; a < numArrays; a++) {
+    if (o + 3 > rec.length) break;
+    const nalType = rec[o] & 0x3f; o += 1;
+    const num = rec.readUInt16BE(o); o += 2;
+    const list = [];
+    for (let i = 0; i < num; i++) {
+      if (o + 2 > rec.length) break;
+      const l = rec.readUInt16BE(o); o += 2;
+      if (l <= 0 || o + l > rec.length) break;
+      list.push(Buffer.from(rec.subarray(o, o + l))); o += l;
+    }
+    out.arrays.push({ nalType, list });
+    if (nalType === 32) out.vps = list;
+    else if (nalType === 33) out.sps = list;
+    else if (nalType === 34) out.pps = list;
+  }
+  return out;
+}
+
+function hevcRev32(v) {
+  let r = 0;
+  for (let i = 0; i < 32; i++) { r = (r << 1) | ((v >>> i) & 1); }
+  return r >>> 0;
+}
+
+function hevcCodecString(rec) {
+  const info = hevcHvcCInfo(rec);
+  if (!info) return 'hvc1.1.6.L120.90';
+  const space = ['', 'A', 'B', 'C'][(rec[1] >> 6) & 3] || '';
+  const compat = hevcRev32(rec.readUInt32BE(2)).toString(16).toUpperCase();
+  const tier = info.tier ? 'H' : 'L';
+  let s = 'hvc1.' + space + info.profile + '.' + compat + '.' + tier + info.level;
+  // 约束字节（general_constraint_indicator_flags，6 字节）：去掉尾部 0，非空才拼
+  const cons = rec.subarray(6, 12);
+  let end = cons.length;
+  while (end > 0 && cons[end - 1] === 0) end--;
+  if (end > 0) s += '.' + cons.subarray(0, end).toString('hex').toUpperCase();
+  return s;
+}
+
+// HEVC NAL 头 2 字节：type = (b>>1)&0x3f；IRAP = 16~21（19/20 是 IDR）
+function hevcNalType(b) { return (b >> 1) & 0x3f; }
+function hevcIsIrap(t) { return t >= 16 && t <= 21; }
+
+function h264ExtractSamples(moof, mdat, kind) {
   // 逐帧切 mdat（ffmpeg 单流样本是连续的；不依赖 base_data_offset）
+  const isHevc = kind === 'hevc';
   const out = [];
   for (const t of mp4Boxes(moof, 0, moof.length)) {
     if (t.type !== 'moof') continue;
@@ -660,14 +759,18 @@ function h264ExtractSamples(moof, mdat) {
           if (hasCto) q += 4;
           const data = mdatPayload.subarray(off, off + size);
           off += size;
-          // 判断关键帧：sample flags 的 sync 位，或扫 NAL 里有没有 IDR(5)
+          // 判断关键帧：sample flags 的 sync 位，或扫 NAL。
+          // 2026-11-12 实测（ffmpeg 8.1.3 + hevc_nvenc + intra-refresh）：trun 的 sync 位**一直是 0**，
+          // HEVC 关键帧只能靠 NAL 类型判断（16~21），跟 H.264 的 IDR(5) 一个道理。
           let key = !!(sflags & 0x10000);
           if (!key) {
             for (let k = 0; k + 4 <= data.length;) {
               const len = data.readUInt32BE(k);
               if (len <= 0 || k + 4 + len > data.length) break;
-              const nalType = data[k + 4] & 0x1f;
-              if (nalType === 5) { key = true; break; }
+              if (isHevc) {
+                if (len < 2) break;
+                if (hevcIsIrap(hevcNalType(data[k + 4]))) { key = true; break; }
+              } else if ((data[k + 4] & 0x1f) === 5) { key = true; break; }
               k += 4 + len;
             }
           }
@@ -710,14 +813,37 @@ function processH264Buffer() {
       }
       const initBuf = h264.pending.subarray(0, moov.end);
       const info = h264ParseMoov(initBuf);
+      const isHevcInit = !!info.hvcC;
       h264.initInfo = {
-        avcC: info.avcC,
+        avcC: info.avcC || null,
+        hvcC: info.hvcC || null,
+        kind: isHevcInit ? 'hevc' : 'h264',
+        sampleEntry: info.sampleEntry || (isHevcInit ? 'hvc1' : 'avc1'),
         timescale: info.timescale || 1000,
         width: info.width || H264_W,
         height: info.height || H264_H,
-        codec: h264CodecString(info.avcC)
+        codec: isHevcInit ? hevcCodecString(info.hvcC) : h264CodecString(info.avcC),
+        sprop: null
       };
-      console.log('h264: init ' + h264.initInfo.codec + ' ' + h264.initInfo.width + 'x' + h264.initInfo.height);
+      if (isHevcInit) {
+        const hi = hevcHvcCInfo(info.hvcC);
+        if (hi && hi.vps.length && hi.sps.length && hi.pps.length) {
+          h264.initInfo.sprop = {
+            vps: hi.vps[0].toString('base64'),
+            sps: hi.sps[0].toString('base64'),
+            pps: hi.pps[0].toString('base64'),
+            profile: String(hi.profile),
+            level: String(hi.level),
+            tier: String(hi.tier),
+            vpsLen: hi.vps[0].length, spsLen: hi.sps[0].length, ppsLen: hi.pps[0].length,
+          };
+        }
+      }
+  console.log('h264: init ' + h264.initInfo.codec + ' ' + h264.initInfo.width + 'x' + h264.initInfo.height
+    + (isHevcInit ? (' [hevc ' + h264.initInfo.sampleEntry + ' VPS/SPS/PPS='
+      + (h264.initInfo.sprop ? (h264.initInfo.sprop.vpsLen + '/' + h264.initInfo.sprop.spsLen + '/' + h264.initInfo.sprop.ppsLen) : '缺失')
+      + ' level=' + (h264.initInfo.sprop ? h264.initInfo.sprop.level : '?') + ']')
+      : ''));
       for (const ws of h264.clients) h264SendInit(ws);
       h264.pending = h264.pending.subarray(moov.end);
       continue;
@@ -736,7 +862,7 @@ function processH264Buffer() {
     const moofBuf = h264.pending.subarray(moof.start, moof.end);
     const mdatBuf = h264.pending.subarray(mdat.start, mdat.end);
     let samples = [];
-    try { samples = h264ExtractSamples(moofBuf, mdatBuf); } catch { samples = []; }
+    try { samples = h264ExtractSamples(moofBuf, mdatBuf, h264.initInfo.kind); } catch { samples = []; }
     for (const s of samples) {
       h264.tsUs = (h264.tsUs || 0) + Math.round(1e6 / H264_FPS);
       for (const ws of h264.clients) h264SendFrame(ws, h264.tsUs, s.key, s.data);
@@ -870,6 +996,20 @@ function h264GopArgs(fps) {
 // 编码参数（ddagrab 全屏采集和单窗口采集共用）。只含编码器部分，不含封装尾巴。
 function h264EncOnly() {
   const g = h264GopArgs(H264_FPS);
+  // 2026-11-12 HEVC P1：hevc_nvenc 与 h264_nvenc 用同一套低延迟语义。
+  // 实测这台机器的 hevc_nvenc 支持 -intra-refresh/-forced-idr/-force_key_frames（0.5 秒一个真 IDR），
+  // 所以 GOP 直接复用 h264GopArgs；rc 不能用 cbr_ld_hq —— hevc_nvenc 会报 "rc mode is deprecated"，
+  // 按 NVIDIA 的建议改 -rc cbr + -tune ull。
+  if (H264_CODEC === 'hevc') {
+    if (H264_QF) {
+      return ['-c:v', 'hevc_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '22',
+        '-b:v', String(H264_KBPS) + 'K', '-maxrate', String(H264_KBPS) + 'K', '-bufsize', String(H264_KBPS * 2) + 'K',
+        '-g', g.gop, '-bf', '0', '-profile:v', 'main', '-tag:v', 'hvc1', ...g.extra];
+    }
+    return ['-c:v', 'hevc_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1',
+      '-rc', 'cbr', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2',
+      '-profile:v', 'main', '-b:v', String(H264_KBPS) + 'K', '-g', g.gop, '-bf', '0', '-tag:v', 'hvc1', ...g.extra];
+  }
   return [
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
@@ -981,6 +1121,9 @@ function h264Start() {
   // 否则会同时跑多只编码器、共用一个解析缓冲（2026-11-05 晚就是这样卡死 node 的）。
   // h264.cap：单窗口采集端正在启动（还没起 ffmpeg），也不能重复 spawn。
   if (!H264_ENABLED || h264.proc || h264.killPending || h264.cap) return;
+  // 2026-11-12 HEVC P1：每一次真正起编码器都按"当前请求的 codec"落地。
+  if (H264_WANT_CODEC === 'hevc' && !HEVC_AVAIL) H264_WANT_CODEC = 'h264';
+  H264_CODEC = H264_WANT_CODEC;
   // 2026-11-08：桌面复制不可用（虚拟机等）时不要再起 ffmpeg，否则会无限秒退重试
   if (h264TemporarilyUnavailable()) { h264.lastError = H264_REASON; return; }
   if (h264.stopTimer) { clearTimeout(h264.stopTimer); h264.stopTimer = null; }
@@ -1027,6 +1170,7 @@ function h264Start() {
     args.push(...h264EncArgs());
   }
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
+    + (H264_CODEC === 'hevc' ? ' codec=hevc' : '')
     + (H264_IR_MS > 0 ? (' 渐进刷新(' + H264_IR_MS + 'ms/轮)') : '')
     + (dual ? (' + 第二路 ' + (S2.profile ? S2.profile.w : '?') + 'x@' + (S2.profile ? S2.profile.fps : '?') + ' 一次采集两路编码') : ''));
   h264ResetCounters();
@@ -1167,14 +1311,88 @@ function h264Stop() {
 
 // 需要"保证在编码"时统一走这里：上一只还没退干净就排队，等它退完立刻起，
 // 不要盲目 spawn（多只 ffmpeg 同时喂一个解析器 = 2026-11-05 晚的卡死）。
-function h264Ensure() {
+// 2026-11-12 HEVC P1：参数是"这次希望用哪个编码器 codec"（h264/hevc），
+// 编码器已经在跑且 codec 不同时，只有在没有其他观众的情况下才重启切换。
+function h264Ensure(wantCodec, force) {
   if (!H264_ENABLED) return;
-  if (h264.proc) return;
+  if (wantCodec === 'hevc') {
+    if (HEVC_AVAIL) H264_WANT_CODEC = 'hevc';
+  } else if (wantCodec === 'h264') {
+    H264_WANT_CODEC = 'h264';
+  }
+  if (h264.proc) {
+    if (H264_CODEC === H264_WANT_CODEC) return;
+    let otherViewers = 0;
+    if (!force) {
+      try {
+        otherViewers = (h264.clients ? h264.clients.size : 0)
+          + (rtc264Status.sessions || 0)
+          + ((typeof S2 !== 'undefined' && S2 && S2.status && S2.status.sessions) || 0);
+      } catch { }
+    }
+    if (otherViewers > 0) {
+      // 别人正在看：不打断，本次请求按当前编码器 codec 走（页面/侧车会按响应里的 codec 解码）
+      H264_WANT_CODEC = H264_CODEC;
+      return;
+    }
+    console.log('h264: 请求 codec=' + H264_WANT_CODEC + '，重启编码器切换（当前 ' + H264_CODEC + (force ? '，force' : '') + '）');
+    h264.startQueued = true;
+    h264Stop();
+    return;
+  }
   if (h264.killPending) { h264.startQueued = true; return; }
   h264Start();
 }
 
-// 2026-11-12（intra-refresh 验收指标）：每帧体积与关键帧体积的 5 秒窗口统计。
+// 2026-11-12 HEVC P1：为新会话决定"侧车该按哪个 codec 谈"，并把 hvcC 里的参数集
+// 作为 sprop 带给侧车（SDP fmtp 用）。
+// 铁律：**侧车会话的 codec 必须等于编码器实际产出的 codec**，否则就是 hvc1 里塞 H.264 帧，
+// 表现为黑屏而且不报错。所以这里等 fMP4 的初始化段（moov）出来，以它里面的 sample entry 为准。
+async function offerSessionCodec(desired) {
+  const waitInit = async (ms) => {
+    const t0 = Date.now();
+    for (;;) {
+      const ii = h264.initInfo;
+      if (ii) return ii;
+      if (Date.now() - t0 >= ms) return null;
+      await new Promise((r) => setTimeout(r, 50));
+    }
+  };
+  // 编码器没在跑（或 codec 不对）→ 交给 h264Ensure 决定：没观众就切换，有观众就保持现状。
+  // 2026-11-12：不能用 rtc264Status.sessions 判断"有没有别人在看"——它是 5 秒轮询的，
+  // 自己刚断开的会话还会被算进去，导致该切的 codec 切不过去（实测：页面回落 H.264 时
+  // 服务端仍按 HEVC 建会话）。这里直接问侧车 /health，拿的是当下真实会话数。
+  let liveSessions = -1;
+  try {
+    const side = await http264('/health', 'GET', null, 800);
+    if (side && typeof side.sessions === 'number') liveSessions = side.sessions;
+  } catch { }
+  const noOtherViewer = liveSessions === 0 && (!h264.clients || h264.clients.size === 0);
+  const needSwitch = !h264.proc || (H264_CODEC !== desired);
+  try { h264Ensure(desired, noOtherViewer); } catch { }
+  // 切 codec 要 kill+重启 ffmpeg，耗时长一些；同 codec 只要等第一段 moov。
+  const ii = await waitInit(needSwitch ? 5000 : 2500);
+  if (!ii) {
+    return { error: (h264.proc || h264.killPending) ? 'codec-init-timeout' : 'encoder-unavailable' };
+  }
+  if (ii.kind === 'hevc') {
+    if (!ii.sprop) return { error: 'hevc-sprop-missing' };
+    return {
+      codec: 'hevc',
+      body: {
+        codec: 'hevc',
+        spropVps: ii.sprop.vps,
+        spropSps: ii.sprop.sps,
+        spropPps: ii.sprop.pps,
+        profileId: ii.sprop.profile,
+        levelId: ii.sprop.level,
+        tierFlag: ii.sprop.tier,
+      },
+    };
+  }
+  return { codec: 'h264', body: { codec: 'h264' } };
+}
+
 // 为什么必须在服务端量：手机上只能看到"卡不卡"，看不到"是不是关键帧突发造成的"。
 // 这里直接量"单帧峰值 / 关键帧均值 / >300KB 的帧数"，改任何编码参数都能立刻对比。
 const kfBuf = [];
@@ -1238,19 +1456,38 @@ setInterval(() => {
 }, 5000).unref?.();
 
 function spsPpsPrefix() {
-  const b = h264.initInfo && h264.initInfo.avcC;
-  if (!b || b.length < 8) return Buffer.alloc(0);
+  // 2026-11-12 HEVC P1：HEVC 的关键帧要拼 VPS/SPS/PPS（32/33/34）。
+  // 为什么必须由 Node 拼：ffmpeg 的 fMP4 不把参数集写进 mdat（只在 hvcC 里），
+  // 而侧车的 H265Payloader 是 SkipAggregation（不做参数集缓存），
+  // 接收端（浏览器）要靠码流里的参数集才能建解码器。
+  const ii = h264.initInfo;
+  if (!ii) return Buffer.alloc(0);
   const out = [];
+  const pushNal = (b) => {
+    if (!b || !b.length) return;
+    out.push(Buffer.from([0, 0, 0, 1]));
+    out.push(b);
+  };
+  if (ii.kind === 'hevc') {
+    const hi = hevcHvcCInfo(ii.hvcC);
+    if (!hi) return Buffer.alloc(0);
+    for (const n of hi.vps) pushNal(n);
+    for (const n of hi.sps) pushNal(n);
+    for (const n of hi.pps) pushNal(n);
+    return Buffer.concat(out);
+  }
+  const b = ii.avcC;
+  if (!b || b.length < 8) return Buffer.alloc(0);
   let o = 5;
   const ns = b[o] & 0x1f; o += 1;
   for (let i = 0; i < ns; i++) {
     const l = b.readUInt16BE(o); o += 2;
-    out.push(Buffer.from([0, 0, 0, 1])); out.push(b.subarray(o, o + l)); o += l;
+    pushNal(b.subarray(o, o + l)); o += l;
   }
   const np = b[o]; o += 1;
   for (let i = 0; i < np; i++) {
     const l = b.readUInt16BE(o); o += 2;
-    out.push(Buffer.from([0, 0, 0, 1])); out.push(b.subarray(o, o + l)); o += l;
+    pushNal(b.subarray(o, o + l)); o += l;
   }
   return Buffer.concat(out);
 }
@@ -1992,7 +2229,7 @@ function s2ProcessBuffer() {
     const mdat = boxes.slice(moofIdx + 1).find((b) => b.type === 'mdat');
     if (!mdat) return;
     let samples = [];
-    try { samples = h264ExtractSamples(S2.pending.subarray(moof.start, moof.end), S2.pending.subarray(mdat.start, mdat.end)); } catch { samples = []; }
+    try { samples = h264ExtractSamples(S2.pending.subarray(moof.start, moof.end), S2.pending.subarray(mdat.start, mdat.end), 'h264'); } catch { samples = []; }
     for (const s of samples) s2FeedFrame(s.key, s.data);
     S2.pending = S2.pending.subarray(mdat.end);
     continue;
@@ -6076,10 +6313,17 @@ async function handler(req, res) {
   // offer 走 POST（每条会话一个新 sid），answer/close 带 JSON body 原样透传。
   if (url.pathname === '/rtc264/offer' || url.pathname === '/rtc264/answer' || url.pathname === '/rtc264/close') {
     const targetPath = url.pathname === '/rtc264/offer' ? '/offer' : (url.pathname === '/rtc264/answer' ? '/answer' : '/close');
+    // 2026-11-12 HEVC P1：页面用 ?codec=hevc 请求 HEVC 灰度；没带就按配置默认（默认 h264）。
+    const codecQ = String(url.searchParams.get('codec') || '').toLowerCase();
+    let wantCodec = (codecQ === 'hevc') ? 'hevc' : (codecQ === 'h264' ? 'h264' : H264_CODEC_CFG);
+    if (wantCodec === 'hevc' && !HEVC_AVAIL) {
+      wantCodec = 'h264';
+      try { console.log('rtc264: 页面请求 HEVC，但本机不可用（' + HEVC_WHY + '）→ 按 H.264 建会话'); } catch { }
+    }
     if (targetPath === '/offer') {
       try { wakeDisplay('观众建立会话'); } catch { }
       try { start264(); } catch { }     // 侧车没起来/挂掉时顺便拉一把
-      try { h264Ensure(); } catch { }   // 页面只走 WebRTC 时也要启动编码器
+      // 编码器的启动/切换交给 offerSessionCodec（它要等 moov 出来才知道真实 codec，不能盲起）
       // 2026-11-12：记录"谁真的建立了观看会话"。主路归属只认这个信号
       // （页面发 offer 时带 ?client=<paClientId>），不再认"反复调用 stream-pick"。
       try {
@@ -6098,33 +6342,58 @@ async function handler(req, res) {
     const chunks = [];
     let bodyLen = 0;
     req.on('data', (c) => { chunks.push(c); bodyLen += c.length; if (bodyLen > 1 << 20) req.destroy(); });
-    req.on('end', () => {
-      const body = Buffer.concat(chunks);
-      // C 方案（2026-11-11）：页面用 ?stream=2 表示"我要走第二路"。
-      // 第二路没起来就退回主路（宁可共享也不能黑屏）。
-      const wantStream = Number(url.searchParams.get('stream')) === 2;
-      const useStream2 = wantStream && (S2.side || S2.spawning);
-      if (useStream2) { try { s2StartSidecar(); if (!S2.proc && S2.profile) s2StartEncoder(); } catch { } }
-      const sidecarPort = useStream2 ? S2_PORT : RTC264_PORT;
-      if (targetPath === '/offer' && useStream2) console.log('rtc264: [第二路] 页面走第二路（档位 ' + (S2.profile ? s2Key(S2.profile) : '-') + '）');
-      const r = http.request({
-        host: '127.0.0.1', port: sidecarPort, path: targetPath,
-        method: targetPath === '/offer' ? 'POST' : (req.method || 'POST'),
-        headers: { 'content-type': 'application/json', 'content-length': body.length }
-      }, (resp) => {
-        res.writeHead(resp.statusCode || 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
-        resp.pipe(res);
-      });
-      // 2026-11-11：失败必须留痕。原来这里静默回 502，导致"第二路 offer 根本没到侧车"
-      // 这种问题在日志里完全看不见（只能靠 sidecar2.log 里没有 offer 行反推）。
-      r.on('error', (e) => {
-        console.log('rtc264: 信令代理失败 stream=' + (useStream2 ? 2 : 1) + ' port=' + sidecarPort + ' path=' + targetPath
-          + ' err=' + String((e && (e.code || e.message)) || e));
-        try { res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"error":"sidecar unavailable"}'); } catch { }
-      });
-      r.setTimeout(8000, () => { try { r.destroy(); } catch { } });
-      if (body.length) r.write(body);
-      r.end();
+    req.on('end', async () => {
+      try {
+        const body = Buffer.concat(chunks);
+        // C 方案（2026-11-11）：页面用 ?stream=2 表示"我要走第二路"。
+        // 第二路没起来就退回主路（宁可共享也不能黑屏）。
+        const wantStream = Number(url.searchParams.get('stream')) === 2;
+        const useStream2 = wantStream && (S2.side || S2.spawning);
+        if (useStream2) { try { s2StartSidecar(); if (!S2.proc && S2.profile) s2StartEncoder(); } catch { } }
+        const sidecarPort = useStream2 ? S2_PORT : RTC264_PORT;
+        if (targetPath === '/offer' && useStream2) console.log('rtc264: [第二路] 页面走第二路（档位 ' + (S2.profile ? s2Key(S2.profile) : '-') + '）');
+        // 2026-11-12 HEVC P1：offer 的 body 由服务端生成（codec + hvcC sprop），页面不用懂这些。
+        let sendBody = body;
+        if (targetPath === '/offer') {
+          if (useStream2) {
+            // 第二路是独立的 H.264 编码器，P1 不接 HEVC
+            sendBody = Buffer.from(JSON.stringify({ codec: 'h264' }));
+          } else {
+            const pick = await offerSessionCodec(wantCodec);
+            if (pick.error) {
+              console.log('rtc264: 拒绝建会话（' + pick.error + '，请求 codec=' + wantCodec + '）');
+              try {
+                res.writeHead(503, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+                res.end(JSON.stringify({ ok: false, error: pick.error, codec: wantCodec }));
+              } catch { }
+              return;
+            }
+            if (pick.codec !== wantCodec) console.log('rtc264: 请求 codec=' + wantCodec + '，编码器现状是 ' + pick.codec + ' → 建 ' + pick.codec + ' 会话');
+            sendBody = Buffer.from(JSON.stringify(pick.body));
+          }
+        }
+        const r = http.request({
+          host: '127.0.0.1', port: sidecarPort, path: targetPath,
+          method: targetPath === '/offer' ? 'POST' : (req.method || 'POST'),
+          headers: { 'content-type': 'application/json', 'content-length': sendBody.length }
+        }, (resp) => {
+          res.writeHead(resp.statusCode || 502, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          resp.pipe(res);
+        });
+        // 2026-11-11：失败必须留痕。原来这里静默回 502，导致"第二路 offer 根本没到侧车"
+        // 这种问题在日志里完全看不见（只能靠 sidecar2.log 里没有 offer 行反推）。
+        r.on('error', (e) => {
+          console.log('rtc264: 信令代理失败 stream=' + (useStream2 ? 2 : 1) + ' port=' + sidecarPort + ' path=' + targetPath
+            + ' err=' + String((e && (e.code || e.message)) || e));
+          try { res.writeHead(502, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"error":"sidecar unavailable"}'); } catch { }
+        });
+        r.setTimeout(8000, () => { try { r.destroy(); } catch { } });
+        if (sendBody.length) r.write(sendBody);
+        r.end();
+      } catch (e) {
+        console.log('rtc264: offer 处理异常 ' + ((e && (e.stack || e.message)) || e));
+        try { res.writeHead(500, { 'content-type': 'application/json; charset=utf-8' }); res.end('{"error":"internal"}'); } catch { }
+      }
     });
     return;
   }
@@ -6953,6 +7222,13 @@ async function handler(req, res) {
       reason: H264_REASON,
       retryInMs: Math.max(0, H264_DISABLED_UNTIL - Date.now()),
       encoder: H264_ENCODER,
+      // 2026-11-12 HEVC P1：编码器 codec 灰度状态。页面据此决定"这次能不能要 hevc"。
+      codec: H264_CODEC,
+      codecDefault: H264_CODEC_CFG,
+      hevcAvailable: !!HEVC_AVAIL,
+      hevcWhy: HEVC_WHY,
+      sampleEntry: h264.initInfo ? h264.initInfo.sampleEntry : '',
+      codecString: h264.initInfo ? h264.initInfo.codec : '',
       width: H264_W,
       height: H264_H,
       fps: H264_FPS,

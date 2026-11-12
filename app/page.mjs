@@ -943,7 +943,7 @@ function videoSourceSize() {
   if (state.mode === 'raw') return { w: vid.videoWidth || 16, h: vid.videoHeight || 9 };
   return { w: img.naturalWidth || 16, h: img.naturalHeight || 9 };
 }
-const h264 = { ws: null, ms: null, sb: null, queue: [], mime: null, okAt: 0, failTimer: null, appended: 0, supported: null, jumpTimer: null };
+const h264 = { ws: null, ms: null, sb: null, queue: [], mime: null, okAt: 0, failTimer: null, appended: 0, supported: null, jumpTimer: null, codec: 'h264' };
 let srcTimer = null, srcSig = '';
 
 // 2026-11-08：状态文字做「显示层压缩」。
@@ -1514,7 +1514,7 @@ function tryStartWC264(pc) {
     try {
       if (WC264.on) return;
       const rxs = pc.getReceivers ? pc.getReceivers().filter(function (r) { return r.track && r.track.kind === 'video'; }) : [];
-      if (rxs.length && WC264.start(pc)) return;
+      if (rxs.length && WC264.start(pc, (window.__rtc264 && window.__rtc264.codec) || 'h264')) return;
     } catch (e) { }
     if (tries < 20) setTimeout(attempt, 100);
   };
@@ -1949,10 +1949,12 @@ const WC264 = {
       return typeof RTCRtpScriptTransform !== "undefined" && typeof VideoDecoder !== "undefined";
     } catch (e) { return false; }
   },
-  start(pc) {
+  start(pc, codec) {
     if (this.on || !pc) return false;
     if (!this.supported()) { this.lastErr = "no-rtp-tf"; return false; }
     this.lastErr = "";
+    this.codec = (codec === "hevc") ? "hevc" : "h264";
+    this.hevcFallbackDone = false;
     this.restarting = false;
     try {
       const rxs = pc.getReceivers ? pc.getReceivers().filter(function (r) { return r.track && r.track.kind === "video"; }) : [];
@@ -1961,6 +1963,9 @@ const WC264 = {
       const self_ = this;
       w.onmessage = function (e) { self_.onMsg(e.data); };
       w.onerror = function (e) { self_.lastErr = "worker:" + (e && e.message); };
+      // 2026-11-12 HEVC P1：把这次会话的 codec 告诉 worker。必须在 transform 挂上之前发，
+      // 保证第一帧编码帧到达时 worker 已经知道该按 H.264 还是 H.265 切 NAL/建解码器。
+      try { w.postMessage({ type: "codec", codec: this.codec }); } catch (e) { }
       for (let i = 0; i < rxs.length; i++) { rxs[i].transform = new RTCRtpScriptTransform(w); }
       this.worker = w;
       // 告诉 Worker 当前的编码帧率：合成时间戳和"时间戳跳档=缺帧"的判定都要用它。
@@ -1994,6 +1999,8 @@ const WC264 = {
       // 3 次重建名额在约 5 秒内烧光 → 过早 gaveUp → 之后只能整页重连才恢复。
       // 这就是"画面静止 + 不停重新连接"的直接成因。
       this.lastFrameAt = Date.now();
+      // 2026-11-12 HEVC P1：新接收端已接管（画布沿用旧的那一块），回落保留帧的窗口到此结束
+      try { if (window.__rtc264) window.__rtc264.keepFrameUntil = 0; } catch (e) { }
       this.frames = 0;
       this.stats = null;
       this._lastDec = undefined;
@@ -2036,6 +2043,11 @@ const WC264 = {
     } else if (m.type === "error") {
       this.lastErr = String(m.message || "decode");
       console.warn("wc264", this.lastErr);
+      // 2026-11-12 HEVC P1：HEVC 解码器建不起来/报错 → 自动回 H.264（只做一次，交给 hevcToH264 去重）
+      if (this.codec === "hevc" && !this.hevcFallbackDone) {
+        this.hevcFallbackDone = true;
+        try { hevcToH264("worker: " + this.lastErr); } catch (e) { }
+      }
     }
   },
   stop() {
@@ -2053,7 +2065,19 @@ const WC264 = {
     try { pqStop(); } catch (e0) { }
     try { if (this.worker) this.worker.terminate(); } catch (e) { }
     this.worker = null; this.on = false; this.stats = null;
-    if (this.canvas) { try { this.canvas.remove(); } catch (e) { } this.canvas = null; this.ctx = null; }
+    // 2026-11-12 HEVC P1：HEVC 回落 H.264 要重启编码器（约 1.5~2.5 秒）。这段时间如果直接把画布删掉，
+    // 用户看到的是整块黑屏；把最后一帧留在屏幕上（冻一下）观感更好，也满足"黑屏 ≤2 秒"。
+    // 只对显式设置了 keepFrameUntil 的回落生效（正常停流仍然立即清屏，避免旧画面误导）。
+    let keepFrame = false;
+    try { keepFrame = !!(window.__rtc264 && window.__rtc264.keepFrameUntil && window.__rtc264.keepFrameUntil > Date.now()); } catch (e) { }
+    if (keepFrame && this.canvas) {
+      try { this.ctx = null; } catch (e) { }
+    } else if (this.canvas) {
+      try { this.canvas.remove(); } catch (e) { }
+      this.canvas = null; this.ctx = null;
+    } else {
+      this.ctx = null;
+    }
   }
 };
 try { window.__wc264 = WC264; } catch (e) { }
@@ -2229,6 +2253,7 @@ function stopRtc264(why) {
   R.lastCt = 0; R.frozenSince = 0; R.lastFr = 0; R.lastBr = 0; R.frozenProbe = false;
   R.rate = null; R.qFps = 0; R.qRxFps = 0; R.qMbps = 0; R.playStart = 0;
   if (R.discTimer) { clearTimeout(R.discTimer); R.discTimer = null; }
+  if (R.hevcTimer) { clearTimeout(R.hevcTimer); R.hevcTimer = null; }
   if (R.retryTimer) { clearTimeout(R.retryTimer); R.retryTimer = null; }
   try { rtc264AudioStop(); } catch (e) { }
   // 2026-11-08 P1b：同 PC 音频的状态必须一起清，否则重连后 audioSamePc 还是 true，
@@ -2253,6 +2278,9 @@ function stopRtc264(why) {
 async function startRtc264() {
   stopRtc264('restart');
   const R = RTC264;
+  // 2026-11-12 HEVC P1：这次向服务端请求的 codec（服务端可能拒绝/降级，以 offer 响应为准）
+  const reqCodec = (h264.codec === 'hevc') ? 'hevc' : 'h264';
+  R.reqCodec = reqCodec;
   // 2026-11-11（C 方案）：建会话前先问服务端"我该走哪一路"。
   // 只在没有/超过 20 秒没问过时才问（重连循环里不必每次都问）。
   try {
@@ -2302,11 +2330,19 @@ async function startRtc264() {
     const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER) + '&stream=' + (RTC264.stream || 1)
       // 2026-11-12：带上客户端 id。服务端据此认定"谁真的在观看"——主路归属只认这个信号，
       // 不再认"反复调用 /h264-stream-pick"，避免只认领不观看的客户端长期霸占主路。
-      + '&client=' + encodeURIComponent(paClientId()), { method: 'POST', cache: 'no-store' });
+      + '&client=' + encodeURIComponent(paClientId()) + '&codec=' + reqCodec, { method: 'POST', cache: 'no-store' });
     if (!resp.ok) throw new Error('offer ' + resp.status);
     const offer = await resp.json();
     if (my !== rtc264Gen) return;
     if (!offer || !offer.sdp || !offer.sid) throw new Error('bad offer');
+    // 服务端可能在"别的观众正在看 H.264 / 本机没有 HEVC"时降级 —— 以响应的 codec 为准，
+    // worker 的解码路径必须跟着这个值走（否则 hvc1 里塞 H.264 帧＝黑屏）。
+    R.codec = (offer.codec === 'hevc') ? 'hevc' : 'h264';
+    R.hevcSwitching = false;
+    if (reqCodec !== R.codec) {
+      try { console.log('rtc264: 请求 codec=' + reqCodec + '，服务端降级为 ' + R.codec); } catch (e) { }
+      setNote('HEVC 未生效（服务端按 ' + R.codec + ' 建会话），已自动适配', 6000);
+    }
     R.sid = offer.sid;
     const ice = [];
     // 局域网/电脑热点（离线模式）：手机和电脑在同一网段，直接用 host 候选互连；
@@ -2409,6 +2445,18 @@ async function startRtc264() {
     setStat('WebRTC264 连接中');
     R.statsTimer = setInterval(rtc264Stats, 1000);   // 1 秒一次：冻结/重启后能更快发现
     R.watchdog = setTimeout(function () { if (!R.firstVideo) rtc264Retry('no-video'); }, 12000);
+    // 2026-11-12 HEVC P1 兜底：HEVC 会话 2.8 秒还没解出任何一帧（解码器建不起来/硬解不吃这段码流）
+    // → 记 10 分钟不要再试，立刻按 H.264 重建会话。用户最多黑屏 ~3 秒，之后自动恢复。
+    clearTimeout(R.hevcTimer);
+    if (R.codec === 'hevc') {
+      const _sid = R.sid;
+      R.hevcTimer = setTimeout(function () {
+        if (my !== rtc264Gen || R.sid !== _sid) return;
+        if (state.mode !== 'h264' || document.hidden) return;
+        if (R.firstVideo || (window.__wc264 && window.__wc264.frames > 0)) return;
+        hevcToH264('2.8 秒内没有解出画面');
+      }, 2800);
+    }
   } catch (e) {
     if (my !== rtc264Gen) return;
     rtc264Retry('start-error:' + (e && e.message));
@@ -2454,6 +2502,58 @@ try {
     })();
   }
 } catch (e) { __hevcCap.err++; }
+
+// 2026-11-12 HEVC P1：**页面侧 codec 决策 + 回落**。
+// 规则：
+//   1) ?codec=hevc 显式指定；否则跟服务端 /h264-status 的 codec（配置 screen.h264.codec，默认 h264）；
+//   2) 走 HEVC 前必须能力门禁全过：rtp（SDP 能谈 H265）+ wc（WebCodecs 能配 hvc1）+ hw（有硬件解码器）；
+//   3) 任何一环没解出画面/解码器报错，3 秒内自动回 H.264，并记 10 分钟"别再试"，
+//      避免在不支持的设备上黑屏-重连死循环。
+var HEVC_FALLBACK_KEY = 'hevcOffAt';
+function hevcFallbackBlocked() {
+  try {
+    var at = Number(sessionStorage.getItem(HEVC_FALLBACK_KEY) || 0);
+    return at > 0 && (Date.now() - at) < 10 * 60 * 1000;
+  } catch (e) { return false; }
+}
+function markHevcFallback(why) {
+  try { sessionStorage.setItem(HEVC_FALLBACK_KEY, String(Date.now())); } catch (e) { }
+  try { console.log('hevc: 已记回落（' + why + '），10 分钟内不再尝试'); } catch (e) { }
+}
+function hevcCapReady() {
+  return !!(__hevcCap.rtp && __hevcCap.wc && __hevcCap.hw);
+}
+function hevcCapText() {
+  return 'rtp=' + (__hevcCap.rtp | 0) + ' wc=' + (__hevcCap.wc | 0) + ' hw=' + (__hevcCap.hw | 0) + ' done=' + (__hevcCap.done | 0);
+}
+function waitHevcCap(ms) {
+  return new Promise(function (resolve) {
+    if (__hevcCap.done) return resolve();
+    var t0 = Date.now();
+    (function tick() {
+      if (__hevcCap.done || Date.now() - t0 >= ms) return resolve();
+      setTimeout(tick, 50);
+    })();
+  });
+}
+// 返回这一次会话该用的 codec（'h264' | 'hevc'）。st = /h264-status 的结果。
+async function resolveSessionCodec(st) {
+  var explicit = '';
+  try { explicit = String(new URLSearchParams(location.search).get('codec') || '').toLowerCase(); } catch (e) { }
+  var want = 'h264';
+  if (explicit === 'hevc') want = 'hevc';
+  else if (explicit !== 'h264' && st && st.codec === 'hevc') want = 'hevc';
+  if (want !== 'hevc') return 'h264';
+  // 探测是异步的：用户可能页面一打开就点「清晰」，等它 0.9 秒
+  await waitHevcCap(900);
+  if (!hevcCapReady()) {
+    markHevcFallback('能力不足 ' + hevcCapText());
+    try { setNote('这台设备不支持 HEVC（' + hevcCapText() + '），继续用 H.264', 6000); } catch (e) { }
+    return 'h264';
+  }
+  if (hevcFallbackBlocked()) return 'h264';
+  return 'hevc';
+}
 
 async function rtc264Stats() {
   const R = RTC264, pc = R.pc;
@@ -3001,7 +3101,7 @@ async function rtc264Stats() {
     // 2026-11-12（用户要求）：顶部数值只留"用户看得懂"的：连接方式 · 分辨率 · 帧率 · 码率 · 缓冲。
     // 原来尾巴上还挂着 autoqTag() 和 _fitTag（[画…]{RTP-TF/MSTP/VD/OC/VF} hw=… 这类调试信息），
     // 手机上根本看不懂，全部去掉；需要排查就看 [wc264-diag] 日志。
-    RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · ' + fpsTxt
+    RTC264.hudText = 'WebRTC264 ' + (R.codec === 'hevc' ? 'HEVC ' : '') + how + ' · ' + res + ' · ' + fpsTxt
       + (mbpsTxt ? ' · ' + mbpsTxt : '')
       + ' · 缓' + ((_wcBufOverride >= 0 ? _wcBufOverride : bufMs)) + 'ms' + (_wcBufOverride >= 0 ? '(WC)' : '');
     // 2026-11-10：把 WebCodecs 接收端的健康度也放进来（桌面排查用，手机上看不到 #stat）：
@@ -3093,6 +3193,10 @@ async function rtc264Stats() {
           err: String((_wd.lastErr || '')).slice(-160),
           // 2026-11-12：HEVC 能力（见上面的探测块）。wc/hw/main10/rtp 各 0/1，done=探测是否完成。
           hevc: __hevcCap,
+          // 2026-11-12 HEVC P1：这次会话实际/请求的 codec，以及回落原因（手机上唯一的排障证据）
+          codec: R.codec || '',
+          reqCodec: R.reqCodec || '',
+          hevcFallback: R.hevcFallback || '',
           ua: navigator.userAgent
         });
         fetch('/wc264-diag?k=' + encodeURIComponent(KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, cache: 'no-store' })
@@ -3224,6 +3328,28 @@ function applyRtc264Audio() {
     if (rtc264AudioUsePcm()) { try { stopPcmAudio(); } catch (e) { } }
   }
 }
+// 2026-11-12 HEVC P1：HEVC 不可用 / 解码失败 → 回 H.264（一次，10 分钟内不再试）。
+function hevcToH264(why) {
+  const R = RTC264;
+  if (!R || R.codec !== 'hevc' || R.hevcSwitching) return;
+  R.hevcSwitching = true;
+  R.hevcFallback = String(why || '');
+  markHevcFallback(R.hevcFallback);
+  try { console.log('hevc: 回落 H.264（' + R.hevcFallback + '）'); } catch (e) { }
+  try { setNote('HEVC 没有正常出画面，正在自动切回 H.264…', 6000); } catch (e) { }
+  // 上报到电脑端日志：手机上看不到控制台，这条是"为什么不支持"的唯一证据。
+  try {
+    fetch('/wc264-diag?k=' + encodeURIComponent(KEY), {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ hevcFallback: R.hevcFallback, hevcCap: __hevcCap }), cache: 'no-store'
+    }).catch(function () { });
+  } catch (e) { }
+  h264.codec = 'h264';
+  try { clearTimeout(R.hevcTimer); } catch (e) { }
+  // 回落期间保留最后一帧（不黑屏），5 秒后无论如何恢复常规清理逻辑
+  try { R.keepFrameUntil = Date.now() + 5000; } catch (e) { }
+  rtc264Retry('hevc->h264');
+}
 function rtc264Retry(why) {
   const R = RTC264;
   if (R.busy) return;
@@ -3328,6 +3454,14 @@ async function startH264() {
   try { st = await (await fetch('/h264-status?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { st = null; }
   h264.wt = (st && st.wt) || null;
   h264.rtcEnabled = !!(st && st.rtc && st.rtc.enabled);
+  // 2026-11-12 HEVC P1：能力门禁 + 配置/URL 共同决定这次走哪个 codec。
+  // 探不到硬件 HEVC（老安卓/无硬解）就直接用 H.264，不黑屏、不重试。
+  try { h264.codec = await resolveSessionCodec(st); } catch (e) { h264.codec = 'h264'; }
+  // HEVC 灰度：让状态栏/诊断看得到"这次是哪种编码"。服务端真正回什么 codec，以 offer 响应为准。
+  try {
+    if (h264.codec === 'hevc') setNote('HEVC 灰度已启用（配置/URL 指定）', 5000);
+    else if (String((st && st.codec) || '') === 'hevc') setNote('服务端开了 HEVC，但这台设备不满足条件（' + hevcCapText() + '），本次用 H.264', 8000);
+  } catch (e) { }
   // 局域网（https，有 WebRTC）默认拉满 2560：带宽/延迟都够，文字更清晰；设置里可关。
   // 必须**等它生效**再建 WebRTC 会话，否则编码器先按 1920 起、视频尺寸就定死成 1920 了。
   try {
