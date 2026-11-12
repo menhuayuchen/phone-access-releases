@@ -1281,6 +1281,224 @@ function startWtTransport() {
 //  4. 回前台时如果连接已经死了，自动重连一次（手机锁屏再解锁的常见场景）。
 let rtc264Gen = 0;
 const RTC264 = { pc: null, sid: '', watchdog: null, statsTimer: null, attempts: 0, startedAt: 0, firstVideo: false, busy: false };
+
+// ============================================================================
+// 2026-11-12（透明化：画质模式）
+//
+// 规则（用户拍板）：
+//   ① 每次打开页面 **默认"自动"** —— 第一印象要像大厂那样顺，但绝不偷偷改用户的选择；
+//   ② 用户一旦显式选档 = 手动；手动档位永远优先，系统只能**临时**降档，而且必须
+//      在画面角上的徽标里写清楚"你选的是 X、现在实际 Y、为什么"；
+//   ③ 自动调整**永不落盘**（服务端 auto:true 不写状态文件），用户的选择才落盘；
+//   ④ 想跨会话固定手动，必须显式点「固定我的选择」（hqPin=1），否则下次打开还是自动。
+// 与服务端的约定：GET /h264-quality 返回 req（用户意图）/ auto（最近一次自动降档）/ caps（设备上限）。
+// ============================================================================
+var HQMODE = {
+  mode: 'auto', pin: false,
+  // 2026-11-12（按参数自动）：两个维度各自可选
+  //   autoFps   = 帧率由系统按设备能力/解码情况自动调
+  //   autoKbps  = 码率由系统按丢包情况自动调（AUTOQ）
+  // 默认两个都自动（"全自动"），每次打开页面都回到这个状态，除非用户点了"固定"。
+  autoFps: true, autoKbps: true,
+  lastFps: 0, lastKbps: 0,
+  effFps: 0, effKbps: 0, reqFps: 0, reqKbps: 0,
+  autoFrom: 0, autoTo: 0, autoAt: 0,
+  capFps: 0, capKbps: 0, level: 0,
+  autoStartFps: 120, autoStartKbps: 20000,
+};
+var _hqBadgeEl = null;
+try { window.__hqm = HQMODE; } catch (e) { }   // 诊断/自动化测试用
+function _hqLs(k, d) { try { var v = localStorage.getItem(k); return (v === null) ? d : v; } catch (e) { return d; } }
+function hqModeLoad() {
+  try {
+    HQMODE.pin = _hqLs('hqPin', '0') === '1';
+    HQMODE.lastFps = Number(_hqLs('hqFps', '0')) || 0;
+    HQMODE.lastKbps = Number(_hqLs('hqKbps', '0')) || 0;
+    // 固定的组合：hqAutoFps/hqAutoKbps 各 '1'/'0'；没固定过就是全自动
+    HQMODE.autoFps = _hqLs('hqAutoFps', '1') !== '0';
+    HQMODE.autoKbps = _hqLs('hqAutoKbps', '1') !== '0';
+    if (!HQMODE.pin) { HQMODE.autoFps = true; HQMODE.autoKbps = true; }   // 每次打开默认全自动
+    HQMODE.mode = (HQMODE.autoFps && HQMODE.autoKbps) ? 'auto' : (HQMODE.autoFps || HQMODE.autoKbps ? 'mixed' : 'manual');
+  } catch (e) { }
+}
+async function hqGet() {
+  try { return await (await fetch('/h264-quality?k=' + encodeURIComponent(KEY), { cache: 'no-store' })).json(); } catch (e) { return null; }
+}
+function hqApply(j) {
+  if (!j || !j.ok) return;
+  HQMODE.effFps = Number(j.fps) || 0; HQMODE.effKbps = Number(j.kbps) || 0;
+  var r = j.req || {}; HQMODE.reqFps = Number(r.fps) || 0; HQMODE.reqKbps = Number(r.kbps) || 0;
+  var a = j.auto || {}; HQMODE.autoFrom = Number(a.from) || 0; HQMODE.autoTo = Number(a.to) || 0; HQMODE.autoAt = Number(a.at) || 0;
+  var c = j.caps || {}; var cc = c.caps || {};
+  HQMODE.capFps = Number(cc.maxFps || c.fps) || 0;
+  HQMODE.capKbps = Number(cc.maxKbps || c.kbps) || 0;
+  HQMODE.level = Number(c.level) || 0;
+  hqBadgePaint();
+  // 设置面板里的那一行也要跟着刷新（自动降档/回升时不能只更新角标）
+  try { if (typeof window.__hqPaintModeRow === 'function') window.__hqPaintModeRow(); } catch (e) { }
+}
+function hqBadgeText() {
+  // 2026-11-12（按参数自动）：逐项说明"哪一项自动、哪一项是你选的、实际多少"
+  var want = HQMODE.lastFps || HQMODE.reqFps || 0;
+  var eff = HQMODE.effFps || 0;
+  var effK = Math.round((HQMODE.effKbps || 0) / 1000) || 0;
+  // ① 帧率手动但被系统临时降过档 → 说清楚"你选的多少、现在多少、为什么"
+  if (!HQMODE.autoFps && HQMODE.autoFrom && HQMODE.autoTo && HQMODE.autoTo < HQMODE.autoFrom) {
+    return { t: '手动 ' + HQMODE.autoFrom + ' → 实际 ' + HQMODE.autoTo + 'fps（手机解码跟不上） · ' + effK + 'Mbps', warn: true };
+  }
+  // ② 手动帧率超过这台设备上限 → 明确说是设备上限，不是我们偷偷降
+  if (!HQMODE.autoFps && want && HQMODE.capFps && want > HQMODE.capFps) {
+    return { t: '手动 ' + want + 'fps · 设备上限 ' + HQMODE.capFps + 'fps（实际 ' + (eff || HQMODE.capFps) + '）', warn: true };
+  }
+  var fpsTxt = HQMODE.autoFps ? ('帧率自动 ' + (eff || '?') + 'fps') : ('帧率 ' + (want || eff || '?') + 'fps');
+  var kTxt = HQMODE.autoKbps ? ('码率自动 ' + (effK || '?') + 'Mbps') : ('码率 ' + (effK || '?') + 'Mbps');
+  return { t: fpsTxt + ' · ' + kTxt, warn: false };
+}
+function hqBadgePaint() {
+  try {
+    if (!_hqBadgeEl) return;
+    var x = hqBadgeText();
+    _hqBadgeEl.textContent = x.t;
+    _hqBadgeEl.style.color = x.warn ? '#ffd08a' : '#c9ccd1';
+    _hqBadgeEl.style.background = x.warn ? 'rgba(58,40,12,.82)' : 'rgba(20,22,28,.72)';
+    _hqBadgeEl.title = (HQMODE.mode === 'auto'
+      ? '自动模式：帧率按设备能力、码率按丢包自适应；每次打开默认自动。'
+      : '手动模式：你选的档位优先，系统只会临时降档并在这里说明原因。')
+      + '\n点这里打开设置。';
+  } catch (e) { }
+}
+// 2026-11-12：把一句话显示到设置面板的提示区（找不到就安静跳过）
+function _hqSay(t, c) {
+  try {
+    var el = document.getElementById('hqMsg');
+    if (el) { el.textContent = String(t || ''); el.style.color = c || '#868c96'; }
+  } catch (e) { }
+}
+function hqBadgeEnsure() {
+  if (_hqBadgeEl) return;
+  try {
+    var d = document.createElement('div');
+    d.id = 'hqBadge';
+    d.style.cssText = 'position:fixed;left:10px;bottom:14px;z-index:30;max-width:62vw;padding:5px 11px;border-radius:999px;'
+      + 'background:rgba(20,22,28,.72);color:#c9ccd1;font-size:11.5px;line-height:1.35;'
+      + 'border:1px solid rgba(255,255,255,.12);cursor:pointer;user-select:none;white-space:nowrap;'
+      + 'overflow:hidden;text-overflow:ellipsis;backdrop-filter:blur(6px)';
+    d.onclick = function () { try { var g = document.getElementById('paGear'); if (g) g.click(); } catch (e) { } };
+    document.body.appendChild(d);
+    _hqBadgeEl = d;
+  } catch (e) { }
+}
+async function hqSetMode(mode, fps, kbps) {
+  if (mode === 'auto') {
+    HQMODE.mode = 'auto';
+    try { localStorage.setItem('hqPin', '0'); } catch (e) { }
+    var j = await hqGet();
+    var jc = (j && j.caps) || {}, jcc = jc.caps || {};
+    var capF = Number(jcc.maxFps || jc.fps) || 120;
+    var capK = Number(jcc.maxKbps || jc.kbps) || 20000;
+    var f = Math.max(30, Math.min(capF, 120));          // 自动默认值：我们实测最稳的 120fps
+    var k = Math.max(6000, Math.min(capK, 20000));      // 20Mbps，之后由丢包自适应
+    HQMODE.autoStartFps = f; HQMODE.autoStartKbps = k;
+    try { if (typeof AUTOQ === 'object' && AUTOQ) { AUTOQ.on = true; AUTOQ.kbps = k; } } catch (e) { }
+    try { localStorage.setItem('hqAuto', '1'); } catch (e) { }
+    try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fps: f, kbps: k, auto: true }) }); } catch (e) { }
+    hqApply(await hqGet());
+    return;
+  }
+  HQMODE.mode = 'manual';
+  var ff = Math.max(30, Math.min(240, Math.round(Number(fps) || HQMODE.lastFps || 120)));
+  var kk = Math.max(6000, Math.min(100000, Math.round(Number(kbps) || HQMODE.lastKbps || 20000)));
+  HQMODE.lastFps = ff; HQMODE.lastKbps = kk;
+  try {
+    localStorage.setItem('hqFps', String(ff));
+    localStorage.setItem('hqKbps', String(kk));
+  } catch (e) { }
+  try { if (typeof AUTOQ === 'object' && AUTOQ) { AUTOQ.on = false; } } catch (e) { }
+  try { localStorage.setItem('hqAuto', '0'); } catch (e) { }
+  var cid = '';
+  try { cid = (typeof paClientId === 'function') ? paClientId() : ''; } catch (e) { }
+  var rj = null;
+  try {
+    rj = await (await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ fps: ff, kbps: kk, client: cid }) })).json();
+  } catch (e) { }
+  // 2026-11-12（透明化）：多设备共享主路时服务端会拒绝"非主人"改档。
+  // 以前页面什么都不提示（点了像没反应）；现在把服务端的原话显示出来。
+  if (rj && rj.shared === true) _hqSay(rj.message || '当前与他人共享主路画质，这台设备的档位不会影响别人', '#ffb454');
+  else if (rj && rj.ok === false) _hqSay('改档失败：' + String(rj.error || rj.message || '服务端拒绝'), '#ff6b6b');
+  hqApply(await hqGet());
+}
+// 2026-11-12（按参数自动）：把"自动"拆成两个维度，用户可选：
+//   hqApplyMode(true,  true )  全自动（帧率 + 码率都由系统调）
+//   hqApplyMode(true,  false)  帧率自动、码率手选
+//   hqApplyMode(false, true )  帧率手选、码率自动
+//   hqApplyMode(false, false)  全手动
+// 帧率自动 = 按设备能力起步（≤120）并由自适应升降；码率自动 = AUTOQ 按丢包 6~20Mbps 调。
+async function hqApplyMode(autoFps, autoKbps, fps, kbps) {
+  HQMODE.autoFps = !!autoFps;
+  HQMODE.autoKbps = !!autoKbps;
+  if (HQMODE.autoFps) HQMODE.mode = 'auto'; else if (HQMODE.autoKbps) HQMODE.mode = 'mixed'; else HQMODE.mode = 'manual';
+  var j = await hqGet();
+  var jc = (j && j.caps) || {}, jcc = jc.caps || {};
+  var capF = Number(jcc.maxFps || jc.fps) || 120;
+  var capK = Number(jcc.maxKbps || jc.kbps) || 20000;
+  if (HQMODE.autoFps) {
+    HQMODE.autoStartFps = Math.max(30, Math.min(capF, 120));
+  } else {
+    HQMODE.lastFps = Math.max(30, Math.min(240, Math.round(Number(fps) || HQMODE.lastFps || 120)));
+  }
+  if (HQMODE.autoKbps) {
+    HQMODE.autoStartKbps = Math.max(6000, Math.min(capK, 20000));
+  } else {
+    HQMODE.lastKbps = Math.max(6000, Math.min(100000, Math.round(Number(kbps) || HQMODE.lastKbps || 20000)));
+  }
+  try {
+    if (HQMODE.autoKbps) { if (typeof AUTOQ === 'object' && AUTOQ) { AUTOQ.on = true; AUTOQ.kbps = HQMODE.autoStartKbps; } }
+    else { if (typeof AUTOQ === 'object' && AUTOQ) AUTOQ.on = false; }
+    localStorage.setItem('hqAuto', HQMODE.autoKbps ? '1' : '0');
+    if (!HQMODE.autoFps) localStorage.setItem('hqFps', String(HQMODE.lastFps));
+    if (!HQMODE.autoKbps) localStorage.setItem('hqKbps', String(HQMODE.lastKbps));
+  } catch (e) { }
+  var useF = HQMODE.autoFps ? HQMODE.autoStartFps : HQMODE.lastFps;
+  var useK = HQMODE.autoKbps ? HQMODE.autoStartKbps : HQMODE.lastKbps;
+  var body = { fps: useF, kbps: useK, auto: HQMODE.autoFps && HQMODE.autoKbps };
+  if (!HQMODE.autoFps) { try { body.client = (typeof paClientId === 'function') ? paClientId() : ''; } catch (e) { } }
+  var rj = null;
+  try { rj = await (await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) })).json(); } catch (e) { }
+  if (rj && rj.shared === true) _hqSay(rj.message || '当前与他人共享主路画质，这台设备的档位不会影响别人', '#ffb454');
+  else if (rj && rj.ok === false) _hqSay('改档失败：' + String(rj.error || rj.message || '服务端拒绝'), '#ff6b6b');
+  hqApply(await hqGet());
+  if (typeof window.__hqPaintModeRow === 'function') { try { window.__hqPaintModeRow(); } catch (e) { } }
+  return rj;
+}
+// 顶部数值显示里的画质标签（短）：[全自动] / [帧率自动] / [码率自动] / [手动]
+function hqHudTag() {
+  try {
+    if (HQMODE.autoFrom && HQMODE.autoTo && HQMODE.autoTo < HQMODE.autoFrom && !HQMODE.autoFps) {
+      return '[手动 ' + HQMODE.autoFrom + '→' + HQMODE.autoTo + ']';
+    }
+    if (HQMODE.autoFps && HQMODE.autoKbps) return '[全自动]';
+    if (HQMODE.autoFps) return '[帧率自动]';
+    if (HQMODE.autoKbps) return '[码率自动]';
+    return '[手动]';
+  } catch (e) { return ''; }
+}
+async function hqModeBoot() {
+  try {
+    hqModeLoad();
+    if (HQMODE.pin) {
+      // 用户固定过：按固定的组合启动（可能是全自动、也可能是某几项自动）
+      await hqApplyMode(HQMODE.autoFps, HQMODE.autoKbps, HQMODE.lastFps, HQMODE.lastKbps);
+    } else {
+      // 默认：全自动（每次打开都回到这个状态）
+      HQMODE.autoFps = true; HQMODE.autoKbps = true;
+      await hqApplyMode(true, true);
+    }
+    hqApply(await hqGet());
+  } catch (e) { }
+  try { setInterval(function () { hqGet().then(hqApply); }, 8000); } catch (e) { }
+}
+try { setTimeout(function () { hqModeBoot(); }, 1800); } catch (e) { }
+
 // 2026-11-10：WebCodecs 自研接收端（可选路径）。
 // 目的：绕过浏览器 jitter buffer —— 它在零丢包/零抖动/速率匹配的情况下仍会缓慢膨胀，
 // 且 jitterBufferTarget/playoutDelayHint 实测被 Chrome 无视，页面侧没有任何 API 能压住。
@@ -1897,7 +2115,7 @@ async function autoqApply(kbps) {
   AUTOQ.kbps = Math.max(6000, Math.min(20000, Math.round(Number(kbps) || 12000)));
   AUTOQ.lastApply = Date.now();
   try { localStorage.setItem('hqAutoKbps', String(AUTOQ.kbps)); } catch (e) { }
-  try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: AUTOQ.kbps }) }); } catch (e) { }
+  try { await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: AUTOQ.kbps, auto: true }) }); } catch (e) { }
 }
 function autoqTick() {
   if (!AUTOQ.on) return;
@@ -2584,7 +2802,11 @@ async function rtc264Stats() {
         const _avg2 = RTC264.dw.reduce(function (a, b) { return a + b; }, 0) / RTC264.dw.length;
         const _stable = _avg2 >= _in2 * 0.9 && !(_now2 - (_w2._rsAt | 0) < 20000);
         RTC264.goodTicks = _stable ? ((RTC264.goodTicks | 0) + 1) : 0;
-        const _want = Number(localStorage.getItem('hqFps') || 0) || Number(RTC264.userTarget || 0) || 0;
+        // 2026-11-12（透明化）：自动回升的上限 —— 手动模式认"用户选的档"，
+        // 自动模式认"自动起步档"（默认 120），绝不擅自超过。
+        const _want = (HQMODE.mode === 'manual')
+          ? (Number(HQMODE.lastFps || 0) || Number(localStorage.getItem('hqFps') || 0) || Number(RTC264.userTarget || 0) || 0)
+          : (Number(HQMODE.autoStartFps || 0) || 120);
         const _ups = RTC264.ups | 0;
         if (RTC264.downgraded && _want > _in2 && RTC264.goodTicks >= 15 && _ups < 2 &&
             _now2 - (RTC264.lastUp | 0) > 30000 && !RTC264.downshifting) {
@@ -2774,9 +2996,12 @@ async function rtc264Stats() {
           } catch (e) { }
         }
       } catch (e) { }
+    // 2026-11-12（用户要求）：顶部数值只留"用户看得懂"的：连接方式 · 分辨率 · 帧率 · 码率 · 缓冲。
+    // 原来尾巴上还挂着 autoqTag() 和 _fitTag（[画…]{RTP-TF/MSTP/VD/OC/VF} hw=… 这类调试信息），
+    // 手机上根本看不懂，全部去掉；需要排查就看 [wc264-diag] 日志。
     RTC264.hudText = 'WebRTC264 ' + how + ' · ' + res + ' · ' + fpsTxt
       + (mbpsTxt ? ' · ' + mbpsTxt : '')
-      + ' · 缓' + ((_wcBufOverride >= 0 ? _wcBufOverride : bufMs)) + 'ms' + (_wcBufOverride >= 0 ? '(WC)' : '') + autoqTag() + _fitTag;
+      + ' · 缓' + ((_wcBufOverride >= 0 ? _wcBufOverride : bufMs)) + 'ms' + (_wcBufOverride >= 0 ? '(WC)' : '');
     // 2026-11-10：把 WebCodecs 接收端的健康度也放进来（桌面排查用，手机上看不到 #stat）：
     //   cfg=解码器重建次数 缺=时间戳跳档/丢包断链次数 丢=被丢弃的帧数（启动阶段+断链等待）
     let _wcDiag = '';
@@ -2789,7 +3014,9 @@ async function rtc264Stats() {
           + ' ts' + (_wd.stats.tsEma | 0) + '/' + (_wd.stats.tsMax | 0) + 't';
       }
     } catch (e) { }
-    setStat(RTC264.hudText + ' · 帧' + fr + '/解' + fd + ' · 收' + Math.round(br / 1024) + 'KB' + _wcDiag);
+    // 2026-11-12（用户要求）：顶部数值 = 画质模式标签 + 真正有用的那几项。
+    // 原来的 帧/解/收KB/cfg/断链/丢/ts 都属于排查信息，手机上没人看，已移到 [wc264-diag]。
+    setStat(hqHudTag() + ' · ' + RTC264.hudText);
 
     // 2026-11-10：每 30 秒把接收端健康度报给服务端，压成一行写进 screen-server.log。
     // 花屏/冻屏只有手机端能看到真相，而安卓 Chrome 的 console 不好取 —— 出问题时
@@ -5906,32 +6133,93 @@ bindImg(img);
       if (txt) { capEl.textContent = txt; capEl.style.color = color; }
     } catch (e) { }
   })();
+    // 2026-11-12（透明化）：这个按钮现在控制**整体模式**（帧率 + 码率），不再只是码率自动。
+    // 自动模式 = 帧率按设备能力起步、码率按丢包自适应，每次打开页面默认就是它。
     const paintAuto = () => {
+      const anyAuto = !!(HQMODE.autoFps || HQMODE.autoKbps);
       if (autoBtn) {
-        autoBtn.style.background = AUTOQ.on ? '#2f6f3f' : '#2a2d36';
-        autoBtn.style.color = AUTOQ.on ? '#e8ffe9' : '#c9ccd1';
-        autoBtn.textContent = AUTOQ.on ? '自动·开' : '自动';
+        autoBtn.style.background = anyAuto ? '#2f6f3f' : '#2a2d36';
+        autoBtn.style.color = anyAuto ? '#e8ffe9' : '#c9ccd1';
+        autoBtn.textContent = anyAuto ? '自动·开' : '自动';
+        autoBtn.title = anyAuto ? '当前至少有一项是自动（帧率/码率）；点一下变全手动' : '全手动：帧率和码率都用你选的档位';
       }
-      if (kSel) kSel.disabled = AUTOQ.on;
+      if (kSel) kSel.disabled = !!HQMODE.autoKbps;
+      if (fpsSel) fpsSel.disabled = !!HQMODE.autoFps;
+      paintModeRow();
     };
+    const modeRow = box.querySelector('#hqMode');
+    const modeTxt = box.querySelector('#hqModeTxt');
+    const hqPills = Array.prototype.slice.call(box.querySelectorAll('#hqMode button[data-hqm]'));
+    const pinCb = box.querySelector('#hqPinCb');
+    function hqModeCombo() { return (HQMODE.autoFps ? 'f' : '') + (HQMODE.autoKbps ? 'k' : '') || 'none'; }
+    function paintModeRow() {
+      try {
+        const combo = hqModeCombo();
+        if (modeTxt) {
+          const x = (typeof hqBadgeText === 'function') ? hqBadgeText() : { t: '', warn: false };
+          let extra = '';
+          if (combo === 'fk') extra = '（帧率 + 码率都由系统调）';
+          else if (combo === 'f') extra = '（只有帧率自动，码率用你选的）';
+          else if (combo === 'k') extra = '（只有码率自动，帧率用你选的）';
+          else extra = '（帧率和码率都用你选的）';
+          if (HQMODE.autoFrom && HQMODE.autoTo && HQMODE.autoTo < HQMODE.autoFrom && !HQMODE.autoFps) {
+            extra += ' · 系统临时降过档，约 30 秒自动回升';
+          }
+          modeTxt.textContent = '当前：' + x.t + extra;
+          modeTxt.style.color = x.warn ? '#ffb454' : '#8f96a1';
+        }
+        for (const b of hqPills) {
+          const want = b.getAttribute('data-hqm');
+          const on = (want === 'both' && combo === 'fk') || (want === 'fps' && combo === 'f') || (want === 'kbps' && combo === 'k') || (want === 'none' && combo === 'none');
+          b.style.background = on ? '#2f6f3f' : '#2a2d36';
+          b.style.color = on ? '#e8ffe9' : '#c9ccd1';
+          b.style.borderColor = on ? '#3d8a52' : '#3a3e4a';
+        }
+        if (pinCb) pinCb.checked = !!HQMODE.pin;
+        // 下拉框：哪一项是自动的就禁用（用户改不了）
+        if (fpsSel) fpsSel.disabled = !!HQMODE.autoFps;
+        if (kSel) kSel.disabled = !!HQMODE.autoKbps;
+      } catch (e) { }
+    }
+    try { window.__hqPaintModeRow = paintModeRow; } catch (e) { }   // 让 8 秒轮询也能刷新这一行
+    for (const b of hqPills) {
+      b.addEventListener('click', async () => {
+        const want = b.getAttribute('data-hqm');
+        const f = Number(fpsSel.value) || HQMODE.lastFps || HQMODE.effFps || 120;
+        const k = Number(kSel.value) || HQMODE.lastKbps || HQMODE.effKbps || 20000;
+        const aF = (want === 'both' || want === 'fps');
+        const aK = (want === 'both' || want === 'kbps');
+        await hqApplyMode(aF, aK, f, k);
+        paintModeRow();
+        setMsg('画质模式已切换：' + (aF && aK ? '全自动' : aF ? '帧率自动' : aK ? '码率自动' : '全手动')
+          + (HQMODE.pin ? '（已固定，下次打开沿用）' : '（下次打开仍默认全自动）'), '#8CE58C');
+      });
+    }
+    if (pinCb) pinCb.addEventListener('change', async () => {
+      HQMODE.pin = !!pinCb.checked;
+      try {
+        localStorage.setItem('hqPin', HQMODE.pin ? '1' : '0');
+        localStorage.setItem('hqAutoFps', HQMODE.autoFps ? '1' : '0');
+        localStorage.setItem('hqAutoKbps', HQMODE.autoKbps ? '1' : '0');
+        if (HQMODE.pin && HQMODE.mode === 'auto') { localStorage.setItem('hqPin', '0'); HQMODE.pin = false; pinCb.checked = false; }
+      } catch (e) { }
+      paintModeRow();
+      setMsg(HQMODE.pin ? '已固定当前选择（下次打开沿用）' : '已取消固定（下次打开回到全自动）', '#8CE58C');
+    });
     paintAuto();
     if (autoBtn) autoBtn.addEventListener('click', async () => {
-      if (AUTOQ.on) {
-        AUTOQ.on = false;
-        try { localStorage.setItem('hqAuto', '0'); } catch (e) { }
+      // 这个按钮是"全自动"的快捷开关（和下面 4 个 pill 等价）
+      if (HQMODE.autoFps || HQMODE.autoKbps) {
+        const f = HQMODE.lastFps || HQMODE.effFps || Number(fpsSel.value) || 120;
+        const k = HQMODE.lastKbps || HQMODE.effKbps || Number(kSel.value) || 20000;
+        await hqApplyMode(false, false, f, k);
         paintAuto();
-        const k = Number(kSel.value) || 20000;
-        try {
-          await fetch('/h264-quality', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ kbps: k }) });
-          setMsg('自动已关闭，恢复手动 ' + Math.round(k / 1000) + ' Mbps');
-        } catch (e) { setMsg('自动已关闭'); }
+        setMsg('已切到全手动：' + f + 'fps / ' + Math.round(k / 1000) + 'Mbps（下次打开仍默认全自动）', '#8CE58C');
         return;
       }
-      AUTOQ.on = true;
-      try { localStorage.setItem('hqAuto', '1'); } catch (e) { }
+      await hqApplyMode(true, true);
       paintAuto();
-      await autoqApply(AUTOQ.kbps || 12000);
-      setMsg('自动已开启：现在 ' + Math.round(AUTOQ.kbps / 1000) + ' Mbps，丢包自动降、稳定再升（6–20 Mbps）', '#8CE58C');
+      setMsg('已切回全自动：帧率按设备能力、码率按丢包自适应（每次打开默认全自动）', '#8CE58C');
     });
     (async () => {
       try {
@@ -5992,8 +6280,13 @@ bindImg(img);
           try {
             if (fpsSel && Number(j.fps) > 0) fpsSel.value = String(j.fps);
             if (kSel && Number(j.kbps) > 0) kSel.value = String(j.kbps);
-            try { if (Number(j.fps) > 0) localStorage.setItem('hqFps', String(j.fps)); } catch (e) { }
-            try { if (Number(j.kbps) > 0) localStorage.setItem('hqKbps', String(j.kbps)); } catch (e) { }
+            // 2026-11-12（透明化）：只有**手动模式**才把"服务端生效值"写回 localStorage。
+            // 自动模式下生效值是我们挑的（例如自动起步 120fps），写回去会把用户上次
+            // 显式选的 90fps 冲掉 —— 那就成了"系统偷偷改用户选择"。
+            if (HQMODE.mode === 'manual') {
+              try { if (Number(j.fps) > 0) localStorage.setItem('hqFps', String(j.fps)); } catch (e) { }
+              try { if (Number(j.kbps) > 0) localStorage.setItem('hqKbps', String(j.kbps)); } catch (e) { }
+            }
             RTC264.inFps = Number(j.fps) || RTC264.inFps;
             RTC264.inFpsAt = Date.now();
           } catch (e) { }
@@ -6054,6 +6347,18 @@ bindImg(img);
             if (fpsChanged) RTC264.downgraded = false;
           } catch (e) { }
           updateFlow();
+          // 2026-11-12（透明化）：用户手动改档 = 切到手动模式（本次会话），并把选择记成"我的档位"。
+          // 默认仍是"下次打开回自动"——除非他点过「改回我的手选」（那会同时把 hqPin=1）。
+          try {
+            HQMODE.mode = 'manual';
+            HQMODE.lastFps = Number(j.fps) || HQMODE.lastFps;
+            HQMODE.lastKbps = Number(j.kbps) || HQMODE.lastKbps;
+            HQMODE.autoFrom = 0; HQMODE.autoTo = 0; HQMODE.autoAt = 0;   // 用户拍板，自动降档记录清零
+            if (typeof AUTOQ === 'object' && AUTOQ) AUTOQ.on = false;
+            try { localStorage.setItem('hqAuto', '0'); } catch (e) { }
+            if (typeof paintAuto === 'function') paintAuto();
+            if (typeof hqBadgePaint === 'function') hqBadgePaint();
+          } catch (e) { }
           setMsg('已生效：' + j.width + '×' + j.height + ' · ' + j.fps + 'fps · ' + Math.round(j.kbps / 1000) + 'Mbps', '#8CE58C');
           updateFlow();
           if (state.mode === 'h264') restartH264();
@@ -8281,6 +8586,17 @@ bindImg(img);
       + '</div>'
       + '<div style="color:#6b7078;font-size:11px;margin-top:8px">流量只由码率决定：1 Mbps ≈ 0.45 GB/时；分辨率/帧率改的是清晰度和流畅度，几乎不加减流量。'
       + '手机流量紧张选 8 Mbps；同网可 60fps，跨网建议 30fps。实测 20 Mbps 约 19.8、12 约 11.8、8 约 7.5–8 Mbps。50/80/100 Mbps 属于高负载档：只建议在局域网/Tailscale 直连时用，4G 一定卡。</div>'
+      + '<div id="hqMode" style="font-size:12px;line-height:1.7;margin-top:10px;padding:8px 10px;border-radius:9px;background:#20232b;border:1px solid #2f333d">'
+      + '<span id="hqModeTxt" style="color:#8f96a1"></span>'
+      + '<div style="display:flex;gap:8px;margin-top:6px;flex-wrap:wrap">'
+      + '<button data-hqm="both" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">全自动</button>'
+      + '<button data-hqm="fps" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">帧率自动</button>'
+      + '<button data-hqm="kbps" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">码率自动</button>'
+      + '<button data-hqm="none" style="background:#2a2d36;color:#e8eaee;border:1px solid #3a3e4a;border-radius:8px;padding:5px 10px;font-size:12px;cursor:pointer">全手动</button>'
+      + '</div>'
+      + '<label style="display:flex;align-items:center;gap:8px;margin-top:7px;color:#9aa0aa;font-size:12px;cursor:pointer">'
+      + '<input type="checkbox" id="hqPinCb"> 固定这个选择（下次打开也生效，否则每次打开都回到全自动）</label>'
+      + '</div>'
       + '<div id="hqFlow" style="font-size:12.5px;color:#8CE58C;margin-top:8px"></div>'
       + '<label style="display:flex;align-items:center;gap:8px;margin-top:10px;color:#c9ccd1;font-size:12.5px;cursor:pointer">'
       + '<input type="checkbox" id="hqWin"> 单窗口采集（实验：只传选中的窗口，被挡住也能抓；约 10–30fps）</label>'
@@ -9501,7 +9817,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-13.3';
+export const PAGE_VER = '2026-11-13.4';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

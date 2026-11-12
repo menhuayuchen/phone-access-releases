@@ -256,6 +256,10 @@ loadH264QualityState();
 // 设备审查/临时限制只压生效值；落盘的永远是用户的选择 —— 否则一次熄屏误判
 // 就会把用户的 2560x1600@120 永久覆盖成 1280x800@30（实测已经发生过）。
 let H264_REQ = { width: H264_W, fps: H264_FPS, kbps: H264_KBPS };
+// 2026-11-12（透明化）：最近一次"自动降档"的记录。页面用它解释"为什么现在不是我要的档"。
+// 只在 auto:true 的请求里写；用户显式改档（不带 auto）时清空 —— 这条规则保证：
+// **自动调整永远不冒充用户的选择**。
+let H264_AUTO = { at: 0, from: 0, to: 0 };
 // 原生分辨率：ddagrab 直喂 NVENC（零拷贝，不经过滤器）。2026-11-07 实测踩坑：
 // 这台机器（当前显卡 + 当前 ffmpeg）做不了 d3d11→nv12 的自动转换，零拷贝路径直接
 // `-40 Function not implemented`，ffmpeg 秒退重试，画面全黑（2560 宽时必现，1920 走过滤器所以正常）。
@@ -6628,7 +6632,14 @@ async function handler(req, res) {
   }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
-    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, irMs: H264_IR_MS, ir: H264_IR_MS, mon: H264_MON, maxCapture: CAP_W });
+    if (req.method === 'GET') return qreply({
+      ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, irMs: H264_IR_MS, ir: H264_IR_MS, mon: H264_MON, maxCapture: CAP_W,
+      // 2026-11-12（透明化）：把"用户想要什么 / 实际生效什么 / 为什么不一样"一起返回，
+      // 页面据此显示常驻徽标（"自动 120fps" 或 "手动 120 → 实际 90（解码跟不上）"）。
+      req: { width: H264_REQ.width, fps: H264_REQ.fps, kbps: H264_REQ.kbps },
+      auto: H264_AUTO,
+      caps: { fps: fpsCap, kbps: kbpsCap, width: CAP_W, level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, notes: DEVICE.notes },
+    });
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
@@ -6751,6 +6762,14 @@ async function handler(req, res) {
       };
       let __same = true;
       for (const kk of Object.keys(__before)) { if (__before[kk] !== __after[kk]) { __same = false; break; } }
+      // 2026-11-12（透明化）：记录/清除"自动降档"。
+      // auto:true = 页面自己做的临时调整（不落盘）；不带 auto = 用户显式选择（清空记录）。
+      try {
+        if (!__same && Number(__before.fps) !== Number(H264_FPS)) {
+          if (m.auto === true) H264_AUTO = { at: Date.now(), from: Math.round(Number(__before.fps) || 0), to: Math.round(H264_FPS) || 0 };
+          else H264_AUTO = { at: 0, from: 0, to: 0 };
+        }
+      } catch (e) { }
       try { if (!__same) console.log('h264: 画质变更 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps  client=' + String(m.client || '-') + ' stream=' + String(m.stream || 1) + ' auto=' + (m.auto === true)); } catch { }
       if (__same) {
         try { console.log('h264: 画质未变化，跳过重启（' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps）'); } catch (e) { }
