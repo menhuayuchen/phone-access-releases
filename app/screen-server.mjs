@@ -2033,11 +2033,17 @@ function s2Poll() {
       // 规则：主路还有人看 → 保持两路（多一个 NVENC 会话，代价可接受，且 rejoin 时零重建）；
       //       主路也没人看了 → 才真正收摊（那时重建谁也打扰不到）。
       if (_idleMs > 45000) {
-        if (h264PrimaryViewer()) {
+        // 2026-11-12：加**保留上限**。原策略是"主路有人看就一直保留第二路"，
+        // 好处是第二台设备回来时零重建；坏处是它走了以后永远占着一份 GPU 编码
+        // （实测 ffmpeg 内存 240MB 单路 → 380MB 两路）。所以最多保留 10 分钟。
+        const S2_HOLD_MAX_MS = 10 * 60 * 1000;
+        if (h264PrimaryViewer() && _idleMs < S2_HOLD_MAX_MS) {
           if (!S2.deferLogAt || Date.now() - S2.deferLogAt > 10 * 60 * 1000) {
             S2.deferLogAt = Date.now();
             console.log('rtc264: [第二路] 已空 ' + Math.round(_idleMs / 1000) + ' 秒，但主路有观众在看 —— 先不拆（拆会重建主编码器、打断主路）');
           }
+        } else if (h264PrimaryViewer()) {
+          s2StopAll('第二路空置超过 10 分钟（主路还在看，但继续保留等于白烧一份 GPU 编码）');
         } else {
           s2StopAll('45 秒没有观众，且主路也没人看');
         }
@@ -6427,7 +6433,19 @@ async function handler(req, res) {
       let m = {};
       try { m = JSON.parse(b || '{}'); } catch { }
       const hw = Number(m.hwnd) || 0;
+      const prevWin = H264_WIN;
       H264_WIN = hw > 0 ? Math.round(hw) : 0;
+      // 2026-11-12：**参数没变就什么都不做**。
+      // 页面每次加载都会 syncWin264() 发一次 {hwnd:0}（本来就是全屏），而这里原来无条件
+      // h264Stop() + 600ms 后 h264Start() —— 等于每次重载白重启一次编码器。
+      // 压测实测：每次重启都伴随 1.7~2.8 秒事件循环卡顿 + 音频丢 1.5 秒以上。
+      if (H264_WIN === prevWin) {
+        try {
+          res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+          res.end(JSON.stringify({ ok: true, win: H264_WIN, unchanged: true }));
+        } catch { }
+        return;
+      }
       console.log('h264: window mode -> ' + (H264_WIN ? ('hwnd ' + H264_WIN) : 'full screen'));
       if (h264.proc || h264.cap) h264Stop();
       h264.startQueued = true;

@@ -5651,32 +5651,20 @@ bindImg(img);
               }
             }
           } catch (e) { RTC264.stream = 1; }
-          const mine = String(RTC264.stream || 1);
-          const post = { stream: Number(mine) };
-          if (mine === '1') {
-            // 只有主路的主人才能改全局档位
-            if (RTC264.ownsPrimary === false) {
-              delete post.stream;   // 共享主路：不下发，避免改到别人的画面
-            } else {
-              if (wantF >= 30 && Number(j.fps) !== wantF) { post.fps = wantF; fpsSel.value = String(wantF); }
-              if (wantK >= 2000 && Number(j.kbps) !== wantK) { post.kbps = wantK; kSel.value = String(wantK); }
-              if (!post.fps && !post.kbps) delete post.stream;
-            }
-          } else {
-            // 第二路：把自己要的档位直接下发到第二路
-            if (wantF >= 30) { post.fps = wantF; fpsSel.value = String(wantF); }
-            if (wantK >= 2000) { post.kbps = wantK; kSel.value = String(wantK); }
-          }
-          if (post.fps || post.kbps) {
-            fetch('/h264-quality', {
-              method: 'POST', headers: { 'content-type': 'application/json' },
-              body: JSON.stringify(post)
-            }).catch(function () { });
-            if (RTC264.stream !== 2) {
-              setMsg('已按你上次选的画质对齐：' + (post.fps || j.fps) + 'fps / '
-                + Math.round((post.kbps || j.kbps) / 1000) + 'Mbps（可在下面手动改）', '#ffb454');
-            }
-          }
+          // 2026-11-12：**这里不再把本地保存的档位推回服务端**。
+          // 之前每次打开设置面板/页面重载都会把"服务端自动降到的 90fps"改回本地存的 120，
+          // 触发一次 h264: start（编码器重启）。压测实测：每次重启都伴随 1.7~2.8 秒的事件循环
+          // 卡顿 + 音频丢 1.5 秒以上（ffmpeg 重启时 CreateProcess 在内存压力下阻塞主线程）。
+          // 现在**以服务端为准**：把服务端的档位同步到界面和 localStorage；
+          // 只有用户主动改下拉框（下面 fpsSel/kSel 的 change 处理）才真正下发。
+          try {
+            if (fpsSel && Number(j.fps) > 0) fpsSel.value = String(j.fps);
+            if (kSel && Number(j.kbps) > 0) kSel.value = String(j.kbps);
+            try { if (Number(j.fps) > 0) localStorage.setItem('hqFps', String(j.fps)); } catch (e) { }
+            try { if (Number(j.kbps) > 0) localStorage.setItem('hqKbps', String(j.kbps)); } catch (e) { }
+            RTC264.inFps = Number(j.fps) || RTC264.inFps;
+            RTC264.inFpsAt = Date.now();
+          } catch (e) { }
         } catch (e) { }
         if (!j.width || !j.height) setMsg('高清通道未启用');
         updateFlow();
