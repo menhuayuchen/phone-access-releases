@@ -1364,6 +1364,31 @@ function pqPush(frame, ts) {
     PQ.stalls = (PQ.stalls || 0) + 1;
     console.log('[pq] 呈现停摆 ' + Math.round(now - PQ.lastDrawAt) + 'ms，强制重锚');
   }
+  // 2026-11-12（画质压测后加）：**缓冲雪崩看门狗**。
+  // 压测实测：120fps 档跑两分钟后 解=0 画=0、缓冲估到 1.5 秒 → 7.8 秒，画面彻底定住且不恢复。
+  // 300ms 那条自愈不够用：它只重锚，积压的帧还在、解码器继续灌，于是"重锚→又堆满→再重锚"循环。
+  // 升级为：① 停摆超 1 秒 → 丢掉所有旧帧只留最新（把延迟强制拉回当前）；
+  //        ② 一分钟内连续 3 次 → 判定接收端不可用，整条重建（rtc264Retry）；
+  //        ③ 计数进 diag（avalanches=），以后能直接看还发不发生。
+  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 1000) {
+    PQ.avalanches = (PQ.avalanches || 0) + 1;
+    if (!PQ.firstAvalancheAt || now - PQ.firstAvalancheAt > 60000) PQ.firstAvalancheAt = now;
+    while (PQ.q.length > 1) {
+      const old2 = PQ.q.shift();
+      PQ.over++;
+      try { old2.close(); } catch (e) { }
+    }
+    PQ.playing = false;
+    PQ.nextAt = 0;
+    PQ.emptySince = 0;
+    console.log('[pq] 缓冲雪崩（第 ' + PQ.avalanches + ' 次，停摆 ' + Math.round(now - PQ.lastDrawAt) + 'ms），丢旧帧重锚');
+    if (PQ.avalanches >= 3) {
+      PQ.avalanches = 0;
+      PQ.firstAvalancheAt = 0;
+      console.log('[pq] 一分钟内连续 3 次雪崩 → 重建接收端');
+      try { rtc264Retry('avalanche'); } catch (e) { }
+    }
+  }
   PQ.q.push(frame);
   PQ.arrived++;   // 到达计数（= 解码帧率）。HUD 用它算"流有多少帧"，不拿画到屏幕的帧数冒充
   // 安全上限：积压太多说明播放侧跟不上（例如页面切后台），丢最旧的，别让延迟无上限增长
@@ -1426,7 +1451,16 @@ function pqTick() {
     const sk = q.shift();
     try { sk.close(); } catch (e) { }
   }
-  const f = q.shift();
+  // 2026-11-12（v5）：**每个 vsync 画最新的那一帧，而不是最旧的**。
+  //
+  // 实测（画质压测 + 用户反馈"画面很不连贯"）：帧是**成簇到达**的
+  // （到达间隔 p90 15.4ms，理想 8.3ms），有时两三帧一起来、有时空一拍。
+  // 原来取最旧的帧画，簇里多出来的就被积压逻辑丢掉；而空拍时又没东西可画 →
+  // 结果"画出帧数"只有解码帧数的 65~80%，观感就是一卡一卡。
+  //
+  // 屏幕一次刷新只能显示一帧，所以**最新的那帧永远是最该显示的**：
+  // 每次 rAF 取队尾，把中间的全关掉。这样每个 vsync 都有新内容，簇不再造成丢帧。
+  const f = q.shift();   // 2026-11-12 回滚：试过"每个 vsync 取最新帧"，离线测试把 120Hz/120fps 从 120/s 打掉一半，退回原逻辑，改法待重做。
   PQ.lastDrawAt = now;
   const _drawT0 = performance.now();
   try {
@@ -2334,7 +2368,11 @@ async function rtc264Stats() {
             .catch(function () { });
         }
         const _in = Number(RTC264.inFps) || 0;
-        const _need = _in > 0 && _avgDraw > 0 && _avgDraw < _in * 0.85;
+        // 2026-11-12（重要）：**页面在后台/息屏时，两条降档判据都必须跳过**。
+        // 实测踩到：手机切后台后 rAF 掉到 30、画出也跟着掉，于是被判成"设备吃不下"，
+        // 一路降到 30fps；用户切回来时画面糊成一片，还得手动改回去。
+        const _hidden = (typeof document !== 'undefined' && document.hidden === true);
+        const _need = !_hidden && _in > 0 && _avgDraw > 0 && _avgDraw < _in * 0.85;
         const _rsHot = (_rs >= 2 && _w._rsAt && _now - _w._rsAt < 12000);
         // 启动宽限：连上后的前 15 秒出帧率天然偏低（解码器预热 + 首批关键帧），不参与判断。
         // 实测启动瞬间 worker 也会因为首批突发重建 1~2 次，两个信号凑一起会误判成"设备吃不下"。
@@ -2346,7 +2384,7 @@ async function rtc264Stats() {
         // 判断，避免被瞬时抖动误伤。步进仍走标准档位（30/60/90/120/240）。
         const _dispLow = (typeof _dispRate === 'number' && _dispRate >= 60 &&
                           _in > 0 && _dispRate < _in * 0.88);
-        const _need2 = !_warm && _dispLow && _avgDraw > 0 && _avgDraw < _in * 0.92;
+        const _need2 = !_hidden && !_warm && _dispLow && _avgDraw > 0 && _avgDraw < _in * 0.92;
         if (((_need && _rsHot) || _need2) && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 90000) {
           RTC264.downshifting = true;
           RTC264.lastDown = _now;
@@ -2630,6 +2668,7 @@ async function rtc264Stats() {
           raf: _rafHz,
           dispRate: (typeof _dispRate === 'number') ? _dispRate : 0,
           stalls: ((window.__pq || {}).stalls) || 0,
+          avalanches: ((window.__pq || {}).avalanches) || 0,
           drawnHz: Math.round((_wd._hudDrawFps || 0) * 10) / 10,
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
           // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
@@ -9293,7 +9332,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-12.2';
+export const PAGE_VER = '2026-11-12.6';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

@@ -6716,7 +6716,7 @@ async function handler(req, res) {
           // 2026-11-11：全屏状态 / WebCodecs 是否启用 / <video> 自己解出的帧率
           + ' 全屏=' + (m.fs ? 1 : 0) + ' wc=' + (m.wc ? 1 : 0) + ' vid=' + (Math.round((Number(m.vidFps) || 0) * 10) / 10)
           // 2026-11-12：WebCodecs 可用性细分（WebView 里 wc=0 时到底缺哪个）
-          + ' tf=' + n(m.tf) + ' vd=' + n(m.vd) + ' stalls=' + n(m.stalls)
+          + ' tf=' + n(m.tf) + ' vd=' + n(m.vd) + ' stalls=' + n(m.stalls) + ' 雪崩=' + n(m.avalanches)
           + ' fs试=' + n(m.fsTries) + (m.fsErr ? (' fs错=' + String(m.fsErr)) : '')
           + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));
