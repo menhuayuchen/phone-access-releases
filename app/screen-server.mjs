@@ -6812,6 +6812,10 @@ async function handler(req, res) {
           + ' 全屏=' + (m.fs ? 1 : 0) + ' wc=' + (m.wc ? 1 : 0) + ' vid=' + (Math.round((Number(m.vidFps) || 0) * 10) / 10)
           // 2026-11-12：WebCodecs 可用性细分（WebView 里 wc=0 时到底缺哪个）
           + ' tf=' + n(m.tf) + ' vd=' + n(m.vd) + ' stalls=' + n(m.stalls) + ' 雪崩=' + n(m.avalanches) + ' 停摆间隔=' + String(m.stallGaps || '') + ' 跟手=' + String(m.touchVis || '')
+          // 2026-11-12：呈现循环分账（查"解码 120 只画 95"时帧去哪了）
+          + ' 分账=' + (m.pq ? ('tick=' + n(m.pq.tick) + ' 未到点=' + n(m.pq.nd) + ' 空拍=' + n(m.pq.sv)
+            + ' 抽帧=' + n(m.pq.sk) + ' 超限=' + n(m.pq.cap) + ' drew=' + n(m.pq.drew) + ' arr=' + n(m.pq.arr)
+            + ' per=' + (Math.round(Number(m.pq.perUs) / 10) / 100) + 'ms boost=' + n(m.pq.boost)) : '-')
           + ' fs试=' + n(m.fsTries) + (m.fsErr ? (' fs错=' + String(m.fsErr)) : '')
           + ' err=' + String(m.err || '').slice(0, 160)
           + ' ua=' + String(m.ua || '').slice(0, 90));

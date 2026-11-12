@@ -1313,7 +1313,11 @@ function tryStartWC264(pc) {
 // 为什么改：第一版用合成时间戳当播放时钟，而它的步长来自 fpsHint；实测切档（120→90 自动降档）
 // 时 worker 还按旧步长累加，播放时钟整体跑偏，只能靠"追上/对齐"硬纠正，纠正瞬间又造成新抖动
 // （实测 240 个采样里 82 个是超长间隔）。到达速率本身就是内容帧率最可靠的来源，1 秒内自动跟随。
-const PQ = { q: [], playing: false, raf: 0, drawn: 0, arrived: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0, drawMs: 0 };
+const PQ = { q: [], playing: false, raf: 0, drawn: 0, arrived: 0, under: 0, over: 0, periodUs: 8333, nextAt: 0, arrSum: 0, arrN: 0, lastArr: 0, di: [], lastDrawAt: 0, boost: 0, drawMs: 0,
+  // 2026-11-12：**呈现循环的分账计数器**。查"解码 120 只画 95"时必须知道帧去哪了：
+  //   ticks=rAF 次数、notDue=还没到呈现时刻、starveN=队列空（没东西可画）、
+  //   skipN=被"按比例抽帧"静默丢掉、capDrop=队列超上限被动丢、rateN/rateAt=到达速率估计窗口
+  ticks: 0, notDue: 0, starveN: 0, skipN: 0, capDrop: 0, rateN: 0, rateAt: 0, bufSince: 0 };
 try { window.__pq = PQ; } catch (e) { }
 
 function pqStop() {
@@ -1353,15 +1357,28 @@ function pqPush(frame, ts) {
   const w = window.__wc264;
   if (!w || !w.canvas || !w.ctx) { try { frame.close(); } catch (e) { } return; }
   const now = performance.now();
-  // 实测到达间隔 → 呈现周期。用**逐帧 EMA** 而不是"攒 60 帧再算"：
-  // 攒 60 帧在 30fps 下要 2 秒，前两秒还按默认 8.3ms 走，节奏全乱（离线实测容差内只 50%）。
-  // EMA 约 20 帧内收敛，切档时也能很快跟上。
-  if (PQ.lastArr) {
-    const d = now - PQ.lastArr;
-    if (d > 0.3 && d < 500) {
-      const dUs = d * 1000;
-      PQ.periodUs = Math.max(1000, Math.min(200000, PQ.periodUs * 0.9 + dUs * 0.1));
+  // 2026-11-12：**内容帧率估计改为"窗口内到达帧数 / 窗口时长"**。
+  //
+  // 原来用"相邻帧到达间隔的 EMA"，看起来更直接，实测却是**错得最厉害**的地方：
+  // 解码帧是**成簇**到达的（同一个解码批次两三帧几乎同时 postMessage 出来），
+  // 于是相邻间隔一半是 <0.3ms（被 d>0.3 这个下限过滤掉、根本不计入），另一半是 16~30ms，
+  // EMA 只往大间隔收敛 —— 实测 120fps 被估成 **80fps（periodUs=12.47ms）**。
+  // 后果（线上与离线都能复现）：调度器按 12.5ms 排帧 → 每秒只画 80 帧 →
+  // 队列一路涨到我们自己的 8 帧安全上限 → **32% 的帧被自己丢掉**：
+  // diag 分账 = arr=3780 drew=2465 超限=1223 未到点=4730，画/解只有 65%。
+  //
+  // 窗口计数对"成簇"和"偶发断档"都无偏（断档期间没送达的帧会在断档结束时成批补上），
+  // 1 秒窗口 + 半衰平滑，切档后 1~2 秒跟上。
+  if (!PQ.rateAt) { PQ.rateAt = now; PQ.rateN = 0; } else { PQ.rateN++; }
+  const _rdt = now - PQ.rateAt;
+  if (_rdt >= 1000) {
+    const _fps = (PQ.rateN * 1000) / _rdt;
+    if (_fps >= 5 && _fps <= 500) {
+      const _us = Math.max(1000, Math.min(200000, 1e6 / _fps));
+      PQ.periodUs = PQ.periodUs * 0.5 + _us * 0.5;
     }
+    PQ.rateAt = now;
+    PQ.rateN = 0;
   }
   PQ.lastArr = now;
   // 2026-11-12：**硬性自愈**（APK 实测到的死锁）。
@@ -1410,6 +1427,7 @@ function pqPush(frame, ts) {
   while (PQ.q.length > 8) {
     const old = PQ.q.shift();
     PQ.over++;
+    PQ.capDrop++;
     try { old.close(); } catch (e) { }
   }
   pqSchedule();
@@ -1417,6 +1435,7 @@ function pqPush(frame, ts) {
 
 function pqTick() {
   PQ.raf = 0;
+  PQ.ticks++;
   const w = window.__wc264;
   if (!w || !w.canvas || !w.ctx) { pqStop(); return; }
   const q = PQ.q;
@@ -1438,6 +1457,7 @@ function pqTick() {
     // 低帧率下来不及攒帧，一空就重锚会每帧多等一个 delay，节奏被打断
     // （离线实测：30fps 容差内只有 50%、p90 出现 58ms 的翻倍间隔）。
     // 真断流（超过 2 个周期）才重置，等重新攒够缓冲再播。
+    PQ.starveN++;
     if (!PQ.emptySince) PQ.emptySince = now;
     else if (now - PQ.emptySince > periodMs * 2) { PQ.playing = false; PQ.emptySince = 0; PQ.under++; }
     PQ.starved = true;
@@ -1452,8 +1472,17 @@ function pqTick() {
   // 就会出现 diag 里那种「解=120 画=0/17」—— 解码满、屏幕满，但我们自己在空转。
   // 用户实测显示只有 ~100 而不是 120，主要就是这里少画了。
   const _cMs = PQ.periodUs / 1000;
-  const _everyTick = _cMs <= (_dispMs + 1.2);
-  if (!_everyTick && now + 0.4 < PQ.nextAt) { pqSchedule(); return; }   // 还没到点：保持当前画面，不重画
+  // 2026-11-12：容差改成**相对**屏幕周期（原来绝对 1.2ms：240fps 内容 + 240Hz 屏时
+  // _cMs=5.4 而 _dispMs=4.17，差 1.23ms 就被判成"内容比屏幕慢"→ 走排程 → rAF 粒度
+  // 4.17ms 下 5.4ms 的周期实际变成"隔一个 tick 才画"= 8.34ms，240fps 档掉到 147fps）。
+  const _everyTick = _cMs <= (_dispMs * 1.45 + 0.8);
+  // 2026-11-12：**队列深了就立刻消耗**（不排程）。
+  // 起因（离线实测 240fps 档）：内容 199 帧/秒、按到达速率估出来的周期只有 185 帧/秒，
+  // 排程永远是"慢一点点"→ 队列涨到 8 帧上限 → 4 秒里自己丢了 196 帧（画出只剩 150/s）。
+  // 规则：队列深过 3 帧 = 我们落后了，这一拍不等排程，直接画（靠 rAF 上限自然限速），
+  // 排程逻辑只在"队列很浅"时才用来控制节奏。
+  const _deep = PQ.q.length > 3;
+  if (!_everyTick && !_deep && now + 0.4 < PQ.nextAt) { PQ.notDue++; pqSchedule(); return; }   // 还没到点：保持当前画面，不重画
   // 落后超过 2 个周期（切后台/卡顿回来）→ 直接对齐，不做"追赶播放"：
   // 追赶会连着吐出几帧，反而更抖。
   if (now - PQ.nextAt > periodMs * 2) PQ.nextAt = now;
@@ -1464,6 +1493,7 @@ function pqTick() {
   const _skip = Math.max(0, Math.round(periodMs / Math.max(0.5, _contentMs)) - 1);
   for (let i = 0; i < _skip && q.length > 1; i++) {
     const sk = q.shift();
+    PQ.skipN++;
     try { sk.close(); } catch (e) { }
   }
   // 2026-11-12（v5）：**每个 vsync 画最新的那一帧，而不是最旧的**。
@@ -2714,6 +2744,15 @@ async function rtc264Stats() {
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
           // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
           drawMs: Math.round((((window.__pq || {}).drawMs) || 0) * 100) / 100,
+          // 2026-11-12：**呈现循环分账**。查"解码 120 只画 95"时，一眼看出帧是被
+          // 空拍吞了（sv）、被抽帧静默丢了（sk）、还是队列超限丢的（cap）。
+          pq: (function () {
+            const p = window.__pq || {};
+            return {
+              tick: p.ticks | 0, nd: p.notDue | 0, sv: p.starveN | 0, sk: p.skipN | 0, cap: p.capDrop | 0,
+              drew: p.drawn | 0, arr: p.arrived | 0, perUs: Math.round(p.periodUs || 0), boost: p.boost | 0,
+            };
+          })(),
           // 2026-11-11：全屏状态 / WebCodecs 是否启用 / <video> 自己解出的帧率。
           // ?fs=1 看全屏能否放开高刷；?wc=0 看 video 路径能否绕过 canvas 合成限制。
           fs: !!document.fullscreenElement,

@@ -104,6 +104,8 @@ function runCase(fps, opts) {
     over15: iv.filter((v) => v > periodMs * 1.5).length,
     under05: iv.filter((v) => v < periodMs * 0.5).length,
     pqOver: api.PQ.over, pqUnder: api.PQ.under, boost: api.PQ.boost, periodUs: Math.round(api.PQ.periodUs),
+    // 2026-11-12：呈现循环分账（tick=总 rAF 次数 / nd=未到点 / sv=空拍 / sk=抽帧 / cap=超限丢）
+    tick: api.PQ.ticks | 0, nd: api.PQ.notDue | 0, sv: api.PQ.starveN | 0, sk: api.PQ.skipN | 0, cap: api.PQ.capDrop | 0,
   };
 }
 
@@ -116,6 +118,7 @@ for (const fps of [30, 60, 90, 120, 240]) {
     ' | 间隔 p50=' + r.p50 + ' p90=' + r.p90 + ' p99=' + r.p99 + ' max=' + r.max + ' (期望 ' + r.periodMs + ')' +
     ' | 容差内 ' + r.within + '%' +
     ' | 超长 ' + r.over15 + ' 过挤 ' + r.under05 +
-    ' | 丢弃 ' + r.pqOver + ' 欠载 ' + r.pqUnder + ' boost=' + r.boost + ' periodUs=' + r.periodUs
+    ' | 丢弃 ' + r.pqOver + ' 欠载 ' + r.pqUnder + ' boost=' + r.boost + ' periodUs=' + r.periodUs +
+    ' | 分账 tick=' + r.tick + ' 未到点=' + r.nd + ' 空拍=' + r.sv + ' 抽帧=' + r.sk + ' 超限=' + r.cap
   );
 }
