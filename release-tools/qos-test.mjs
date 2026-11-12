@@ -87,7 +87,11 @@ function parseDiag(line) {
     cadMax: num(/max=([\d.]+)/), over: num(/over=(\d+)/), under: num(/under=(\d+)/),
     stalls: num(/stalls=(\d+)/), lost: num(/lost=(\d+)/), pli: num(/pli=(\d+)/),
     wc: /wc=1/.test(line) ? 1 : 0, vid: num(/vid=([\d.]+)/),
+    // 2026-11-12（傍晚）：节流 / 隐藏标记。thr=1 表示浏览器把页面节流了（变暗/切后台），
+    // 这种样本的"画出率低"不是产品问题，必须从统计里剔掉，否则会把一次用户走开误判成不达标。
+    thr: num(/节流=(\d)/), hid: num(/隐藏=(\d)/),
   };
+  o.valid = !(o.thr === 1 || o.hid === 1);
   return Number.isFinite(o.dec) ? o : null;
 }
 
@@ -164,7 +168,11 @@ async function main() {
   console.log('\n================ 质量汇总 ================');
   const fails = [];
   for (const p of phases) {
-    const d = p.diag;
+    // 2026-11-12（傍晚）：只统计**有效样本**（页面没被节流/没切后台）。
+    // 否则用户把手机放下、屏幕变暗的那几十秒会把整档判成"不达标"——那是使用方式，不是产品问题。
+    const all = p.diag;
+    const d = all.filter((x) => x.valid !== false);
+    const invalid = all.length - d.length;
     const dec = d.map((x) => x.dec).filter(Number.isFinite);
     const draw = d.map((x) => x.draw).filter(Number.isFinite);
     const raf = d.map((x) => x.raf).filter(Number.isFinite);
@@ -178,7 +186,7 @@ async function main() {
     const audioTo = (p.audio.timeout || 0) - ((p.audio0 && p.audio0.timeout) || 0);
     const ratio = avg(raf) > 0 ? avg(draw) / avg(raf) : 0;
 
-    console.log('\n【' + p.fps + 'fps】 手机诊断 ' + d.length + ' 条');
+    console.log('\n【' + p.fps + 'fps】 有效诊断 ' + d.length + ' 条' + (invalid > 0 ? ('（另有 ' + invalid + ' 条被节流/切后台，已剔除）') : ''));
     console.log('  解码 fps      : ' + f1(avg(dec)) + '   (目标 ' + p.fps + ')');
     console.log('  画出 fps      : ' + f1(avg(draw)) + '   屏幕 ' + f1(avg(raf)) + 'Hz → 画出/屏幕 ' + (ratio * 100).toFixed(0) + '%');
     console.log('  缓冲 ms       : 中位 ' + f1(pct(buf, 50)) + ' / p90 ' + f1(pct(buf, 90)) + ' / 最大 ' + f1(Math.max(0, ...buf)));
@@ -202,7 +210,8 @@ async function main() {
     if (p.lag > 0) fails.push(p.fps + 'fps: 事件循环卡顿 ' + p.lag + ' 次');
     if (audioDrop > 0) fails.push(p.fps + 'fps: 音频丢 ' + audioDrop + 'B');
     if (pct(skew, 90) > 150) fails.push(p.fps + 'fps: 音画偏差 p90 ' + f1(pct(skew, 90)) + 'ms > 150ms');
-    if (d.length === 0) fails.push(p.fps + 'fps: 没收到手机端诊断（页面没在跑？）');
+    if (all.length === 0) fails.push(p.fps + 'fps: 没收到手机端诊断（页面没在跑？）');
+    else if (d.length === 0) fails.push(p.fps + 'fps: ' + all.length + ' 条诊断全部是节流/切后台状态（压测时手机需前台常亮，本档无效）');
   }
 
   console.log('\n================ 达标判定 ================');

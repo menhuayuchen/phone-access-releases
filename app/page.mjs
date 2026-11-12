@@ -1320,6 +1320,20 @@ const PQ = { q: [], playing: false, raf: 0, drawn: 0, arrived: 0, under: 0, over
   ticks: 0, notDue: 0, starveN: 0, skipN: 0, capDrop: 0, rateN: 0, rateAt: 0, bufSince: 0 };
 try { window.__pq = PQ; } catch (e) { }
 
+// 2026-11-12（傍晚）：判断"浏览器是否把我们节流了"。
+// 依据两条之一：页面不可见（document.hidden），或实测 rAF 明显低于稳定刷新率（<60%）。
+// 为什么不能用"有没有画帧"来判断：节流时 rAF 本身就慢（1~30Hz），画不出帧是浏览器的行为，
+// 不是链路坏了；把它当停摆会触发重建接收端 + 自动降档，反而把好好的流打断。
+function _pqThrottled() {
+  try {
+    if (typeof document !== 'undefined' && document && document.hidden) return true;
+    if (typeof _rafHz === 'number' && _rafHz > 0 && typeof _dispRate === 'number' && _dispRate >= 60) {
+      return _rafHz < _dispRate * 0.6;
+    }
+  } catch (e) { }
+  return false;
+}
+
 function pqStop() {
   const q = PQ.q;
   PQ.q = [];
@@ -1381,28 +1395,45 @@ function pqPush(frame, ts) {
     PQ.rateN = 0;
   }
   PQ.lastArr = now;
-  // 2026-11-12：**硬性自愈**（APK 实测到的死锁）。
-  // 现象：diag 里出现「解=120 画=0」、缓冲估成 32 秒、over/under 同时涨 ——
-  // 解码还在跑、帧也在到，但呈现循环彻底停摆，而且**不会自己恢复**
-  // （nextAt 卡在未来 / rAF 链断掉）。用户侧就是"画面定住 / 卡死"。
-  // 这里加保险：只要超过 300ms 没真正画过，且队列已经攒到 2 帧，就强制重锚重新起播。
-  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 1000 && PQ.q.length >= 1) {
-    PQ.playing = false;
-    PQ.nextAt = 0;
-    PQ.emptySince = 0;
-    PQ.stalls = (PQ.stalls || 0) + 1;
+  // 2026-11-12（傍晚）：**先判断"是不是浏览器把我们节流了"**。
+  //
+  // 线上实测（120fps 真机压测）：手机屏幕变暗/切后台时浏览器把 rAF 降到 1~30Hz，
+  // 于是"超过 1 秒没画过"每隔 1.18 秒就触发一次 → 停摆计数成串 → 一分钟内 3 次雪崩
+  // → rtc264Retry('avalanche') 重建接收端 → **编码器重启 + 页面自动降档到 90fps**。
+  // 一次客户端节流被放大成整段质量下降，这是设计缺陷：**不是我们的链路坏了**。
+  // 现在区分三种情况：
+  //   ① 节流（document.hidden 或实测 rAF 低于稳定刷新率的 60%）→ 只记数，不动任何自愈；
+  //   ② 有帧但画不出来（队列非空）→ 真·呈现停摆 → 重锚 + 计数；
+  //   ③ 队列空（没帧可画）→ 断流（网络/编码器），只记数，不重锚不重建。
+  PQ.throttled = _pqThrottled();
+  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 1000) {
+    if (PQ.throttled) {
+      PQ.thrGaps = (PQ.thrGaps || 0) + 1;
+      PQ.lastDrawAt = now;    // 同一段节流只记一次，别每帧刷
+    } else if (PQ.q.length >= 1) {
+      // 真·呈现停摆：有帧却画不出来 → 重锚（原来的逻辑）
+      PQ.playing = false;
+      PQ.nextAt = 0;
+      PQ.emptySince = 0;
+      PQ.stalls = (PQ.stalls || 0) + 1;
       PQ.stallGaps = PQ.stallGaps || [];
       PQ.stallGaps.push(Math.round(now - PQ.lastDrawAt));
       if (PQ.stallGaps.length > 12) PQ.stallGaps.shift();
-    console.log('[pq] 呈现停摆 ' + Math.round(now - PQ.lastDrawAt) + 'ms，强制重锚');
+      console.log('[pq] 呈现停摆 ' + Math.round(now - PQ.lastDrawAt) + 'ms，强制重锚');
+    } else {
+      // 断流：队列空，没东西可画。不是呈现层的问题，只记数并重置计时，避免误判雪崩。
+      PQ.starveLong = (PQ.starveLong || 0) + 1;
+      PQ.lastDrawAt = now;
+    }
   }
   // 2026-11-12（画质压测后加）：**缓冲雪崩看门狗**。
   // 压测实测：120fps 档跑两分钟后 解=0 画=0、缓冲估到 1.5 秒 → 7.8 秒，画面彻底定住且不恢复。
   // 300ms 那条自愈不够用：它只重锚，积压的帧还在、解码器继续灌，于是"重锚→又堆满→再重锚"循环。
-  // 升级为：① 停摆超 1 秒 → 丢掉所有旧帧只留最新（把延迟强制拉回当前）；
+  // 升级为：① 停摆超 2.5 秒 → 丢掉所有旧帧只留最新（把延迟强制拉回当前）；
   //        ② 一分钟内连续 3 次 → 判定接收端不可用，整条重建（rtc264Retry）；
   //        ③ 计数进 diag（avalanches=），以后能直接看还发不发生。
-  if (PQ.lastDrawAt && (now - PQ.lastDrawAt) > 2500) {
+  // 2026-11-12 追加：只在**真的有问题**时才动它 —— 节流期间不记；队列空（断流）不记。
+  if (!PQ.throttled && PQ.lastDrawAt && (now - PQ.lastDrawAt) > 2500 && PQ.q.length >= 1) {
     PQ.avalanches = (PQ.avalanches || 0) + 1;
     if (!PQ.firstAvalancheAt || now - PQ.firstAvalancheAt > 60000) PQ.firstAvalancheAt = now;
     while (PQ.q.length > 1) {
@@ -1423,8 +1454,11 @@ function pqPush(frame, ts) {
   }
   PQ.q.push(frame);
   PQ.arrived++;   // 到达计数（= 解码帧率）。HUD 用它算"流有多少帧"，不拿画到屏幕的帧数冒充
-  // 安全上限：积压太多说明播放侧跟不上（例如页面切后台），丢最旧的，别让延迟无上限增长
-  while (PQ.q.length > 8) {
+  // 安全上限：积压太多说明播放侧跟不上（例如页面切后台），丢最旧的，别让延迟无上限增长。
+  // 2026-11-12：8 → 5。120fps 内容 + 120Hz 屏时，每一帧都只能靠一个 vsync 画，
+  // 队列深到 8 帧意味着**多背 66ms 延迟**；实测 buf 常年在 2~10ms，说明平时根本用不到这么深，
+  // 只有解码成批输出时才短暂堆几帧 —— 5 帧（约 42ms）足够吸收，且丢帧时刻更早、延迟更低。
+  while (PQ.q.length > 5) {
     const old = PQ.q.shift();
     PQ.over++;
     PQ.capDrop++;
@@ -2453,7 +2487,11 @@ async function rtc264Stats() {
         // 判断，避免被瞬时抖动误伤。步进仍走标准档位（30/60/90/120/240）。
         const _dispLow = (typeof _dispRate === 'number' && _dispRate >= 60 &&
                           _in > 0 && _dispRate < _in * 0.88);
-        const _need2 = !_hidden && !_warm && _dispLow && _avgDraw > 0 && _avgDraw < _in * 0.92;
+        // 2026-11-12（傍晚）：节流（页面不可见 / rAF 被浏览器压低）期间**绝不自动降档**。
+        // 实测踩过：手机变暗的几十秒里画出率掉到 76/120，页面把它当成"解不动"自动降到 90fps，
+        // 写进会话后整段画质就低了一档 —— 根因根本不是设备能力。
+        const _thrNow = (typeof _pqThrottled === 'function') ? _pqThrottled() : false;
+        const _need2 = !_hidden && !_thrNow && !_warm && _dispLow && _avgDraw > 0 && _avgDraw < _in * 0.92;
         if (((_need && _rsHot) || _need2) && !RTC264.downshifting && _now - (RTC264.lastDown | 0) > 90000) {
           RTC264.downshifting = true;
           RTC264.lastDown = _now;
@@ -2737,6 +2775,12 @@ async function rtc264Stats() {
           raf: _rafHz,
           dispRate: (typeof _dispRate === 'number') ? _dispRate : 0,
           stalls: ((window.__pq || {}).stalls) || 0,
+          // 2026-11-12（傍晚）：节流 / 断流 / 真停摆分开报 —— 压测时据此判断"这条样本是否有效"。
+          // thr=1 表示浏览器把我们节流了（页面不可见或 rAF 被压低），此时的低画出率不算产品问题。
+          thr: (window.__pq && window.__pq.throttled) ? 1 : 0,
+          hid: (typeof document !== 'undefined' && document.hidden) ? 1 : 0,
+          starveLong: ((window.__pq || {}).starveLong) | 0,
+          thrGaps: ((window.__pq || {}).thrGaps) | 0,
           avalanches: ((window.__pq || {}).avalanches) || 0,
           stallGaps: (((window.__pq || {}).stallGaps) || []).join('|'),
           touchVis: (((window.__pq || {}).touchVis) || []).join('|'),
