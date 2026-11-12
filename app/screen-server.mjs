@@ -2056,11 +2056,27 @@ if (CFG264.enabled) setInterval(s2Poll, 5000);
 // 给页面用：决定这台设备走哪一路（1=主路共享，2=自己的第二路）
 // 主路归属：谁先来（或谁是主设备）就归谁；断线 90 秒后才释放
 const PRIMARY_OWNER = { client: '', at: 0 };
+// 2026-11-12：最近一次**真正建立观看会话**的客户端（来自 /rtc264/offer?client=…）。
+// 主路归属只认这个信号，不认"反复调用 /h264-stream-pick"。
+const LAST_WATCH = { client: '', at: 0 };
+function claimPrimary(cid) {
+  const prev = PRIMARY_OWNER.client;
+  if (cid) PRIMARY_OWNER.client = cid;
+  const isNew = !prev || prev !== PRIMARY_OWNER.client;
+  const watching = (LAST_WATCH.client === PRIMARY_OWNER.client) && (Date.now() - LAST_WATCH.at < 60000);
+  // 首次认领、或确实在观看 → 刷新归属时间；只认领不观看的不刷新，让它自然过期
+  if (isNew || watching) PRIMARY_OWNER.at = Date.now();
+  return PRIMARY_OWNER.client;
+}
 function primaryOwnerAlive() {
   if (!PRIMARY_OWNER.client) return false;
-  const busy = (Number(rtc264Status.sessions) > 0) || (h264.clients.size > 0);
-  if (busy) return Date.now() - PRIMARY_OWNER.at < 10 * 60 * 1000;      // 有人在看：10 分钟内算它的
-  return Date.now() - PRIMARY_OWNER.at < 20 * 1000;                     // 没人在看：20 秒后释放（否则接手设备会长时间改不了档）
+  // 2026-11-12：主路归属改成**认"真的在观看"**（以 WebRTC offer 为准）。
+  // 事故：压测客户端每 6 秒认领一次主路、但一次都没观看，靠"认领即刷新"永久霸占，
+  // 结果真正在看的手机被挤到第二路 → 每次它重连都要重建一次编码器（压测里伴随卡顿）。
+  const watching = (LAST_WATCH.client === PRIMARY_OWNER.client) && (Date.now() - LAST_WATCH.at < 60000);
+  if (watching) return true;
+  // 只认领不观看的"主人"：最多 20 秒就失效，让真正在看的设备能接管
+  return Date.now() - PRIMARY_OWNER.at < 20 * 1000;
 }
 function s2BudgetFps(w, fps) {
   // 两路合计像素预算：主路当前的像素率 + 第二路请求的像素率不能超预算
@@ -2081,8 +2097,7 @@ function s2PickStream(clientId, w, fps, kbps) {
   // 总开关关闭：所有设备共享主路。第一台成为主人（可改档位），其余只读。
   if (!PER_SESSION_Q) {
     if (!cid || !primaryOwnerAlive() || PRIMARY_OWNER.client === cid) {
-      PRIMARY_OWNER.client = cid || PRIMARY_OWNER.client;
-      PRIMARY_OWNER.at = Date.now();
+      claimPrimary(cid);
       return { stream: 1, reason: 'shared-mode-owner', owner: true, profile: null };
     }
     return { stream: 1, reason: 'shared-mode-guest', owner: false, profile: null };
@@ -2094,13 +2109,21 @@ function s2PickStream(clientId, w, fps, kbps) {
   };
   // 主路：没有主人 / 主人就是自己 / 主人早就断了 → 归你
   if (!cid || !primaryOwnerAlive() || PRIMARY_OWNER.client === cid) {
-    PRIMARY_OWNER.client = cid || PRIMARY_OWNER.client;
-    PRIMARY_OWNER.at = Date.now();
+    claimPrimary(cid);
     return { stream: 1, reason: 'primary-owner', owner: true, profile: null };
   }
   // 第二路：这台设备自己的
   if (S2.ownerClient === cid) {
     S2.ownerAt = Date.now();
+    // 2026-11-12：**档位和主路一样就用主路，别再跑第二路**。
+    // 实测踩到：第二路的 profile 和主路完全相同（都是 1920x1200@120），却还独立跑一路
+    // 编码 —— 同一个画面编两遍，白吃 GPU 和内存（ffmpeg 240MB → 380MB）。
+    // 判据只看关键的 w/fps/kbps，差一点就保留独立（否则画质会悄悄变）。
+    const p2 = S2.profile;
+    if (p2 && p2.w === H264_W && p2.fps === H264_FPS && p2.kbps === H264_KBPS) {
+      try { s2StopAll('第二路档位与主路相同，改用主路（省一份 GPU 编码）'); } catch { }
+      return { stream: 1, reason: 'merge-to-primary', owner: false, profile: null };
+    }
     return { stream: 2, reason: 'my-second', owner: false, profile: S2.profile || null };
   }
   // 第二路空着 → 给这台设备单开
@@ -5942,6 +5965,12 @@ async function handler(req, res) {
       try { wakeDisplay('观众建立会话'); } catch { }
       try { start264(); } catch { }     // 侧车没起来/挂掉时顺便拉一把
       try { h264Ensure(); } catch { }   // 页面只走 WebRTC 时也要启动编码器
+      // 2026-11-12：记录"谁真的建立了观看会话"。主路归属只认这个信号
+      // （页面发 offer 时带 ?client=<paClientId>），不再认"反复调用 stream-pick"。
+      try {
+        const _wc = String(url.searchParams.get('client') || '');
+        if (_wc) { LAST_WATCH.client = _wc; LAST_WATCH.at = Date.now(); }
+      } catch { }
       // 2026-11-07 诊断：页面会把自身版本（PA_PAGE_VER）带上来。查到 old / 空 就说明
       // 手机在用缓存里的旧页面——旧页面的信令/通道逻辑和新服务端不匹配，表现就是
       // 「流畅能用、清晰黑屏」。这里落一条日志，排障时先看它。

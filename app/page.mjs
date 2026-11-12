@@ -1860,7 +1860,10 @@ async function startRtc264() {
   }, 8000);
   try {
     // 2026-11-11（C 方案）：带上"我走哪一路"，服务端据此把 offer 转发给主路或第二路侧车
-    const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER) + '&stream=' + (RTC264.stream || 1), { method: 'POST', cache: 'no-store' });
+    const resp = await fetch('/rtc264/offer?pv=' + encodeURIComponent(PA_PAGE_VER) + '&stream=' + (RTC264.stream || 1)
+      // 2026-11-12：带上客户端 id。服务端据此认定"谁真的在观看"——主路归属只认这个信号，
+      // 不再认"反复调用 /h264-stream-pick"，避免只认领不观看的客户端长期霸占主路。
+      + '&client=' + encodeURIComponent(paClientId()), { method: 'POST', cache: 'no-store' });
     if (!resp.ok) throw new Error('offer ' + resp.status);
     const offer = await resp.json();
     if (my !== rtc264Gen) return;
