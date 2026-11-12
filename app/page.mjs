@@ -1366,8 +1366,10 @@ function pqTick() {
   // 手机上常见的是屏幕 60Hz + 内容 120fps：原来仍按 8.3ms 排，但 rAF 只给 16.7ms，
   // 结果队列积压、随机丢帧（PQ.over 一直涨），观感就是细微不均匀。
   // 按较大者排 = 主动按屏幕能力**均匀抽帧**，队列保持浅、不丢、节奏稳。
-  const _rHz = (typeof _rafHz === 'number' && _rafHz > 20) ? _rafHz : 0;
-  const _dispMs = _rHz ? (1000 / _rHz) : 0;
+  // 用**稳定后的屏幕频率**（_dispRate），不要用瞬时 _rafHz——
+  // APK 的 WebView 实测 rAF 在 77~120 之间乱跳，直接用瞬时值会让周期忽长忽短。
+  const _rHz = (typeof _dispRate === 'number' && _dispRate > 20) ? _dispRate : 60;
+  const _dispMs = 1000 / _rHz;
   const periodMs = Math.max(PQ.periodUs / 1000, _dispMs);
   if (!PQ.playing) { PQ.nextAt = now + pqDelayMs(PQ.periodUs); PQ.playing = true; PQ.emptySince = 0; }
   if (!q.length) {
@@ -1466,6 +1468,24 @@ setInterval(function () {
 //   · raf=120 而 drawn=60 → 是我们渲染太重（画布 drawImage + 合成）跟不上。
 // 只做计数，代价可忽略；随 [wc264-diag] 每 30 秒上报一次。
 let _rafCount = 0, _rafHz = 0, _rafLastAt = performance.now();
+// 2026-11-12：**稳定后的屏幕刷新率**，给调度器用（pqTick 不再直接用瞬时 _rafHz）。
+//
+// 为什么需要：APK 的 WebView 实测 rAF 在 77~120Hz 之间乱跳（系统在不同显示模式间抖），
+// 而调度器的呈现周期直接取瞬时值 → 周期一会儿 8.3ms 一会儿 12.9ms，
+// 结果 over=101 under=127（一会被迫丢帧、一会饿死），观感就是"不稳定"。
+//
+// 做法：量化到常见档位 + 滞后确认（连续 3 秒稳定在新档位才切），避免来回抖。
+let _dispRate = 60;
+let _dispCand = 0, _dispCandCount = 0;
+const _RATE_BUCKETS = [60, 72, 90, 120, 144, 165, 240];
+function _quantizeRate(hz) {
+  let best = _RATE_BUCKETS[0], bd = 1e9;
+  for (let i = 0; i < _RATE_BUCKETS.length; i++) {
+    const d = Math.abs(_RATE_BUCKETS[i] - hz);
+    if (d < bd) { bd = d; best = _RATE_BUCKETS[i]; }
+  }
+  return best;
+}
 (function rafProbe() {
   function tick() {
     _rafCount++;
@@ -1473,6 +1493,13 @@ let _rafCount = 0, _rafHz = 0, _rafLastAt = performance.now();
     if (n - _rafLastAt >= 1000) {
       _rafHz = Math.round(_rafCount * 1000 / (n - _rafLastAt));
       _rafCount = 0; _rafLastAt = n;
+      // 稳定化：同一个量化档位连续 3 次（≈3 秒）才真正切换
+      const q = _quantizeRate(_rafHz);
+      if (q === _dispRate) { _dispCand = 0; _dispCandCount = 0; }
+      else if (q === _dispCand) {
+        _dispCandCount++;
+        if (_dispCandCount >= 3) { _dispRate = q; _dispCand = 0; _dispCandCount = 0; }
+      } else { _dispCand = q; _dispCandCount = 1; }
     }
     try { requestAnimationFrame(tick); } catch (e) { }
   }
@@ -2553,6 +2580,7 @@ async function rtc264Stats() {
           // 2026-11-11：手机端刷新节奏与呈现节奏。用来判断"解码 120 但只画 60"是
           // 屏幕/浏览器上限（raf=60）还是我们渲染跟不上（raf=120 而 drawn=60）。
           raf: _rafHz,
+          dispRate: (typeof _dispRate === 'number') ? _dispRate : 0,
           drawnHz: Math.round((_wd._hudDrawFps || 0) * 10) / 10,
           decHz: Math.round((_wd._hudFps || 0) * 10) / 10,
           // 每帧绘制耗时（ms，EMA）。判"只画 60"到底是屏幕上限还是我们画得慢。
