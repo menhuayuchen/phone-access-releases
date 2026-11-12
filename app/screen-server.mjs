@@ -6828,6 +6828,8 @@ async function handler(req, res) {
           + ' tf=' + n(m.tf) + ' vd=' + n(m.vd) + ' stalls=' + n(m.stalls) + ' 雪崩=' + n(m.avalanches) + ' 停摆间隔=' + String(m.stallGaps || '') + ' 跟手=' + String(m.touchVis || '')
           // 2026-11-12（傍晚）：节流/断流与真停摆分开报（压测时据"节流/隐藏"判断样本是否有效）
           + ' 节流=' + n(m.thr) + ' 隐藏=' + n(m.hid) + ' 断流长=' + n(m.starveLong) + ' 节流间隙=' + n(m.thrGaps)
+          // 2026-11-12：HEVC 能力（手机端探测结果）
+          + ' hevc=' + (m.hevc ? (n(m.hevc.wc) + '/' + n(m.hevc.hw) + '/' + n(m.hevc.main10) + '/' + n(m.hevc.rtp) + (n(m.hevc.done) ? '' : '?') + (n(m.hevc.err) ? ('/e' + n(m.hevc.err)) : '')) : '?')
           // 2026-11-12：呈现循环分账（查"解码 120 只画 95"时帧去哪了）
           + ' 分账=' + (m.pq ? ('tick=' + n(m.pq.tick) + ' 未到点=' + n(m.pq.nd) + ' 空拍=' + n(m.pq.sv)
             + ' 抽帧=' + n(m.pq.sk) + ' 超限=' + n(m.pq.cap) + ' drew=' + n(m.pq.drew) + ' arr=' + n(m.pq.arr)

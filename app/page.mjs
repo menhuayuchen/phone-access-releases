@@ -2194,6 +2194,47 @@ async function startRtc264() {
     rtc264Retry('start-error:' + (e && e.message));
   }
 }
+// 2026-11-12：**HEVC 能力探测**（模块级，页面加载后只跑一次，结果缓存在 __hevcCap）。
+// 为什么要探：HEVC 能不能上的唯一未知项就是"这台手机能不能解 HEVC"。
+// 每 30 秒的诊断里带上这四个 0/1，电脑端 grep 一下就有答案，不用让用户在手机上开控制台：
+//   wc     = WebCodecs 能配 hvc1（软解或硬解，任一支持）
+//   hw     = WebCodecs 在 prefer-hardware 下能配 hvc1（有硬件解码器）
+//   main10 = 能配 Main10（10bit，将来 HDR 用）
+//   rtp    = WebRTC 收发能力里有 video/H265（SDP 协商能不能谈）
+//   done/err = 探测是否跑完 / 有没有异常（区分"不支持"和"探测失败"）
+var __hevcCap = { wc: 0, hw: 0, main10: 0, rtp: 0, done: 0, err: 0 };
+try {
+  if (typeof RTCRtpReceiver !== 'undefined' && RTCRtpReceiver.getCapabilities) {
+    var _hevcCapRtp = RTCRtpReceiver.getCapabilities('video');
+    if (_hevcCapRtp && _hevcCapRtp.codecs) {
+      __hevcCap.rtp = _hevcCapRtp.codecs.some(function (c) { return /H265|HEVC/i.test(String(c.mimeType || '')); }) ? 1 : 0;
+    }
+  }
+} catch (e) { __hevcCap.err++; }
+try {
+  if (typeof VideoDecoder === 'undefined' || typeof VideoDecoder.isConfigSupported !== 'function') {
+    __hevcCap.err++;                       // 没有 WebCodecs（老浏览器）
+  } else {
+    (function () {
+      var left = 3;
+      var probe = function (codec, hw, key) {
+        var cfg = { codec: codec, optimizeForLatency: true };
+        if (hw) cfg.hardwareAcceleration = hw;
+        var fin = function () { left--; if (left <= 0) __hevcCap.done = 1; };
+        try {
+          VideoDecoder.isConfigSupported(cfg).then(function (r) {
+            if (r && r.supported) __hevcCap[key] = 1;
+            fin();
+          }).catch(function () { __hevcCap.err++; fin(); });
+        } catch (e) { __hevcCap.err++; fin(); }
+      };
+      probe('hvc1.1.6.L123.B0', null, 'wc');
+      probe('hvc1.1.6.L123.B0', 'prefer-hardware', 'hw');
+      probe('hvc1.2.4.L123.B0', 'prefer-hardware', 'main10');
+    })();
+  }
+} catch (e) { __hevcCap.err++; }
+
 async function rtc264Stats() {
   const R = RTC264, pc = R.pc;
   if (!pc) return;
@@ -2756,6 +2797,8 @@ async function rtc264Stats() {
     // 注意：这段在 PAGE_HTML 的模板字符串里，**注释里也不能出现反引号**（会把模板截断，
     // 整个服务起不来：ReferenceError: xxx is not defined）。check-page-js.mjs 已加断言防这个。
     // 只报数字和尺寸，不含画面内容与密钥；失败一律吞掉，绝不影响播放。
+    // 注：HEVC 能力探测在 __hevcCap（模块级，只跑一次），这里只把它带进诊断。
+
     try {
       const _now = Date.now();
       if (!window.__diagNextAt || _now > window.__diagNextAt) {
@@ -2819,6 +2862,8 @@ async function rtc264Stats() {
           lost: (_wd.lost !== undefined ? _wd.lost : lost),
           pli: pli,
           err: String((_wd.lastErr || '')).slice(-160),
+          // 2026-11-12：HEVC 能力（见上面的探测块）。wc/hw/main10/rtp 各 0/1，done=探测是否完成。
+          hevc: __hevcCap,
           ua: navigator.userAgent
         });
         fetch('/wc264-diag?k=' + encodeURIComponent(KEY), { method: 'POST', headers: { 'content-type': 'application/json' }, body: body, cache: 'no-store' })
