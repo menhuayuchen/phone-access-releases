@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<title>enc-ab 动态画面（编码 A/B 用）</title>
+<style>
+  html,body{margin:0;padding:0;background:#101014;overflow:hidden}
+  canvas{display:block;width:100vw;height:100vh}
+  #hud{position:fixed;left:8px;top:8px;color:#ff0;font:14px/1.4 Consolas,monospace;
+       text-shadow:0 0 4px #000;pointer-events:none}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="hud"></div>
+<script>
+// 目的：给"编码 A/B"造一段**可复现的、接近真实桌面变化量**的动态内容：
+//   ① 大面积细碎纹理（让 IDR 有真实体积，不是几 KB 的空屏）
+//   ② 持续局部运动（让 P 帧有内容，别被静态画面骗了）
+//   ③ 每 1.5 秒**整屏换一次内容**（复现线上"全屏/最小化时花屏、卡一下"的最坏场景）
+const c = document.getElementById('c');
+const hud = document.getElementById('hud');
+const ctx = c.getContext('2d', { alpha: false });
+const OFF_W = 480, OFF_H = 300;          // 低分辨率纹理，放大后输出 → 细节量接近真实桌面
+const off = document.createElement('canvas');
+off.width = OFF_W; off.height = OFF_H;
+const octx = off.getContext('2d');
+const img = octx.createImageData(OFF_W, OFF_H);
+
+let palette = 0, lastSwitch = 0, frame = 0, t0 = performance.now();
+
+function newScene(n) {
+  // 4 套差异极大的调色板：切换时整屏内容全变（模拟真实切窗口/最小化）
+  const base = [[20,30,60],[170,40,30],[30,120,60],[120,110,20]][n % 4];
+  for (let y = 0; y < OFF_H; y++) {
+    for (let x = 0; x < OFF_W; x++) {
+      const i = (y * OFF_W + x) * 4;
+      const n1 = Math.random();
+      const band = ((x + y + n * 37) % 23 < 12) ? 1.35 : 0.65;
+      img.data[i] = Math.min(255, base[0] * band + n1 * 90);
+      img.data[i + 1] = Math.min(255, base[1] * band + (1 - n1) * 70);
+      img.data[i + 2] = Math.min(255, base[2] * band + ((x * y) % 61));
+      img.data[i + 3] = 255;
+    }
+  }
+  octx.putImageData(img, 0, 0);
+}
+
+function resize() {
+  const dpr = 1;
+  c.width = Math.floor(innerWidth * dpr);
+  c.height = Math.floor(innerHeight * dpr);
+  ctx.imageSmoothingEnabled = false;
+}
+addEventListener('resize', resize);
+resize();
+newScene(0);
+
+function tick(now) {
+  const t = (now - t0) / 1000;
+  if (now - lastSwitch > 1500) { palette++; lastSwitch = now; newScene(palette); }
+  // 底图（整屏纹理，放大铺满）
+  ctx.imageSmoothingEnabled = false;
+  ctx.drawImage(off, 0, 0, c.width, c.height);
+  // 持续局部运动：两条对向滚动的高对比色带 + 一个跳动的方块
+  const y1 = (Math.sin(t * 1.7) * 0.5 + 0.5) * c.height;
+  const y2 = (Math.cos(t * 1.1) * 0.5 + 0.5) * c.height;
+  ctx.globalAlpha = 0.85;
+  ctx.fillStyle = palette % 2 ? '#20d0ff' : '#ffd020';
+  ctx.fillRect(0, y1 - 40, c.width, 80);
+  ctx.fillStyle = palette % 2 ? '#ff3090' : '#30ff90';
+  ctx.fillRect(0, y2 - 22, c.width, 44);
+  const bs = 160 + Math.sin(t * 3.3) * 60;
+  ctx.fillStyle = '#ffffff';
+  ctx.fillRect((Math.sin(t * 0.9) * 0.5 + 0.5) * (c.width - bs), (Math.cos(t * 1.3) * 0.5 + 0.5) * (c.height - bs), bs, bs);
+  ctx.globalAlpha = 1;
+  frame++;
+  hud.textContent = `enc-ab 动态画面  ${c.width}x${c.height}  ${frame} 帧  场景 ${palette % 4}  已 ${t.toFixed(1)}s`;
+  requestAnimationFrame(tick);
+}
+requestAnimationFrame(tick);
+</script>
+</body>
+</html>

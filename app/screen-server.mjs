@@ -180,6 +180,19 @@ let H264_KBPS = Math.max(2000, Math.min(kbpsCap, Number(cfgH264.kbps) || 12000))
 let H264_RECT = null;
 // 画质优先（可选，默认关）：p4+hq、VBR+CQ，静态更清晰，流量会波动
 let H264_QF = cfgH264.qualityFirst === true;
+// 2026-11-12（intra-refresh，渐进式刷新）：周期内不一次性刷整帧，而是把帧内块摊到每一帧。
+//
+// 为什么需要（离线实测，release-tools/enc-ab.mjs，1920x1200@120 20Mbps）：
+//   现状 -g 60 → 每 0.5 秒一个 IDR，单帧 330~490KB（p99 371KB，>300KB 的帧 9 个/5 秒），
+//   而普通帧中位数只有 10KB —— **关键帧是 30~40 倍的单帧突发**，等于每半秒往链路上
+//   倒 3000 个 RTP 包，无线/Tailscale 段一乱就丢包、NACK 重传，表现就是"规律性顿一下"。
+//   换 -intra-refresh 后（IDR 间隔保持不变，仍是 0.5 秒）：
+//   关键帧 max 187KB、p99 118KB、>300KB 的帧 1 个/5 秒，平均码率与帧率完全不变。
+//
+// 取值：刷新周期（帧数）。0 = 关闭（走原来的周期性 IDR，行为完全不变）；
+// 60 = 120fps 下 0.5 秒刷完一轮。**关键帧间隔跟着它走**，保证新连入/丢包恢复的
+// 等待时间和以前一样，不会因为渐进刷新把恢复变慢。
+let H264_IR = Math.max(0, Math.min(600, Math.round(Number(cfgH264.intraRefresh) || 0)));
 // 2026-11-06 已移除 GPU 侧缩放实验（ddagrab video_size 是裁剪、scale_d3d11 在本机创建 NV12 纹理失败）。
 // 单窗口采集（实验）：>0 时用 win-capture.exe 抓这个窗口，0 = 普通全屏 ddagrab
 let H264_WIN = 0;
@@ -203,7 +216,7 @@ function saveH264QualityState() {
   try {
     // 存 H264_REQ（用户显式选择），不是被设备审查压过的生效值
     const q = H264_REQ || { width: H264_W, fps: H264_FPS, kbps: H264_KBPS };
-    writeFileSync(H264Q_STATE, JSON.stringify({ width: q.width, fps: q.fps, kbps: q.kbps, at: Date.now() }), 'utf8');
+    writeFileSync(H264Q_STATE, JSON.stringify({ width: q.width, fps: q.fps, kbps: q.kbps, ir: H264_IR, at: Date.now() }), 'utf8');
   } catch { }
 }
 function loadH264QualityState() {
@@ -218,7 +231,13 @@ function loadH264QualityState() {
       H264_H = evenDown(Math.max(360, Math.round(H264_W * CAP_H / CAP_W)));
       used = true;
     }
-    if (used) { try { console.log('h264: 恢复上次画质 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps（来自 h264-quality.state.json）'); } catch { } }
+    // intra-refresh 也随画质落盘：改过之后重启服务不该悄悄退回周期性 IDR
+    if (s && s.ir !== undefined && Number.isFinite(Number(s.ir))) {
+      H264_IR = Math.max(0, Math.min(600, Math.round(Number(s.ir))));
+      used = true;
+    }
+    if (used) { try { console.log('h264: 恢复上次画质 ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
+      + (H264_IR > 0 ? ('（渐进刷新 ' + H264_IR + ' 帧）') : '') + '（来自 h264-quality.state.json）'); } catch { } }
   } catch { }
 }
 // 启动时立刻恢复（deviceAudit 1.2 秒后还会按设备能力再封一次顶，只降不升）
@@ -813,8 +832,29 @@ function h264Filter() {
   return '[0:v]' + h264FilterChain(H264_W) + '[v]';
 }
 
+// 2026-11-12（intra-refresh）：GOP 与关键帧间隔。
+// 关闭时（H264_IR<=0）返回原样：GOP = fps/2（0.5 秒），由编码器周期性插 IDR。
+// 打开时：GOP = 刷新周期（帧），并**按时间强制关键帧**，间隔就等于刷新周期 ——
+//   这样"新设备连入 / 丢包恢复"等待关键帧的时间和现在完全一样（0.5 秒），
+//   不会因为渐进刷新把恢复变慢；同时关键帧体积实测从 330~490KB 降到 ~110KB。
+//   注意 -forced-idr 1 必须给：ffmpeg 默认把强制关键帧当成 FORCEINTRA，
+//   在 -intra-refresh 模式下不会产生真正的 IDR（实测 5 秒里一个 IDR 都没有）。
+function h264GopArgs(fps) {
+  const f = Math.max(1, Math.round(Number(fps) || H264_FPS));
+  if (!(H264_IR > 0) || H264_ENCODER !== 'nvenc') {
+    return { gop: String(Math.max(1, Math.round(f / 2))), extra: [] };
+  }
+  const gop = String(Math.max(1, Math.min(600, Math.round(H264_IR))));
+  const sec = (Number(gop) / f).toFixed(3);
+  return {
+    gop,
+    extra: ['-intra-refresh', '1', '-forced-idr', '1', '-force_key_frames', 'expr:gte(t,n_forced*' + sec + ')'],
+  };
+}
+
 // 编码参数（ddagrab 全屏采集和单窗口采集共用）。只含编码器部分，不含封装尾巴。
 function h264EncOnly() {
+  const g = h264GopArgs(H264_FPS);
   return [
     // 编码器：NVENC（硬编，延迟低、CPU 几乎为 0）优先；不可用时回退 h264_mf（软编低延迟档）
     ...(H264_ENCODER === 'nvenc'
@@ -823,9 +863,9 @@ function h264EncOnly() {
         // 代价：码率不再恒定（流量会波动），所以做成设置里的可选开关。
         ? ['-c:v', 'h264_nvenc', '-preset', 'p4', '-tune', 'hq', '-rc', 'vbr', '-cq', '22',
            '-b:v', String(H264_KBPS) + 'K', '-maxrate', String(H264_KBPS) + 'K', '-bufsize', String(H264_KBPS * 2) + 'K',
-           '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : [])]
-        : ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0'])
-      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', H264_QF ? '90' : '70', '-b:v', String(H264_KBPS) + 'K', '-g', String(Math.max(1, Math.round(H264_FPS / 2)))   /* 2026-11-08：GOP 1s->0.5s，丢包后最多黑半秒 */, '-bf', '0']),
+           '-g', g.gop, '-bf', '0', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), ...g.extra]
+        : ['-c:v', 'h264_nvenc', '-preset', 'p1', '-tune', 'ull', '-zerolatency', '1', '-rc', 'cbr_ld_hq', '-rc-lookahead', '0', '-delay', '0', '-surfaces', '2', ...(H264_NATIVE ? ['-profile:v', 'high', '-level', '5.2'] : []), '-b:v', String(H264_KBPS) + 'K', '-g', g.gop, '-bf', '0', ...g.extra])
+      : ['-c:v', 'h264_mf', '-scenario', 'display_remoting', '-rate_control', 'ld_vbr', '-quality', H264_QF ? '90' : '70', '-b:v', String(H264_KBPS) + 'K', '-g', g.gop, '-bf', '0']),
   ];
 }
 // fMP4 封装尾巴（主路走 stdout；两路模式下第二路走命名管道，用的是同一套尾巴）
@@ -972,6 +1012,7 @@ function h264Start() {
     args.push(...h264EncArgs());
   }
   console.log('h264: start ' + H264_W + 'x' + H264_H + '@' + H264_FPS + ' ' + H264_KBPS + 'kbps'
+    + (H264_IR > 0 ? (' 渐进刷新(' + H264_IR + '帧/轮)') : '')
     + (dual ? (' + 第二路 ' + (S2.profile ? S2.profile.w : '?') + 'x@' + (S2.profile ? S2.profile.fps : '?') + ' 一次采集两路编码') : ''));
   h264ResetCounters();
   let proc = null;
@@ -1118,6 +1159,34 @@ function h264Ensure() {
   h264Start();
 }
 
+// 2026-11-12（intra-refresh 验收指标）：每帧体积与关键帧体积的 5 秒窗口统计。
+// 为什么必须在服务端量：手机上只能看到"卡不卡"，看不到"是不是关键帧突发造成的"。
+// 这里直接量"单帧峰值 / 关键帧均值 / >300KB 的帧数"，改任何编码参数都能立刻对比。
+const kfBuf = [];
+let kfStat = { n: 0, keyN: 0, keyAvgKB: 0, keyMaxKB: 0, maxKB: 0, over200: 0, over300: 0 };
+setInterval(() => {
+  if (!kfBuf.length) return;
+  let sum = 0, keyMax = 0, max = 0, o2 = 0, o3 = 0;
+  for (const e of kfBuf) {
+    const k = e.kb;
+    if (k > max) max = k;
+    if (k > 200) o2++;
+    if (k > 300) o3++;
+    if (e.key) { sum += k; if (k > keyMax) keyMax = k; }
+  }
+  const keyN = kfBuf.filter((e) => e.key).length;
+  kfStat = {
+    n: kfBuf.length,
+    keyN,
+    keyAvgKB: keyN ? Math.round(sum / keyN) : 0,
+    keyMaxKB: Math.round(keyMax),
+    maxKB: Math.round(max),
+    over200: o2,
+    over300: o3,
+  };
+  kfBuf.length = 0;
+}, 5000).unref?.();
+
 const h264Wss = new WebSocketServer({ noServer: true });
 
 // ---- B 方案：把帧转 Annex-B 并喂给 Pion 侧车 -------------------------------
@@ -1176,6 +1245,10 @@ function spsPpsPrefix() {
 // 避免同一次拖动里几十个事件反复计入。
 const TOUCH_PROBE = { at: 0, lastEventAt: 0, samples: [], acc: 0 };
 function feed264(key, data) {
+  // 关键帧体积统计（5 秒窗口，见 kfStat）：编码器产出的每一帧都算，供"关键帧突发"对比。
+  try {
+    if (data && data.length) { kfBuf.push({ kb: data.length / 1024, key: !!key }); if (kfBuf.length > 4000) kfBuf.shift(); }
+  } catch { }
   // 触屏反馈探针结算：有未结算的触摸点 → 记录"触摸到出帧"的间隔
   try {
     if (TOUCH_PROBE.at) {
@@ -6544,7 +6617,7 @@ async function handler(req, res) {
   }
   if (url.pathname === '/h264-quality') {
     const qreply = (obj) => { try { res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' }); res.end(JSON.stringify(obj)); } catch { } };
-    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON, maxCapture: CAP_W });
+    if (req.method === 'GET') return qreply({ ok: true, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR, mon: H264_MON, maxCapture: CAP_W });
     if (req.method !== 'POST') { res.writeHead(405); res.end(); return; }
     let b = '';
     req.on('data', (c) => { b += c; if (b.length > 4096) req.destroy(); });
@@ -6554,7 +6627,7 @@ async function handler(req, res) {
       // 原来是无条件 kill+spawn：两台设备各调一次画质就互相打断一次，
       // 谁先谁后都在重启，画面反复黑 1~2 秒，弱网下很容易把接收端拖进重试/回落。
       const __before = {
-        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF,
+        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR,
         mon: H264_MON, rect: JSON.stringify(H264_RECT || null), native: H264_NATIVE
       };
       let m = {};
@@ -6592,6 +6665,11 @@ async function handler(req, res) {
         else H264_RECT = rr;
       } else if (m.rect === null) H264_RECT = null;
       if (typeof m.qf === 'boolean' && m.qf !== H264_QF) { H264_QF = m.qf; saveH264QualityFirst(H264_QF); }
+      // 2026-11-12（intra-refresh）：渐进式刷新周期（帧）。0 = 关闭。
+      // 故意做成"跟画质一起下发"的字段：页面/命令行调一次就生效并落盘，重启后不掉。
+      if (m.ir !== undefined && Number.isFinite(Number(m.ir))) {
+        H264_IR = Math.max(0, Math.min(600, Math.round(Number(m.ir))));
+      }
       // 2026-11-09：这里也走实验模式的上下限（否则页面调 240fps/100Mbps 会被静默压回 60/40000）。
       if (Number.isFinite(f)) H264_FPS = Math.max(10, Math.min(fpsCap, Math.round(f)));
       if (Number.isFinite(k)) H264_KBPS = Math.max(2000, Math.min(kbpsCap, Math.round(k)));
@@ -6654,7 +6732,7 @@ async function handler(req, res) {
       // 2026-11-10：但**只有参数真的变了才重启** —— 幂等。两台设备各自下发画质时，
       // 后一台如果只是"重复告诉服务端它已经是这个档位"，就不该再打断前一台的画面。
       const __after = {
-        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF,
+        w: H264_W, h: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR,
         mon: H264_MON, rect: JSON.stringify(H264_RECT || null), native: H264_NATIVE
       };
       let __same = true;
@@ -6684,7 +6762,7 @@ async function handler(req, res) {
         }
       } catch { }
       try { if (m.auto !== true) saveH264QualityState(); } catch { }
-      qreply({ ok: true, changed: !__same, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, mon: H264_MON,
+      qreply({ ok: true, changed: !__same, width: H264_W, height: H264_H, fps: H264_FPS, kbps: H264_KBPS, qf: H264_QF, ir: H264_IR, mon: H264_MON,
         device: { level: DEVICE.level, name: DEVICE.name, caps: DEVICE.caps, since: DEVICE.at, notes: DEVICE.notes } });
     });
     return;
@@ -6842,6 +6920,11 @@ async function handler(req, res) {
       winRect: h264.winRect || null,
       mon: H264_MON,
       qf: H264_QF,
+      // 2026-11-12（intra-refresh）：渐进刷新周期（帧），0 = 关闭（周期性 IDR）
+      ir: H264_IR,
+      // 2026-11-12：关键帧体积统计（5 秒窗口）。kf.maxKB=单帧峰值, keyMaxKB/keyAvgKB=关键帧体积,
+      // over300=超过 300KB 的帧数（>300KB 基本必丢包，是"顿一下"的直接来源）
+      kf: kfStat,
       // B 方案（Pion WebRTC H.264）默认通道：页面默认走它，?rtc264=0 可强制旧 WS 通道
       rtc: { enabled: !!(CFG264.enabled && fileExists(RTC264_EXE)), port: RTC264_PORT, turn: RTC264_TURN_PORT },
       wt: cfgH264.wt ? { enabled: cfgH264.wt.enabled !== false, port: Number(cfgH264.wt.port) || 8444, hash: String(cfgH264.wt.hash || '') } : null,

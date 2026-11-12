@@ -43,3 +43,12 @@ app/exp/**/*.pyc
 
 # 版本快照（本地物理备份，体积大）
 .backups/
+
+# 编码 A/B 的临时产物（fMP4/jsonl，体积大，不进版本库）
+.encab/
+stress-out/
+.p0-avsync/
+.p1-avsync/
+.audit/
+.site-redesign/
+.ui-redesign/
