@@ -1910,30 +1910,75 @@ try {
   $hpMsiSrc = Join-Path $script:SourceDirFull 'Sunshine-Windows-AMD64-installer.msi'
   $hpScript = Join-Path $script:InstallRoot 'sunshine-integration.ps1'
   if (-not (Test-Path -LiteralPath $hpScript)) { $hpScript = Join-Path $script:SourceDirFull 'sunshine-integration.ps1' }
-  # 2026-11-08（用户虚拟机实测反馈）：高性能组件改成**可选、默认不装**。
-# 以前默认安装 Sunshine，虚拟机/无网络环境会卡住整个安装器。
-$hpWant = [bool]$HighPerformance
-if (-not $hpWant -and -not $SkipHighPerformance -and -not $script:DryRunMode -and -not $script:NoPauseMode) {
-  Write-Host ''
-  Write-Host '可选组件：高性能模式（Moonlight / Sunshine）' -ForegroundColor Cyan
-  Write-Host '  约 33 MB，需要网络；不装的话网页模式完全可用，以后也能在手机设置页补装。'
-  $choiceExe = Join-Path $env:SystemRoot 'System32\choice.exe'
-  $hpChoice = 2
+  # 2026-11-12（用户反馈）：安装器先自己判断系统里是不是已经有 Sunshine。
+  # 以前不管装没装都会问"现在安装吗"，装过的人每次升级都要再答一遍（选 Y 还会跑一次集成）。
+  # 现在：已安装 → 不再询问、不再重装；之前已由本产品集成过（marker 存在）→ 整步跳过；
+  #       只是用户自己装过 Sunshine、没有本产品配置 → 静默补一次配置
+  #       （sunshine-integration.ps1 自己也会检测已安装并跳过 MSI，不会重装）。
+  $hpMarker = Join-Path $script:InstallRoot 'sunshine-integration.json'
+  $hpDetected = $false
+  $hpDetectWhy = ''
   try {
-    & $choiceExe /C YN /N /T 15 /D N /M '  现在安装吗？[Y=装 / N=跳过，15 秒后自动跳过] '
-    $hpChoice = [int]$LASTEXITCODE
-  } catch { $hpChoice = 2 }
-  $hpWant = ($hpChoice -eq 1)
-}
-$hpNetOk = $true
-try { $hpNetOk = [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable() } catch { $hpNetOk = $false }
-if ($SkipHighPerformance) {
-  Write-Note '按参数跳过高性能模式（网页模式照常可用）'
-  $script:HpState = '按参数跳过'
-} elseif ($script:DryRunMode) {
-  Write-Note '（干跑）会安装并预配置 Sunshine（只绑 tailnet、自动随机凭据、防火墙收紧、只广播 H.264）'
-  $script:HpState = '（干跑未执行）'
-} elseif (-not $hpWant) {
+    foreach ($p in @(
+      (Join-Path $env:ProgramFiles 'Sunshine\sunshine.exe'),
+      (Join-Path ${env:ProgramFiles(x86)} 'Sunshine\sunshine.exe'),
+      (Join-Path $env:LOCALAPPDATA 'Sunshine\sunshine.exe'),
+      (Join-Path $env:ProgramData 'Sunshine\sunshine.exe')
+    )) {
+      if ($p -and (Test-Path -LiteralPath $p)) { $hpDetected = $true; $hpDetectWhy = $p; break }
+    }
+    if (-not $hpDetected) {
+      $svcHp = Get-Service -Name 'SunshineService' -ErrorAction SilentlyContinue
+      if ($svcHp) { $hpDetected = $true; $hpDetectWhy = 'SunshineService 服务' }
+    }
+    if (-not $hpDetected) {
+      $procHp = Get-Process -Name 'sunshine' -ErrorAction SilentlyContinue
+      if ($procHp) { $hpDetected = $true; $hpDetectWhy = 'Sunshine 进程' }
+    }
+    if (-not $hpDetected) {
+      $keysHp = @('HKLM:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKLM:\SOFTWARE\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall\*',
+        'HKCU:\SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\*')
+      $appHp = Get-ItemProperty $keysHp -ErrorAction SilentlyContinue | Where-Object { $_.DisplayName -match 'Sunshine' } | Select-Object -First 1
+      if ($appHp) { $hpDetected = $true; $hpDetectWhy = [string]$appHp.DisplayName }
+    }
+  } catch { }
+  $hpIntegrated = $hpDetected -and (Test-Path -LiteralPath $hpMarker)
+  $hpSkipExisting = $hpIntegrated -and (-not $HighPerformance)
+  if ($hpDetected) {
+    Write-Note ('检测到系统已安装 Sunshine（' + $hpDetectWhy + '），不再询问、不重装')
+    if ($hpSkipExisting) { Write-Note '本产品的高性能模式配置已存在（sunshine-integration.json），本步直接跳过' }
+    else { Write-Note '还没应用过本产品的高性能配置：自动补一次配置（不重装 MSI）' }
+  }
+  $hpWant = [bool]$HighPerformance
+  if (-not $hpDetected -and -not $hpWant -and -not $SkipHighPerformance -and -not $script:DryRunMode -and -not $script:NoPauseMode) {
+    Write-Host ''
+    Write-Host '可选组件：高性能模式（Moonlight / Sunshine）' -ForegroundColor Cyan
+    Write-Host '  约 33 MB，需要网络；不装的话网页模式完全可用，以后也能在手机设置页补装。'
+    $choiceExe = Join-Path $env:SystemRoot 'System32\choice.exe'
+    $hpChoice = 2
+    try {
+      & $choiceExe /C YN /N /T 15 /D N /M '  现在安装吗？[Y=装 / N=跳过，15 秒后自动跳过] '
+      $hpChoice = [int]$LASTEXITCODE
+    } catch { $hpChoice = 2 }
+    $hpWant = ($hpChoice -eq 1)
+  }
+  # 已安装但还没有本产品配置：不装 MSI，只自动应用一次配置（不改装、不联网下载）
+  if ($hpDetected -and -not $hpWant -and -not $hpSkipExisting -and -not $SkipHighPerformance -and -not $script:DryRunMode -and -not $script:NoPauseMode) {
+    $hpWant = $true
+  }
+  $hpNetOk = $true
+  try { $hpNetOk = [System.Net.NetworkInformation.NetworkInterface]::GetIsNetworkAvailable() } catch { $hpNetOk = $false }
+  if ($SkipHighPerformance) {
+    Write-Note '按参数跳过高性能模式（网页模式照常可用）'
+    $script:HpState = '按参数跳过'
+  } elseif ($hpSkipExisting) {
+    Write-Note 'Sunshine 已安装且已由本产品配置过，跳过（不重装、不重复改配置）'
+    $script:HpState = '已安装（跳过）'
+  } elseif ($script:DryRunMode) {
+    Write-Note '（干跑）会安装并预配置 Sunshine（只绑 tailnet、自动随机凭据、防火墙收紧、只广播 H.264）'
+    $script:HpState = '（干跑未执行）'
+  } elseif (-not $hpWant) {
   Write-Note '未选择高性能组件，跳过（网页模式完全可用；以后可在手机设置页补装）'
   $script:HpState = '未选择（跳过）'
 } elseif (-not $hpNetOk) {
