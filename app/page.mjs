@@ -2563,6 +2563,13 @@ async function rtc264Stats() {
           fsTries: (window.__paFsTries | 0),
           fsErr: String(window.__paFsErr || '').slice(0, 40),
           wc: !!_wd.on,
+          // 2026-11-12：WebView 里 WebCodecs 没启用（wc=0）时，到底缺哪个 API。
+          // 实测 APK 的 WebView 能拿到 raf=110~121Hz（高刷请求成功！），但 wc=0，
+          // 于是回落到 <video> 原生解码（延迟大）。下面两个字段用来区分：
+          //   tf=0 → 没有 RTCRtpScriptTransform（那就只能走 video 路径）
+          //   vd=0 → 没有 VideoDecoder（真的不支持 WebCodecs）
+          tf: (typeof RTCRtpScriptTransform !== 'undefined') ? 1 : 0,
+          vd: (typeof VideoDecoder !== 'undefined') ? 1 : 0,
           vidFps: Math.round((_wd._hudVidFps || 0) * 10) / 10,
           dpr: Math.round((window.devicePixelRatio || 0) * 100) / 100,
           scr: (window.screen ? (screen.width + 'x' + screen.height) : ''),
