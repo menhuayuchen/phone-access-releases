@@ -4628,6 +4628,16 @@ async function handler(req, res) {
     return;
   }
 
+  // 2026-11-12：页面版本接口（给 Android 壳做**页面热更新**用）。
+  // 壳每隔几十秒问一次，版本变了就自动 reload —— 以后改页面不用重装 APK。
+  // 只返回版本号，不含任何用户信息；带不带 k 都能读（和 /health 一样是公开信息）。
+  if (url.pathname === '/page-ver') {
+    try {
+      res.writeHead(200, { 'content-type': 'application/json; charset=utf-8', 'cache-control': 'no-store' });
+      res.end(JSON.stringify({ ok: true, ver: PAGE_VER }));
+    } catch { }
+    return;
+  }
   if (url.pathname === '/health') {
     const st = input.status();
     const healthSid = String(url.searchParams.get('s') || '').slice(0, 24);   // 只报这条会话自己的丢帧
