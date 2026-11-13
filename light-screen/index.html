@@ -32,6 +32,7 @@
       <a href="#download">下载</a>
       <a href="../versions/">更新记录</a>
       <a href="#faq">问题</a>
+      <a href="../android/">安卓</a>
     </nav>
     <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.23 · 89.3 MB</span>
   </div>
@@ -44,7 +45,7 @@
   <div class="wrap">
     <div class="fig fig--dark"><span>FIG.01</span><span class="fig__line"></span><span>轻屏 / LIGHTSCREEN · WINDOWS</span></div>
     <h1 class="phero__h">手机上打开网址，<br><span class="teal">就能用你的电脑</span></h1>
-    <p class="phero__lead">看屏幕、点鼠标、打字、听声音、传大文件 —— 手机上不用装任何 App。</p>
+    <p class="phero__lead">看屏幕、点鼠标、打字、听声音、传大文件 —— 手机上不用装任何 App；想要小窗和画中画，再装那个 41 KB 的<a href="../android/">安卓壳</a>。</p>
     <div class="actions">
       <a class="btn btn--main" href="#download">下载 Windows 版</a>
       <a class="btn btn--line" href="#free">为什么免费</a>
@@ -251,6 +252,7 @@
         <span class="dl__go">下载 ↓</span>
       </a>
     </div>
+    <p class="note">APK 签名说明：本版安卓包用<b>正式签名</b>（CN=LightScreen）。如果之前装过测试版，系统会提示"签名不一致 / 应用未安装"——先卸载旧版再装本版（卸载会清掉本机保存的电脑地址，重装后填一次即可）。</p>
     <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITHUB</a></p>
 
     <div class="manifest">
@@ -280,7 +282,7 @@
       <details><summary>要装 App 吗？</summary><p>不用。手机浏览器打开网址就能用；想更像 App，可以在浏览器菜单里「添加到主屏幕」。</p></details>
       <details><summary>画面经过你的服务器吗？</summary><p>不经过。默认走 Tailscale 的点对点加密通道（直连或 Tailscale 自己的中继），我这边没有你的画面和文件。</p></details>
       <details><summary>为什么第一次打开提示「不安全」？</summary><p>局域网 / 自签证书会这样。点「高级 → 继续前往」即可；用 Tailscale 的 https 地址不会提示。</p></details>
-      <details><summary>只支持 Windows 吗？</summary><p>是。一个人做，精力有限，先把 Windows 做好；Mac / Linux 以后再说，不承诺时间。</p></details>
+      <details><summary>支持哪些系统？</summary><p><b>电脑端只支持 Windows 10 / 11</b>（Mac / Linux 以后再说，不承诺时间）；<b>手机端两种都行</b>：浏览器直接打开，或者装 41 KB 的<a href="../android/">安卓 App</a>（多出小窗、画中画、后台保活、音量键、高刷）。</p></details>
       <details><summary>能拿来商用吗？</summary><p>需要先和作者谈。协议是 PolyForm Noncommercial 1.0.0：允许改、允许自己用、允许分享，但商业用途要事先获得书面同意。</p></details>
     </div>
   </div>
@@ -302,8 +304,8 @@
         <h2 class="foot__h">当前版本</h2>
         <ul>
           <li class="mono">v1.0.23</li>
-          <li class="mono">96,851,639 B</li>
-          <li class="mono">2026-11-10</li>
+          <li class="mono">93,688,263 B</li>
+          <li class="mono">2026-11-13</li>
         </ul>
       </div>
       <div>
