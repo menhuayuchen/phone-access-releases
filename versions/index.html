@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>更新记录 · 轻屏 · 轻器</title>
-<meta name="description" content="轻屏的版本更新记录：每个版本改了什么、修了什么。当前 v1.0.22（2026-11-12）。">
+<meta name="description" content="轻屏的版本更新记录：每个版本改了什么、修了什么。当前 v1.0.23（2026-11-13）。">
 <meta name="theme-color" content="#F6F4EF">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="更新记录 · 轻屏">
-<meta property="og:description" content="每个版本改了什么、修了什么。当前 v1.0.22。">
+<meta property="og:description" content="每个版本改了什么、修了什么。当前 v1.0.23。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="轻器">
 <meta property="og:url" content="https://menhuayuchen.github.io/phone-access-releases/versions/">
@@ -32,7 +32,7 @@
       <a href="../about/">关于 / 授权</a>
       <a href="../">返回首页</a>
     </nav>
-    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.22</span>
+    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.23</span>
   </div>
   <div class="nav__prog" data-progress></div>
 </header>
@@ -47,18 +47,18 @@
 
     <div class="vhead" style="margin-top:clamp(22px,3vw,32px)">
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <b style="font-size:1.05rem;letter-spacing:.03em">轻屏 v1.0.22</b>
+        <b style="font-size:1.05rem;letter-spacing:.03em">轻屏 v1.0.23</b>
         <span class="badge">当前版本</span>
-        <span class="mono dim">2026-11-10</span>
+        <span class="mono dim">2026-11-13</span>
       </div>
       <div class="vhead__grid">
-        <div class="vhead__c"><b>v1.0.22</b><span>版本</span></div>
-        <div class="vhead__c"><b>92.4 MB</b><span>安装包大小</span></div>
-        <div class="vhead__c"><b>9FE56E19…</b><span>SHA256 前 8 位</span></div>
+        <div class="vhead__c"><b>v1.0.23</b><span>版本</span></div>
+        <div class="vhead__c"><b>89.3 MB</b><span>安装包大小</span></div>
+        <div class="vhead__c"><b>61B3B2CE…</b><span>SHA256 前 8 位</span></div>
         <div class="vhead__c"><b>免费</b><span>无专业版 / 无账号</span></div>
       </div>
       <div class="vhead__actions">
-        <a class="btn btn--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.22/LightScreen-Setup-v1.0.22-release.exe">下载最新版</a>
+        <a class="btn btn--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.23/PhoneAccess-Setup-v1.0.23-release.exe">下载最新版</a>
         <a class="btn btn--paper" href="../light-screen/#download">校验与安装说明</a>
       </div>
     </div>
@@ -70,12 +70,38 @@
     <div class="timeline">
       <article class="ver ver--now">
         <div class="ver__rail">
+          <span class="ver__date">2026-11-13</span>
+          <span class="ver__tag">当前</span>
+        </div>
+        <div class="ver__body">
+          <span class="ver__dot" aria-hidden="true"></span>
+          <h2 class="ver__h">v1.0.23 <span class="badge">最新</span></h2>
+          <p class="ver__sub">修掉肉眼可见的画质问题，并把"两台设备同时看"做成了可用状态。</p>
+          <ul class="ver__list">
+            <li>修好<b>屏幕上的彩色横条闪烁</b>（画布改为按垂直同步提交）—— 这类问题截图/录屏拍不到，之前一直找不到原因。</li>
+            <li><b>画中画/小窗只显示画面</b>：隐藏工具栏与状态条，画中画里能看到整个远程屏幕，并且可以自由缩放。</li>
+            <li><b>弱网不再"自动降档风暴"</b>：8% 丢包下原来 90 秒连降 7 档、反复重启编码器，现在 0 次。</li>
+            <li>新增<b>双路</b>：第二台设备可选自己的画质档位；只支持 H.264 的设备自动走第二路，主路 HEVC 不受影响。</li>
+            <li>主路"主人"改<b>心跳续约</b>（3 秒/次、30 秒窗口），稳定观看的设备不会再被新设备抢走。</li>
+            <li>修一个<b>越权问题</b>：自适应降码率原来不带设备标识，可能改掉别人主路的画质。</li>
+            <li>响应头 CSP 改为缓存，消除偶发的 1~2 秒主线程卡顿（原来每个请求都在同步枚举网卡 / 起 PowerShell）。</li>
+            <li>安卓 App（另行下载）：<b>渲染进程崩溃自愈、触控低延迟、画中画、退避重连、音量键、小窗模式</b>。</li>
+          </ul>
+          <div class="ver__links">
+            <a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITEE 发布页</a>
+            <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITHUB</a>
+          </div>
+        </div>
+      </article>
+
+      <article class="ver">
+        <div class="ver__rail">
           <span class="ver__date">2026-11-12</span>
           <span class="ver__tag">当前</span>
         </div>
         <div class="ver__body">
           <span class="ver__dot" aria-hidden="true"></span>
-          <h2 class="ver__h">v1.0.22 <span class="badge">最新</span></h2>
+          <h2 class="ver__h">v1.0.22</h2>
           <p class="ver__sub">画面更连贯、更稳；画质设置改成"按项自动"，并且把实际生效值写在画面上。</p>
           <ul class="ver__list">
             <li>关键帧突发治理：关键帧体积 <b>310KB → 114KB</b>，浏览器补帧请求 29 → 2 次，弱网抖动不再一顿一顿。</li>
