@@ -104,12 +104,29 @@ function Normalize-Rules($raw) {
             if (-not $wake) { Add-Err ('第 ' + $i + ' 条：唤醒时间格式不对（应为 HH:mm）'); continue }
         }
 
-        $date = $null
+        $offDate = $null
+        $wakeDate = $null
         if ($repeat -eq 'once') {
-            $date = Parse-DateStr ([string]$r.date)
-            if (-not $date) { Add-Err ('第 ' + $i + ' 条：选「仅一次」时必须选日期'); continue }
-            $offAt = $date.AddHours($off.Hour).AddMinutes($off.Minute)
-            if ($offAt -le (Get-Date)) { Add-Err ('第 ' + $i + ' 条：日期时间已经过去了（' + $offAt.ToString('yyyy-MM-dd HH:mm') + '），请重新选'); continue }
+            # 2026-11-13：休眠/唤醒各自有日期；旧规则只有 date 时按 date 回退，
+            # 唤醒时间不晚于休眠时间则自动顺延到次日（兼容跨夜旧规则）。
+            $offDateStr = [string]$r.offDate
+            if (-not $offDateStr) { $offDateStr = [string]$r.date }
+            $offDate = Parse-DateStr $offDateStr
+            if (-not $offDate) { Add-Err ('第 ' + $i + ' 条：选「仅一次」时必须选休眠日期'); continue }
+            $offAt = $offDate.AddHours($off.Hour).AddMinutes($off.Minute)
+            if ($offAt -le (Get-Date)) { Add-Err ('第 ' + $i + ' 条：休眠日期时间已经过去了（' + $offAt.ToString('yyyy-MM-dd HH:mm') + '），请重新选'); continue }
+            if ($wake) {
+                $wakeDateStr = [string]$r.wakeDate
+                if ($wakeDateStr) {
+                    $wakeDate = Parse-DateStr $wakeDateStr
+                    if (-not $wakeDate) { Add-Err ('第 ' + $i + ' 条：唤醒日期格式不对'); continue }
+                } else {
+                    $wakeDate = $offDate
+                    if ($wake -le $off) { $wakeDate = $offDate.AddDays(1) }
+                }
+                $wakeAt = $wakeDate.AddHours($wake.Hour).AddMinutes($wake.Minute)
+                if ($wakeAt -le $offAt) { Add-Err ('第 ' + $i + ' 条：唤醒必须晚于休眠（跨夜请把唤醒日期选到次日）'); continue }
+            }
         } else {
             if ($wake -and $wake.Hour -eq $off.Hour -and $wake.Minute -eq $off.Minute) {
                 Add-Err ('第 ' + $i + ' 条：唤醒时间和关机时间一样，没有意义'); continue
@@ -121,7 +138,9 @@ function Normalize-Rules($raw) {
         if ($null -ne $r.enabled) { $ruleOn = ($r.enabled -ne $false) }
         $out += [pscustomobject]@{
             id = $id; mode = $mode; repeat = $repeat; enabled = $ruleOn
-            date = if ($date) { $date.ToString('yyyy-MM-dd') } else { '' }
+            offDate = if ($offDate) { $offDate.ToString('yyyy-MM-dd') } else { '' }
+            wakeDate = if ($wakeDate) { $wakeDate.ToString('yyyy-MM-dd') } else { '' }
+            date = if ($offDate) { $offDate.ToString('yyyy-MM-dd') } else { '' }
             offTime = $off.ToString('HH:mm'); wakeTime = if ($wake) { $wake.ToString('HH:mm') } else { '' }
         }
     }
@@ -131,7 +150,8 @@ function Normalize-Rules($raw) {
 function New-OffTrigger($rule) {
     $off = Parse-HHmm $rule.offTime
     if ($rule.repeat -eq 'once') {
-        $d = Parse-DateStr $rule.date
+        $d = Parse-DateStr $rule.offDate
+        if (-not $d) { $d = Parse-DateStr $rule.date }
         return New-ScheduledTaskTrigger -Once -At $d.AddHours($off.Hour).AddMinutes($off.Minute)
     }
     $at = Get-Date -Hour $off.Hour -Minute $off.Minute -Second 0
@@ -152,11 +172,17 @@ function New-WakeTrigger($rule) {
     $offsets = @(0, 3, 6)
     $list = @()
     if ($rule.repeat -eq 'once') {
-        # 关键修复：仅一次时，唤醒必须落在规则日期上（以前忽略 date，可能排到今天）
-        $d = Parse-DateStr $rule.date
+        # 2026-11-13：唤醒用**自己的** wakeDate（可以比休眠晚一天）；旧规则回退 date 并按时序推断。
+        $d = Parse-DateStr $rule.wakeDate
+        if (-not $d) {
+            $d = Parse-DateStr $rule.offDate
+            if (-not $d) { $d = Parse-DateStr $rule.date }
+            $off = Parse-HHmm $rule.offTime
+            if ($d -and $off -and ($w -le $off)) { $d = $d.AddDays(1) }
+        }
         $baseDt = $d.AddHours($w.Hour).AddMinutes($w.Minute)
-        foreach ($off in $offsets) {
-            $list += New-ScheduledTaskTrigger -Once -At $baseDt.AddMinutes($off)
+        foreach ($offMin in $offsets) {
+            $list += New-ScheduledTaskTrigger -Once -At $baseDt.AddMinutes($offMin)
         }
         return $list
     }

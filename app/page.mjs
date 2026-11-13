@@ -2452,16 +2452,45 @@ async function startRtc264() {
     setStat('WebRTC264 连接中');
     R.statsTimer = setInterval(rtc264Stats, 1000);   // 1 秒一次：冻结/重启后能更快发现
     R.watchdog = setTimeout(function () { if (!R.firstVideo) rtc264Retry('no-video'); }, 12000);
-    // 2026-11-12 HEVC P1 兜底：HEVC 会话 2.8 秒还没解出任何一帧（解码器建不起来/硬解不吃这段码流）
-    // → 记 10 分钟不要再试，立刻按 H.264 重建会话。用户最多黑屏 ~3 秒，之后自动恢复。
+    // 2026-11-12 HEVC P1 兜底：HEVC 会话 2.8 秒还没解出任何一帧 → 回落 H.264。
+    // 2026-11-13 修正：页面重载/编码器冷启动时，2.8 秒可能还停在"ICE 刚通、还没收到 RTP"，
+    // 以前无条件回落会触发一次主编码器重启（实测伴随 1.2~2.8 秒事件循环卡顿）。
+    // 现在先看 RTP bytesReceived：有字节但没帧 = 解码器问题，立即回落；
+    // 完全没字节 = 链路还没起来，再给 3 秒，第二次仍无字节才回落。
     clearTimeout(R.hevcTimer);
     if (R.codec === 'hevc') {
       const _sid = R.sid;
-      R.hevcTimer = setTimeout(function () {
-        if (my !== rtc264Gen || R.sid !== _sid) return;
-        if (state.mode !== 'h264' || document.hidden) return;
-        if (R.firstVideo || (window.__wc264 && window.__wc264.frames > 0)) return;
-        hevcToH264('2.8 秒内没有解出画面');
+      const _hevcNoFrame = function () {
+        if (my !== rtc264Gen || R.sid !== _sid) return false;
+        if (state.mode !== 'h264' || document.hidden) return false;
+        if (R.firstVideo || (window.__wc264 && window.__wc264.frames > 0)) return false;
+        return true;
+      };
+      const _videoBytes = async function () {
+        let bytes = 0;
+        try {
+          if (!R.pc) return 0;
+          const stats = await R.pc.getStats();
+          stats.forEach(function (s) {
+            if (s.type === 'inbound-rtp' && (s.kind === 'video' || s.mediaType === 'video')) {
+              bytes = Math.max(bytes, Number(s.bytesReceived) || 0);
+            }
+          });
+        } catch (e) { }
+        return bytes;
+      };
+      R.hevcTimer = setTimeout(async function () {
+        if (!_hevcNoFrame()) return;
+        // 2026-11-13：2.8 秒不立刻判死。真实观测到页面重载时 2.8 秒还可能处于
+        // “RTP 刚到、解码器还没出第一帧”，此时回落会触发主编码器重启（1.2~2.8 秒卡顿）。
+        // 统一给到 5.8 秒；解码器真报错会走 worker 的 error 路径，不受这个计时器影响。
+        R.hevcTimer = setTimeout(async function () {
+          if (!_hevcNoFrame()) return;
+          const b2 = await _videoBytes();
+          if (!_hevcNoFrame()) return;
+          if (b2 > 0) hevcToH264('5.8 秒内有 RTP 但没有解出画面');
+          else hevcToH264('5.8 秒内没有收到任何视频数据');
+        }, 3000);
       }, 2800);
     }
   } catch (e) {
@@ -8253,11 +8282,23 @@ bindImg(img);
     if (r.repeat === 'weekdays') return '工作日';
     // 2026-11-09：周末（周六、周日）
     if (r.repeat === 'weekend') return '周末';
-    if (r.repeat === 'once') return '仅一次' + (r.date ? '（' + r.date + '）' : '');
+    if (r.repeat === 'once') return '仅一次';
     return '每天';
+  }
+  function pwShortDate(s) {
+    const m = String(s || '').match(/^\d{4}-(\d{2})-(\d{2})$/);
+    return m ? (m[1] + '-' + m[2]) : '';
   }
   function pwRuleText(r) {
     const mode = r.mode === 'shutdown' ? '关机' : '休眠';
+    if (r.repeat === 'once') {
+      // 2026-11-13：休眠和唤醒可以跨天，各自有日期；旧的单 date 规则按 offDate 回退显示。
+      const od = pwShortDate(r.offDate || r.date);
+      const wd = pwShortDate(r.wakeDate || r.offDate || r.date);
+      let t = '仅一次 ' + (od ? od + ' ' : '') + esc2(r.offTime) + ' ' + mode;
+      if (r.wakeTime) t += ' → ' + (wd ? wd + ' ' : '') + '唤醒 ' + esc2(r.wakeTime);
+      return t;
+    }
     let t = pwRepeatText(r) + ' ' + esc2(r.offTime) + ' ' + mode;
     if (r.wakeTime) t += ' → 唤醒 ' + esc2(r.wakeTime);
     return t;
@@ -8321,7 +8362,9 @@ bindImg(img);
       + '<label style="color:#868c96">休眠/关机 <input id="pwOff" type="time" value="23:00" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
       + '<label style="color:#868c96">唤醒 <input id="pwWake" type="time" value="07:30" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
       + '<select id="pwRepeat" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="daily">每天</option><option value="weekdays">工作日</option><option value="weekend">周末</option><option value="once">仅一次</option></select>'
-      + '<input id="pwDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px">'
+      + '<label style="color:#868c96">休眠日期 <input id="pwOffDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<label style="color:#868c96">唤醒日期 <input id="pwWakeDate" type="date" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"></label>'
+      + '<span id="pwDateHint" style="color:#6b7078;font-size:11px">（日期只在「仅一次」时生效；跨天会自动给唤醒日期 +1 天）</span>'
       + '<select id="pwMode" style="background:#14151a;border:1px solid #24262e;color:#e8eaee;border-radius:6px;padding:4px 6px"><option value="hibernate">休眠（可定时开机）</option><option value="shutdown">关机</option></select>'
       + '<button id="pwAdd" style="background:#2f6feb;color:#fff;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">加入</button>'
       + '<button id="pwApply" style="background:#2f6b3a;color:#e8eaee;border:0;border-radius:8px;padding:5px 12px;font-size:12.5px;cursor:pointer">保存并应用</button>'
@@ -8414,6 +8457,79 @@ bindImg(img);
       };
       wireWarn();
 
+      // 2026-11-13：休眠和唤醒各自有日期（跨天时唤醒日期默认 +1 天）。
+      // 「仅一次」以外日期不生效；旧的单 date 规则在服务端会被迁移成 offDate。
+      const pwRepeatEl = wrap.querySelector('#pwRepeat');
+      const pwOffT = wrap.querySelector('#pwOff');
+      const pwWakeT = wrap.querySelector('#pwWake');
+      const pwOffD = wrap.querySelector('#pwOffDate');
+      const pwWakeD = wrap.querySelector('#pwWakeDate');
+      const pwDateHint = wrap.querySelector('#pwDateHint');
+      const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+      const addDays = (s, n) => {
+        const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+        if (!m) return '';
+        const d = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3]));
+        d.setDate(d.getDate() + n);
+        return ymd(d);
+      };
+      const syncDateUi = () => {
+        const once = !!(pwRepeatEl && pwRepeatEl.value === 'once');
+        [pwOffD, pwWakeD].forEach((el) => {
+          if (!el) return;
+          el.disabled = !once;
+          el.style.opacity = once ? '1' : '.45';
+        });
+        if (pwDateHint) pwDateHint.style.opacity = once ? '1' : '.55';
+        if (!once) return;
+        if (pwOffD && !pwOffD.value) pwOffD.value = ymd(new Date());
+        if (pwWakeD) {
+          if (!pwOffD || !pwOffD.value) { pwWakeD.value = ''; return; }
+          const off = parseTimeInput(pwOffT && pwOffT.value);
+          const wake = parseTimeInput(pwWakeT && pwWakeT.value);
+          if (!wake) { pwWakeD.value = ''; return; }
+          // 唤醒时间不晚于休眠时间 → 默认第二天；否则同一天
+          pwWakeD.value = (off && wake <= off) ? addDays(pwOffD.value, 1) : pwOffD.value;
+        }
+      };
+      if (pwRepeatEl) pwRepeatEl.addEventListener('change', syncDateUi);
+      if (pwOffT) pwOffT.addEventListener('input', syncDateUi);
+      if (pwWakeT) pwWakeT.addEventListener('input', syncDateUi);
+      if (pwOffD) pwOffD.addEventListener('change', syncDateUi);
+      syncDateUi();
+      // 读输入框 → 规则对象；返回 { rule } 或 { error }
+      const readPwRule = () => {
+        const off = parseTimeInput(pwOffT && pwOffT.value);
+        const wake = parseTimeInput(pwWakeT && pwWakeT.value);
+        const repeat = (pwRepeatEl && pwRepeatEl.value) || 'daily';
+        const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
+        let offDate = repeat === 'once' ? String((pwOffD && pwOffD.value) || '') : '';
+        let wakeDate = repeat === 'once' ? String((pwWakeD && pwWakeD.value) || '') : '';
+        if (!off) return { error: '休眠/关机时间没读到有效值，请重新选一次。' };
+        if (wake && wake === off) return { error: '唤醒时间和休眠时间不能一样（都是 ' + off + '）。' };
+        if (repeat === 'once') {
+          if (!offDate) return { error: '选「仅一次」时要选休眠日期。' };
+          const offAt = new Date(offDate + 'T' + off + ':00');
+          if (isNaN(offAt.getTime())) return { error: '休眠日期不合法。' };
+          if (offAt.getTime() <= Date.now()) return { error: '休眠日期时间已经过去了，换一个。' };
+          if (wake) {
+            if (!wakeDate) return { error: '有唤醒时间时要选唤醒日期（跨天默认次日）。' };
+            const wakeAt = new Date(wakeDate + 'T' + wake + ':00');
+            if (isNaN(wakeAt.getTime())) return { error: '唤醒日期不合法。' };
+            if (wakeAt.getTime() <= offAt.getTime()) return { error: '唤醒必须晚于休眠（跨天请把唤醒日期选到次日）。' };
+          }
+        }
+        return {
+          rule: {
+            id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat,
+            offDate: repeat === 'once' ? offDate : '',
+            wakeDate: repeat === 'once' ? wakeDate : '',
+            date: repeat === 'once' ? offDate : '',   // 兼容旧字段
+            mode: mode, enabled: true
+          }
+        };
+      };
+
       const tg = wrap.querySelector('#pwToggle');
       if (tg) tg.addEventListener('click', () => post({ enabled: !pwCache.enabled, rules: pwCache.rules }));
       const cl = wrap.querySelector('#pwClear');
@@ -8432,19 +8548,18 @@ bindImg(img);
         const now = new Date();
         const hh = (d) => String(d.getHours()).padStart(2, '0') + ':' + String(d.getMinutes()).padStart(2, '0');
         let rules = pwCache.rules.slice();
-        if (kind === 'work') rules.push({ id: 'p' + Date.now().toString(36), mode: 'hibernate', repeat: 'weekdays', offTime: '23:30', wakeTime: '07:00', date: '' });
-        if (kind === 'every') rules.push({ id: 'p' + Date.now().toString(36), mode: 'hibernate', repeat: 'daily', offTime: '23:00', wakeTime: '07:30', date: '' });
+        if (kind === 'work') rules.push({ id: 'p' + Date.now().toString(36), mode: 'hibernate', repeat: 'weekdays', offTime: '23:30', wakeTime: '07:00', offDate: '', wakeDate: '', date: '' });
+        if (kind === 'every') rules.push({ id: 'p' + Date.now().toString(36), mode: 'hibernate', repeat: 'daily', offTime: '23:00', wakeTime: '07:30', offDate: '', wakeDate: '', date: '' });
         if (kind === 'sleep1h' || kind === 'off1h') {
           const t = new Date(now.getTime() + 60 * 60 * 1000);
-          rules.push({ id: 'p' + Date.now().toString(36), mode: kind === 'off1h' ? 'shutdown' : 'hibernate', repeat: 'once', date: t.getFullYear() + '-' + String(t.getMonth() + 1).padStart(2, '0') + '-' + String(t.getDate()).padStart(2, '0'), offTime: hh(t), wakeTime: '' });
+          rules.push({ id: 'p' + Date.now().toString(36), mode: kind === 'off1h' ? 'shutdown' : 'hibernate', repeat: 'once', offDate: ymd(t), wakeDate: '', date: ymd(t), offTime: hh(t), wakeTime: '' });
         }
         // 2026-11-07：唤醒自检。有些笔记本主板默认没开 RTC 唤醒，软件侧定时器注册了也不醒。
         // 这条规则 2 分钟后休眠、4 分钟后唤醒，一次就能验出这台机器到底能不能定时开机。
         if (kind === 'selftest') {
           const off = new Date(now.getTime() + 2 * 60 * 1000);
           const wake = new Date(now.getTime() + 4 * 60 * 1000);
-          const ymd = (d) => d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
-          rules.push({ id: 'selftest', mode: 'hibernate', repeat: 'once', date: ymd(off), offTime: hh(off), wakeTime: hh(wake) });
+          rules.push({ id: 'selftest', mode: 'hibernate', repeat: 'once', offDate: ymd(off), wakeDate: ymd(wake), date: ymd(off), offTime: hh(off), wakeTime: hh(wake) });
         }
         post({ enabled: true, rules: rules });
       }));
@@ -8459,25 +8574,12 @@ bindImg(img);
       }));
       const add = wrap.querySelector('#pwAdd');
       if (add) add.addEventListener('click', () => {
-        const rawOff = String((wrap.querySelector('#pwOff') || {}).value || '').trim();
-        const rawWake = String((wrap.querySelector('#pwWake') || {}).value || '').trim();
-        const off = parseTimeInput(rawOff);
-        const wake = parseTimeInput(rawWake);
-        const repeat = (wrap.querySelector('#pwRepeat') || {}).value || 'daily';
-        const date = String((wrap.querySelector('#pwDate') || {}).value || '').trim();
-        const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
-        // 校验失败时把「实际读到的值」也显示出来，否则用户完全不知道哪一步卡住了
-        if (!off) { msg('休眠/关机时间没读到有效值（读到的是 "' + rawOff + '"）。请重新选一次时间。', '#ff6b6b'); return; }
-        if (rawWake && !wake) { msg('唤醒时间没读到有效值（读到的是 "' + rawWake + '"）。请重新选一次时间。', '#ff6b6b'); return; }
-        if (wake && wake === off) { msg('唤醒时间和休眠时间不能一样（都是 ' + off + '）', '#ffb454'); return; }
-        if (repeat === 'once') {
-          if (!date) { msg('选「仅一次」时要选日期', '#ffb454'); return; }
-          const when = new Date(date + 'T' + off + ':00');
-          if (isNaN(when.getTime()) || when.getTime() <= Date.now()) { msg('这个日期时间已经过去了，换一个', '#ffb454'); return; }
-        }
+        const rr = readPwRule();
+        if (rr.error) { msg(rr.error, '#ff6b6b'); return; }
+        const rule = rr.rule;
         // 2026-11-09 修：原来「加入」直接 post 到系统，和「保存并应用」完全重复（用户反馈）。
         // 现在「加入」只把规则放进本地列表并重绘，真正写进系统要再点「保存并应用」。
-        const rules = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode, enabled: true }]);
+        const rules = pwCache.rules.concat([rule]);
         pwCache.rules = rules;
         pwCache.enabled = true;
         paint(Object.assign({}, lastSt || {}, { enabled: true, rules: rules }));
@@ -8498,8 +8600,9 @@ bindImg(img);
             }, 1500);
           }
         } catch (e) { }
-        const repTxt = (repeat === 'weekdays' ? '工作日' : (repeat === 'weekend' ? '周末' : (repeat === 'once' ? '仅一次' : '每天')));
-        msg('已加入：' + repTxt + ' ' + off + ' 休眠' + (wake ? (' → 唤醒 ' + wake) : '') + '（共 ' + rules.length + ' 条）。点「保存并应用」才会写进系统。', '#8CE58C');
+        const repTxt = (rule.repeat === 'weekdays' ? '工作日' : (rule.repeat === 'weekend' ? '周末' : (rule.repeat === 'once' ? '仅一次' : '每天')));
+        const dateTxt = (rule.repeat === 'once') ? ('（' + rule.offDate + ' ' + rule.offTime + (rule.wakeTime ? (' → ' + rule.wakeDate + ' ' + rule.wakeTime) : '') + '）') : '';
+        msg('已加入：' + repTxt + dateTxt + '（共 ' + rules.length + ' 条）。点「保存并应用」才会写进系统。', '#8CE58C');
       });
       const uw = wrap.querySelector('#pwUnlock');
       if (uw) uw.addEventListener('change', () => {
@@ -8516,23 +8619,22 @@ bindImg(img);
         // 现在保存时如果输入框里填了有效时间，自动把它并进列表一起保存（并清空输入框，
         // 避免下次保存重复添加同一条）。
         try {
-          const rawOff = String((wrap.querySelector('#pwOff') || {}).value || '').trim();
-          const rawWake = String((wrap.querySelector('#pwWake') || {}).value || '').trim();
-          const off = parseTimeInput(rawOff);
-          const wake = parseTimeInput(rawWake);
-          const repeat = (wrap.querySelector('#pwRepeat') || {}).value || 'daily';
-          const date = String((wrap.querySelector('#pwDate') || {}).value || '').trim();
-          const mode = (wrap.querySelector('#pwMode') || {}).value || 'hibernate';
-          if (off && (!wake || (wake && wake !== off)) && (repeat !== 'once' || date)) {
-            const rules2 = pwCache.rules.concat([{ id: 'r' + Date.now().toString(36), offTime: off, wakeTime: wake, repeat: repeat, date: repeat === 'once' ? date : '', mode: mode, enabled: true }]);
-            pwCache.rules = rules2;
+          const offHas = parseTimeInput(pwOffT && pwOffT.value);
+          if (offHas) {
+            const rr = readPwRule();
+            if (rr.error) {
+              msg(rr.error + '（先修正这条，或清空上面的时间再保存现有规则）', '#ff6b6b');
+              return;
+            }
+            const rule = rr.rule;
+            pwCache.rules = pwCache.rules.concat([rule]);
             pwCache.enabled = true;
-            const repTxt2 = (repeat === 'weekdays' ? '工作日' : (repeat === 'weekend' ? '周末' : (repeat === 'once' ? '仅一次' : '每天')));
-            msg('保存中（已自动加入：' + repTxt2 + ' ' + off + ' 休眠' + (wake ? ' → 唤醒 ' + wake : '') + '）…', '#8CE58C');
-            // 清空输入框，防止重复添加
+            const repTxt2 = (rule.repeat === 'weekdays' ? '工作日' : (rule.repeat === 'weekend' ? '周末' : (rule.repeat === 'once' ? '仅一次' : '每天')));
+            const dateTxt2 = (rule.repeat === 'once') ? ('（' + rule.offDate + ' ' + rule.offTime + (rule.wakeTime ? (' → ' + rule.wakeDate + ' ' + rule.wakeTime) : '') + '）') : '';
+            msg('保存中（已自动加入：' + repTxt2 + dateTxt2 + '）…', '#8CE58C');
             try {
-              const o = wrap.querySelector('#pwOff'); if (o) o.value = '';
-              const w = wrap.querySelector('#pwWake'); if (w) w.value = '';
+              if (pwOffT) pwOffT.value = '';
+              if (pwWakeT) pwWakeT.value = '';
             } catch (e2) { }
           }
         } catch (e3) { }
@@ -9966,7 +10068,7 @@ st.rx = j.x; st.ry = j.y; st.got = true;      // 存原始屏幕坐标，换算�
 
 // 页面版本：屏幕端和页面端共用同一个值（服务端 import 后做 __PAGE_VER__ 替换，
 // 并在 /rtc264/offer 的日志里打出手机带上来 pv，用来识别"手机还在跑缓存旧页面"）。
-export const PAGE_VER = '2026-11-13.5';
+export const PAGE_VER = '2026-11-13.6';
 export const PAGE = (key, manifestHref = '/manifest.json') => PAGE_HTML
   .replace(/__PAGE_VER__/g, PAGE_VER)
   .replace(/__KEY__/g, encodeURIComponent(key))

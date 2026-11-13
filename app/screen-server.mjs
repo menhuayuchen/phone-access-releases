@@ -1182,7 +1182,12 @@ function h264Start() {
   h264ResetCounters();
   let proc = null;
   try {
+    // 2026-11-13：spawn 在 Windows 上是同步的（libuv CreateProcess），冷启动/杀软扫描时
+    // 可能把事件循环卡住几百毫秒到 1 秒多；这里专门计时，方便和 [lag] 对照。
+    const _spawnT0 = Date.now();
     proc = spawn(FFMPEG_EXE, args, { stdio: ['ignore', 'pipe', 'pipe'], windowsHide: true });
+    const _spawnMs = Date.now() - _spawnT0;
+    if (_spawnMs > 100) console.log('[h264-spawn] spawn 阻塞 ' + _spawnMs + 'ms（事件循环会被一起卡住）');
   } catch (e) {
     h264.lastError = String(e.message || e);
     console.log('h264: spawn failed ' + h264.lastError);
@@ -7794,26 +7799,57 @@ async function handler(req, res) {
         let id = String((r && r.id) || ('r' + n)).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 24) || ('r' + n);
         const mode = (r && r.mode) === 'shutdown' ? 'shutdown' : 'hibernate';
         const repeat = (r && (r.repeat === 'weekdays' || r.repeat === 'weekend' || r.repeat === 'once')) ? r.repeat : 'daily';
-        const offTime = String((r && r.offTime) || '').slice(0, 5);
-        const wakeTime = String((r && r.wakeTime) || '').slice(0, 5);
-        const date = String((r && r.date) || '').replace(/[^0-9-]/g, '').slice(0, 10);
+        const offRaw = String((r && r.offTime) || '').slice(0, 5);
+        const wakeRaw = String((r && r.wakeTime) || '').slice(0, 5);
         const okTime = (t) => /^([01]?\d|2[0-3]):[0-5]\d$/.test(t);
+        const padTime = (t) => {
+          const m = /^(\d{1,2}):([0-5]\d)$/.exec(t);
+          return m ? (String(m[1]).padStart(2, '0') + ':' + m[2]) : t;
+        };
+        const okDate = (s) => {
+          if (!/^\d{4}-\d{2}-\d{2}$/.test(s)) return false;
+          const d = new Date(s + 'T00:00:00');
+          return !isNaN(d.getTime());
+        };
+        const addDay = (s, n) => {
+          const d = new Date(s + 'T00:00:00');
+          d.setDate(d.getDate() + n);
+          return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+        };
         if (seen[id]) { bad.push('第 ' + n + ' 条：编号重复'); return; }
         seen[id] = 1;
-        if (!okTime(offTime)) { bad.push('第 ' + n + ' 条：关机/休眠时间格式不对'); return; }
-        if (wakeTime && !okTime(wakeTime)) { bad.push('第 ' + n + ' 条：唤醒时间格式不对'); return; }
+        if (!okTime(offRaw)) { bad.push('第 ' + n + ' 条：关机/休眠时间格式不对'); return; }
+        if (wakeRaw && !okTime(wakeRaw)) { bad.push('第 ' + n + ' 条：唤醒时间格式不对'); return; }
+        const offTime = padTime(offRaw);
+        const wakeTime = wakeRaw ? padTime(wakeRaw) : '';
+        let offDate = String((r && (r.offDate || r.date)) || '').replace(/[^0-9-]/g, '').slice(0, 10);
+        let wakeDate = String((r && r.wakeDate) || '').replace(/[^0-9-]/g, '').slice(0, 10);
         if (repeat === 'once') {
-          if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) { bad.push('第 ' + n + ' 条：选「仅一次」要选日期'); return; }
-          const when = new Date(date + 'T' + (offTime.length === 4 ? '0' + offTime : offTime) + ':00');
-          if (isNaN(when.getTime())) { bad.push('第 ' + n + ' 条：日期不合法'); return; }
-          if (when.getTime() <= Date.now()) { bad.push('第 ' + n + ' 条：日期时间已经过去了'); return; }
-        } else if (wakeTime && wakeTime === offTime) {
-          bad.push('第 ' + n + ' 条：唤醒时间和关机时间一样');
-          return;
+          if (!okDate(offDate)) { bad.push('第 ' + n + ' 条：选「仅一次」要选休眠日期'); return; }
+          const offAt = new Date(offDate + 'T' + offTime + ':00');
+          if (isNaN(offAt.getTime())) { bad.push('第 ' + n + ' 条：休眠日期不合法'); return; }
+          if (offAt.getTime() <= Date.now()) { bad.push('第 ' + n + ' 条：休眠日期时间已经过去了'); return; }
+          if (wakeTime) {
+            if (wakeDate) {
+              if (!okDate(wakeDate)) { bad.push('第 ' + n + ' 条：唤醒日期不合法'); return; }
+            } else {
+              // 兼容旧规则（只有 date）：唤醒时间不晚于休眠 → 自动顺延到次日
+              wakeDate = addDay(offDate, wakeTime <= offTime ? 1 : 0);
+            }
+            const wakeAt = new Date(wakeDate + 'T' + wakeTime + ':00');
+            if (isNaN(wakeAt.getTime())) { bad.push('第 ' + n + ' 条：唤醒日期不合法'); return; }
+            if (wakeAt.getTime() <= offAt.getTime()) { bad.push('第 ' + n + ' 条：唤醒必须晚于休眠'); return; }
+          } else {
+            wakeDate = '';
+          }
+        } else {
+          if (wakeTime && wakeTime === offTime) { bad.push('第 ' + n + ' 条：唤醒时间和关机时间一样'); return; }
+          offDate = '';
+          wakeDate = '';
         }
         // 2026-11-09：enabled 必须原样存回来，否则页面一重绘就默认勾上（用户点了取消又弹回来）
         const ruleOn = (r && r.enabled === false) ? false : true;
-        out.push({ id, mode, repeat, date: repeat === 'once' ? date : '', offTime, wakeTime, enabled: ruleOn });
+        out.push({ id, mode, repeat, offDate, wakeDate, offTime, wakeTime, enabled: ruleOn, date: offDate });
       });
       return out;
     };
@@ -8296,6 +8332,15 @@ setInterval(() => {
   const now = Date.now();
   const lag = now - _loopLagTickAt - 500;
   _loopLagTickAt = now;
+  // 2026-11-13：系统休眠/恢复会把 500ms 定时器拉成几小时，以前会把 36,993,227ms 当成
+  // "事件循环卡顿"写进日志，还污染 _loopLagMax，让后面每条日志都带着这个假最大值。
+  // >30 秒的间隔只可能是挂起/休眠/恢复（真卡 30 秒服务已经废了），单独记一条并重置。
+  if (lag > 30000) {
+    console.log('[lag] 系统休眠/恢复：定时器间隔 ' + lag + 'ms，已跳过本次事件循环统计');
+    _loopLagMax = 0;
+    _loopLagLastLog = now;
+    return;
+  }
   if (lag > _loopLagMax) _loopLagMax = lag;
   if (lag > 300 && now - _loopLagLastLog > 5000) {
     _loopLagLastLog = now;
