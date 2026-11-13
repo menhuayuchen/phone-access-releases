@@ -665,3 +665,13 @@ a.goods__row:hover .goods__name{color:var(--teal-ink)}
   repeating-linear-gradient(135deg,transparent 0 6px,rgba(7,121,107,.09) 6px 12px),var(--paper-2)}
 .vid__time{position:absolute;right:8px;bottom:8px;padding:2px 6px;background:rgba(15,15,14,.82);
   color:#EEEEEC;font-size:.56rem;letter-spacing:.1em}
+/* 版本条目里的附件（安卓 APK 等） */
+.ver__aside{display:flex;flex-wrap:wrap;align-items:center;gap:14px;margin:14px 0 0;padding:12px 14px;
+  border:1px solid var(--rule-2);background:var(--paper)}
+.ver__aside .mono{font-size:.62rem;letter-spacing:.14em;color:var(--ink-3)}
+.ver__dl{margin-left:auto;font-size:.82rem;font-weight:600;color:var(--teal-ink);text-decoration:none}
+.ver__dl:hover{text-decoration:underline}
+@media (max-width:720px){
+  .ver__aside{flex-direction:column;align-items:flex-start}
+  .ver__dl{margin-left:0}
+}

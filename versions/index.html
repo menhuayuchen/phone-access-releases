@@ -85,8 +85,24 @@
             <li>主路"主人"改<b>心跳续约</b>（3 秒/次、30 秒窗口），稳定观看的设备不会再被新设备抢走。</li>
             <li>修一个<b>越权问题</b>：自适应降码率原来不带设备标识，可能改掉别人主路的画质。</li>
             <li>响应头 CSP 改为缓存，消除偶发的 1~2 秒主线程卡顿（原来每个请求都在同步枚举网卡 / 起 PowerShell）。</li>
-            <li>安卓 App（<a href="../android/">单独一页说明</a>）：<b>渲染进程崩溃自愈、触控低延迟、画中画、退避重连、音量键、小窗模式</b>。</li>
+            <li><b>安卓 App 升到 v2.0</b>（41 KB）：<a href="../android/">单独一页说明</a>，签名换成正式发布密钥。</li>
           </ul>
+          <details>
+            <summary>安卓 App v2.0 <span>做了什么</span></summary>
+            <ul>
+              <li><b>小窗悬浮</b>：把正在跑的画面塞进系统悬浮窗，<b>不重连、不重新编码</b>，可以一边看电脑一边刷别的 App。</li>
+              <li><b>画中画</b>：切走自动缩成小窗，回来恢复全屏沉浸。</li>
+              <li><b>切后台不断流</b>：前台服务保活，锁屏、切应用画面继续，回来接着用。</li>
+              <li><b>高刷不被压回 60</b>：部分 ROM 在焦点变化后会重置刷新率，这里每秒重新断言一次。</li>
+              <li><b>转屏 / 改分辨率不重建界面</b>，不会因为转个屏就黑一下重连。</li>
+              <li><b>音量键</b>直接调手机上播放的声音；渲染进程崩溃自动重建，网络断了按退避重连。</li>
+              <li><b>这版换了正式签名</b>：装过旧的测试包（33 KB 那些）的手机必须先卸载再装，之后所有版本都兼容。</li>
+            </ul>
+          </details>
+          <div class="ver__aside">
+            <span class="mono">APK v2.0 · 41,938 B · Android 8+</span>
+            <a class="ver__dl" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.23/LightScreen-Android-v2.0.apk">下载 APK ↓</a>
+          </div>
           <div class="ver__links">
             <a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITEE 发布页</a>
             <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITHUB</a>
@@ -97,7 +113,7 @@
       <article class="ver">
         <div class="ver__rail">
           <span class="ver__date">2026-11-12</span>
-          <span class="ver__tag">当前</span>
+          <span class="ver__tag">归档</span>
         </div>
         <div class="ver__body">
           <span class="ver__dot" aria-hidden="true"></span>
