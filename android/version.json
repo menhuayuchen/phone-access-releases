@@ -1,8 +1,8 @@
 {
   "versionCode": 210,
   "versionName": "2.1",
-  "size": 46034,
-  "sha256": "62442DD6401B7EDACCF0A941D27C96171242A21387C566705CD72FF6BD0C5597",
-  "url": "https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.1-fix.apk",
-  "notes": "小窗外观对齐系统：圆角边框、画面上下抵边、左右下角拖拽把手上方透明、左上角小叉关闭、回到 App 自动收起小窗；安装说明补 Tailscale 必装与设备过期"
+  "size": 50130,
+  "sha256": "D0B9EACEF347F3E3F0DE98ECEB64271E2151B3CB74C241697961E022B2BB437A",
+  "url": "https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.1-fix2.apk",
+  "notes": "小窗：圆角黑框、画面上下抵边、下角弧形拖拽（平时淡白/拖时变亮、等比缩放）、左上×只擦窗口、右上⤢收回全屏、↻ 整窗旋转 0/90/180/270（触摸不偏移）、回到 App 自动收起"
 }
