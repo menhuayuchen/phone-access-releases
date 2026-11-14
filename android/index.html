@@ -155,6 +155,8 @@
       <table class="table">
         <tr><th>官方下载</th><td><a href="https://tailscale.com/download/android" target="_blank" rel="noreferrer">tailscale.com/download/android</a>（认准 tailscale.com，别装山寨）</td></tr>
         <tr><th>国内镜像</th><td><a href="https://wwatu.lanzouv.com/b01i5yx5ng" target="_blank" rel="noreferrer">蓝奏云</a> · 密码 <b>dcvr</b>（官方 apk 的搬运，装完用你自己的账号登录）</td></tr>
+                <tr><th>手机用什么地址</th><td><code>https://&lt;电脑名&gt;.&lt;tailnet&gt;.ts.net/?k=密钥</code>（安装器会自动用 <code>tailscale serve --https=443</code> 配好；桌面「轻屏」文件夹 →「手机入口」里有二维码和网址）</td></tr>
+        <tr><th>设备会过期</th><td>Tailscale 设备默认约 <b>180 天</b>过期，到期后突然连不上。去 <a href="https://login.tailscale.com/admin/machines" target="_blank" rel="noreferrer">admin/machines</a> 选中电脑和手机 → <b>Disable key expiry</b>（永不过期）或 Extend key expiry（续期）</td></tr>
         <tr><th>为什么必须</th><td>轻屏的服务<b>只监听 tailnet 地址</b>（局域网 IP 也连不上）——这是安全设计：只有同一个 tailnet 账号下的设备能连。同一 Wi-Fi 下会走 Tailscale 直连（很快），打洞失败才走中继</td></tr>
       </table>
       <p class="note">装好后把 Tailscale 打开一次、确认图标是绿的；然后回到轻屏页面刷新，画面就会从"连不上"变成正常。</p>
@@ -186,6 +188,7 @@
     <div class="faq">
       <details><summary>才 41 KB，里面装的是什么？</summary><p>一个 WebView 壳，加几件只有系统 App 才拿得到的权限：悬浮窗、画中画、前台服务、音量键、刷新率。它不缓存网页、不代理流量 —— 打开之后画面还是电脑直接推过来的。</p></details>
       <details><summary>和直接用浏览器有什么区别？</summary><p>浏览器完全够用，装了只是多几样：<b>小窗悬浮、画中画、切后台不断流、音量键、高刷不回落</b>。如果你只在全屏状态下用，浏览器其实一样。</p></details>
+      <details><summary>Tailscale 显示设备过期 / 突然连不上？</summary><p>Tailscale 每台设备默认约 180 天过期，到期后手机和电脑都连不上。打开 <a href="https://login.tailscale.com/admin/machines" target="_blank" rel="noreferrer">login.tailscale.com/admin/machines</a>，选中设备 → <b>Disable key expiry</b>（永久）或 <b>Extend key expiry</b>（续期）。</p></details>
       <details><summary>手机上要装 Tailscale 吗？</summary><p><b>必须装</b>，同一 Wi-Fi 下也一样：轻屏只对 tailnet 开放，局域网 IP 连不上（安全设计）。同一 Wi-Fi 下 Tailscale 会走直连，速度也很快；手机流量/外网时同样能连（打洞失败会自动中继）。</p></details>
       <details><summary>那"局域网直连"是什么？</summary><p>是一个<b>默认关闭</b>的隐藏选项（配置项 <code>screen.lan</code>）：打开后会在 8662 端口起一个只允许私有网段访问的 https 服务，同一 Wi-Fi 下可以不经 Tailscale。代价是要自签证书、还要放行防火墙，普通用户不建议开。默认安装只监听 tailnet，所以"必须装 Tailscale"。</p></details>
       <details><summary>要什么权限？安全吗？</summary><p>只有网络、前台服务、唤醒锁、通知、悬浮窗、任务切换这几项。<b>不读通讯录、不读相册、不定位</b>；画面和文件只在你自己的电脑和手机之间走。</p></details>
