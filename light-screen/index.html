@@ -8,7 +8,7 @@
 <meta name="theme-color" content="#0F0F0E">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="轻屏 · 手机浏览器打开就能用电脑">
-<meta property="og:description" content="浏览器打开就能用，也可以装 41 KB 的安卓 App；不经过第三方服务器、局域网直连。硬件编码 + WebRTC，完全免费。">
+<meta property="og:description" content="浏览器打开就能用，也可以装 41 KB 的安卓 App；不经过第三方服务器、tailnet 直连。硬件编码 + WebRTC，完全免费。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="轻器">
 <meta property="og:url" content="https://menhuayuchen.github.io/phone-access-releases/light-screen/">
@@ -67,7 +67,7 @@
     <div class="readouts">
       <div class="readouts__c"><b>WebRTC</b><span>直连 · 不中转</span></div>
       <div class="readouts__c"><b><span data-tick="60|55.4|64.2|1">60.0</span></b><span>fps · 硬件编码</span></div>
-      <div class="readouts__c"><b>~10</b><span>ms · 局域网缓冲</span></div>
+      <div class="readouts__c"><b>~10</b><span>ms · 同网直连缓冲</span></div>
       <div class="readouts__c"><b>1920×1200</b><span>常见分辨率</span></div>
       <div class="readouts__c"><b>20 GB</b><span>单文件 · 断点续传</span></div>
     </div>
@@ -114,7 +114,7 @@
     </svg>
 
     <div class="conn__legend">
-      <div><b>画面</b>你电脑自己编码（NVENC），局域网内直连，缓冲常在 10ms 上下。</div>
+      <div><b>画面</b>你电脑自己编码（NVENC），同一 Wi-Fi 下 Tailscale 直连，缓冲常在 10ms 上下。</div>
       <div><b>外网</b>用免费 Tailscale 组一张自己的加密网，走点对点或它自己的中继。</div>
       <div><b>我这边</b>没有服务器、没有后台、没有画面，也做不了回放。</div>
     </div>
@@ -131,7 +131,7 @@
     <div class="feats">
       <div class="feat">
         <span class="feat__n">01</span>
-        <div><h3>手机不装也能用</h3><p>浏览器直接开，还能「添加到主屏幕」当 App 用；换台手机打开网址就行。想要小窗、画中画、后台保活，再装那个 <b>41 KB 的安卓 App</b>（可选，不是必需）。</p></div>
+        <div><h3>手机不用装 App</h3><p>浏览器直接开（Tailscale 是网络层，必须先装），还能「添加到主屏幕」当 App 用；换台手机打开网址就行。想要小窗、画中画、后台保活，再装那个 <b>41 KB 的安卓 App</b>（可选，不是必需）。</p></div>
       </div>
       <div class="feat">
         <span class="feat__n">02</span>
@@ -139,11 +139,11 @@
       </div>
       <div class="feat">
         <span class="feat__n">03</span>
-        <div><h3>局域网直连很快</h3><p>同一个 Wi-Fi、电脑热点、USB 共享都能连；传大文件走满 Wi-Fi（单文件 20GB，断点续传）。手机传来的文件会落在电脑的下载目录，<b>位置可以改</b>，也能在电脑上一键打开那个文件夹。</p></div>
+        <div><h3>同网直连很快</h3><p>同一个 Wi-Fi 下 Tailscale 会走直连（不是中继）；传大文件走满 Wi-Fi（单文件 20GB，断点续传）。手机传来的文件会落在电脑的下载目录，<b>位置可以改</b>，也能在电脑上一键打开那个文件夹。</p></div>
       </div>
       <div class="feat">
         <span class="feat__n">04</span>
-        <div><h3>最高 240fps</h3><p>硬件编码（NVENC）+ WebRTC 直连，局域网缓冲常在 10ms 上下，鼠标跟手。画质上限 <b>240fps / 100Mbps / 2560 宽</b>，发布版不再比自用版低一档。</p></div>
+        <div><h3>最高 240fps</h3><p>硬件编码（NVENC）+ WebRTC 直连，同网缓冲常在 10ms 上下，鼠标跟手。画质上限 <b>240fps / 100Mbps / 2560 宽</b>，发布版不再比自用版低一档。</p></div>
       </div>
       <div class="feat">
         <span class="feat__n">05</span>
@@ -182,7 +182,7 @@
     </div>
     <ol class="steps">
       <li class="step"><span class="step__n">第一步</span><h3>电脑装轻屏</h3><p>Windows 10/11，双击安装包，装完桌面会出现「轻屏」文件夹。</p></li>
-      <li class="step"><span class="step__n">第二步</span><h3>手机连同一张网</h3><p>家里同一个 Wi-Fi 最省事；外网用免费 Tailscale 组一张自己的加密网（电脑手机各登一次）。</p></li>
+      <li class="step"><span class="step__n">第二步</span><h3>手机装 Tailscale，登录同一个账号</h3><p><b>必须装，同一个 Wi-Fi 也一样</b>：轻屏只对 tailnet 开放（安全设计）；同一 Wi-Fi 下会直连，很快。</p></li>
       <li class="step"><span class="step__n">第三步</span><h3>手机打开网址</h3><p>扫桌面文件里的二维码或直接输地址，就能看屏幕、操作。建议「添加到主屏幕」。</p></li>
     </ol>
   </div>
@@ -259,7 +259,7 @@
       </a>
     </div>
     <p class="note">APK 签名说明：本版安卓包用<b>正式签名</b>（CN=LightScreen）。如果之前装过测试版，系统会提示"签名不一致 / 应用未安装"——先卸载旧版再装本版（卸载会清掉本机保存的电脑地址，重装后填一次即可）。</p>
-    <p class="note" style="margin-top:12px">安卓要外网连，还需要装一次 <b>Tailscale</b>：<a href="https://tailscale.com/download/android" target="_blank" rel="noreferrer">官方下载</a> · <a href="https://wwatu.lanzouv.com/b01i5yx5ng" target="_blank" rel="noreferrer">蓝奏云镜像</a>（密码 <b>dcvr</b>）。同一 Wi-Fi 下不用装。</p>
+    <p class="note" style="margin-top:12px">安卓端<b>必须先装一次 Tailscale</b>（同一 Wi-Fi 也要）：<a href="https://tailscale.com/download/android" target="_blank" rel="noreferrer">官方下载</a> · <a href="https://wwatu.lanzouv.com/b01i5yx5ng" target="_blank" rel="noreferrer">蓝奏云镜像</a>（密码 <b>dcvr</b>）。装完登录和电脑<b>同一个账号</b>。</p>
     <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.24" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.24" target="_blank" rel="noreferrer">GITHUB</a></p>
 
     <div class="manifest">
@@ -289,7 +289,7 @@
     <div class="faq">
       <details><summary>要装 App 吗？</summary><p>不用。手机浏览器打开网址就能用；想更像 App，可以在浏览器菜单里「添加到主屏幕」。</p></details>
       <details><summary>画面经过你的服务器吗？</summary><p>不经过。默认走 Tailscale 的点对点加密通道（直连或 Tailscale 自己的中继），我这边没有你的画面和文件。</p></details>
-      <details><summary>为什么第一次打开提示「不安全」？</summary><p>局域网 / 自签证书会这样。点「高级 → 继续前往」即可；用 Tailscale 的 https 地址不会提示。</p></details>
+      <details><summary>为什么第一次打开提示「不安全」？</summary><p>用 IP 直接打开（自签证书）会这样，点「高级 → 继续前往」即可；用 Tailscale 的域名地址不会提示。</p></details>
       <details><summary>支持哪些系统？</summary><p><b>电脑端只支持 Windows 10 / 11</b>（Mac / Linux 以后再说，不承诺时间）；<b>手机端两种都行</b>：浏览器直接打开，或者装 41 KB 的<a href="../android/">安卓 App</a>（多出小窗、画中画、后台保活、音量键、高刷）。</p></details>
       <details><summary>能拿来商用吗？</summary><p>需要先和作者谈。协议是 PolyForm Noncommercial 1.0.0：允许改、允许自己用、允许分享，但商业用途要事先获得书面同意。</p></details>
     </div>
