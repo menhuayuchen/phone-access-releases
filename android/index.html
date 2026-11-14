@@ -187,6 +187,7 @@
       <details><summary>才 41 KB，里面装的是什么？</summary><p>一个 WebView 壳，加几件只有系统 App 才拿得到的权限：悬浮窗、画中画、前台服务、音量键、刷新率。它不缓存网页、不代理流量 —— 打开之后画面还是电脑直接推过来的。</p></details>
       <details><summary>和直接用浏览器有什么区别？</summary><p>浏览器完全够用，装了只是多几样：<b>小窗悬浮、画中画、切后台不断流、音量键、高刷不回落</b>。如果你只在全屏状态下用，浏览器其实一样。</p></details>
       <details><summary>手机上要装 Tailscale 吗？</summary><p><b>必须装</b>，同一 Wi-Fi 下也一样：轻屏只对 tailnet 开放，局域网 IP 连不上（安全设计）。同一 Wi-Fi 下 Tailscale 会走直连，速度也很快；手机流量/外网时同样能连（打洞失败会自动中继）。</p></details>
+      <details><summary>那"局域网直连"是什么？</summary><p>是一个<b>默认关闭</b>的隐藏选项（配置项 <code>screen.lan</code>）：打开后会在 8662 端口起一个只允许私有网段访问的 https 服务，同一 Wi-Fi 下可以不经 Tailscale。代价是要自签证书、还要放行防火墙，普通用户不建议开。默认安装只监听 tailnet，所以"必须装 Tailscale"。</p></details>
       <details><summary>要什么权限？安全吗？</summary><p>只有网络、前台服务、唤醒锁、通知、悬浮窗、任务切换这几项。<b>不读通讯录、不读相册、不定位</b>；画面和文件只在你自己的电脑和手机之间走。</p></details>
       <details><summary>电脑端要什么版本？</summary><p>跟着 <a href="../light-screen/">轻屏 v1.0.24</a> 一起发布，建议电脑端也升到 v1.0.24。老一点的版本一般也能连，但小窗、高刷这些新能力是两边配套才完整。</p></details>
     </div>
