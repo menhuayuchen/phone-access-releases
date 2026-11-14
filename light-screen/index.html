@@ -34,7 +34,7 @@
       <a href="#faq">问题</a>
       <a href="../android/">安卓</a>
     </nav>
-    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.24 · 89.4 MB</span>
+    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.25 · 89.4 MB</span>
   </div>
   <div class="nav__prog" data-progress></div>
 </header>
@@ -50,7 +50,7 @@
       <a class="btn btn--main" href="#download">下载 Windows 版</a>
       <a class="btn btn--line" href="#free">为什么免费</a>
     </div>
-    <p class="phero__spec mono">v1.0.24 · 93,690,710 B · WINDOWS 10 / 11 · 完全免费</p>
+    <p class="phero__spec mono">v1.0.25 · 93,694,423 B · WINDOWS 10 / 11 · 完全免费</p>
 
     <div class="shots">
       <figure class="slot slot--phone">
@@ -154,7 +154,7 @@
         <div><h3>完全免费</h3><p>没有专业版、没有免费额度、不要账号。源码在明处，改动随意，商业用途需要先谈。</p></div>
       </div>
     </div>
-    <p class="note">v1.0.24 这版修的是<b>1.0.23 里手机端工具条消失</b>的严重 bug（只看到画面、点不了声音/控制/更多）；同时在「设置 → 画质与流量」里加了<b>HEVC 状态与「重试 HEVC」按钮</b>，并把弱网下的解码器重建问题修掉（3% 丢包掉帧 11% → 6.9%）。改动明细都在<a href="../versions/">更新记录</a>里。</p>
+    <p class="note">v1.0.25 这版修的是<b>关掉手机 App 后电脑端还在偷偷传流</b>（白耗电、白跑流量、风扇一直转）：现在切后台 2 分钟内回来画面不断，超过 2 分钟自动停编码、会话释放，回 App 几秒恢复；同时修好<b>「小窗提示已开启却看不见窗口」</b>（横屏坐标用到竖屏上，窗口跑到屏幕外）。改动明细都在<a href="../versions/">更新记录</a>里。</p>
   </div>
 </section>
 
@@ -229,29 +229,29 @@
     <div class="sec-head">
       <div class="fig"><span>FIG.07</span><span class="fig__line"></span><span>下载</span></div>
       <h2>下载</h2>
-      <p class="sub">轻屏 v1.0.24 · Windows 10 / 11 · 89.4 MB</p>
+      <p class="sub">轻屏 v1.0.25 · Windows 10 / 11 · 89.4 MB</p>
     </div>
 
     <div class="dl">
-      <a class="dl__row dl__row--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.24/PhoneAccess-Setup-v1.0.24-release.exe">
+      <a class="dl__row dl__row--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.25/PhoneAccess-Setup-v1.0.25-release.exe">
         <span class="dl__tag">国内 · 推荐</span>
         <span class="dl__name">Gitee 直链</span>
         <span class="dl__note">国内速度稳定，不用翻墙</span>
         <span class="dl__go">下载 ↓</span>
       </a>
-      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.24/PhoneAccess-Setup-v1.0.24-release.exe">
+      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.25/PhoneAccess-Setup-v1.0.25-release.exe">
         <span class="dl__tag">备用</span>
         <span class="dl__name">GitHub</span>
         <span class="dl__note">海外 / 国内都能用，但国内有时连不上或很慢</span>
         <span class="dl__go">下载 ↓</span>
       </a>
-      <a class="dl__row" href="https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.1-fix2.apk">
+      <a class="dl__row" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.25/lightscreen-v2.2.apk">
         <span class="dl__tag">安卓 · 官网</span>
         <span class="dl__name">直接下载 .apk</span>
         <span class="dl__note">本站托管、不过期；下载得到的就是安装包（Gitee 那份会变 .zip，不推荐）</span>
         <span class="dl__go">下载 ↓</span>
       </a>
-      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.23/LightScreen-Android-v2.1.apk">
+      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.25/LightScreen-Android-v2.2.apk">
         <span class="dl__tag">安卓</span>
         <span class="dl__name">安卓 App（小窗 / 画中画）</span>
         <span class="dl__note">手机端可缩成悬浮小窗。若从 Gitee 下载后文件名变成 .apk.zip，把后缀改回 .apk 再点安装</span>
@@ -260,17 +260,17 @@
     </div>
     <p class="note">APK 签名说明：本版安卓包用<b>正式签名</b>（CN=LightScreen）。如果之前装过测试版，系统会提示"签名不一致 / 应用未安装"——先卸载旧版再装本版（卸载会清掉本机保存的电脑地址，重装后填一次即可）。</p>
     <p class="note" style="margin-top:12px">安卓端<b>必须先装一次 Tailscale</b>（同一 Wi-Fi 也要）：<a href="https://tailscale.com/download/android" target="_blank" rel="noreferrer">官方下载</a> · <a href="https://wwatu.lanzouv.com/b01i5yx5ng" target="_blank" rel="noreferrer">蓝奏云镜像</a>（密码 <b>dcvr</b>）。装完登录和电脑<b>同一个账号</b>。</p>
-    <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.24" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.24" target="_blank" rel="noreferrer">GITHUB</a></p>
+    <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.25" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.25" target="_blank" rel="noreferrer">GITHUB</a></p>
 
     <div class="manifest">
       <p class="manifest__h">文件核对 / MANIFEST</p>
       <table class="table">
-        <tr><th>版本</th><td>v1.0.24（轻屏，完全免费）</td></tr>
-        <tr><th>文件名</th><td>PhoneAccess-Setup-v1.0.24-release.exe</td></tr>
+        <tr><th>版本</th><td>v1.0.25（轻屏，完全免费）</td></tr>
+        <tr><th>文件名</th><td>PhoneAccess-Setup-v1.0.25-release.exe</td></tr>
         <tr><th>大小</th><td>93,690,710 字节（约 89.4 MB）</td></tr>
         <tr><th>SHA256</th><td class="hash">A4CBB66D50DA598F85E6521CF8F7E350E08D10A1CF0DF28A534487B6CD183DDF</td></tr>
-        <tr><th>安卓 APK</th><td>LightScreen-Android-v2.1.apk（46,034 字节，SHA256 <span class="hash">D0B9EACEF347F3E3F0DE98ECEB64271E2151B3CB74C241697961E022B2BB437A</span>）</td></tr>
-        <tr><th>安卓安装</th><td>下载后应为 <b>LightScreen-Android-v2.1.apk</b>（不是 .zip）。若被手机浏览器加了 .zip 后缀，改名删掉 .zip 再安装；或在「设置 → 安全」里允许安装未知应用</td></tr>
+        <tr><th>安卓 APK</th><td>LightScreen-Android-v2.2.apk（50,130 字节，SHA256 <span class="hash">DDBC988DE26E705D1CA4320494734A6BF6194CCECED9CEA527ABDD26C8543BC9</span>）</td></tr>
+        <tr><th>安卓安装</th><td>下载后应为 <b>LightScreen-Android-v2.2.apk</b>（不是 .zip）。若被手机浏览器加了 .zip 后缀，改名删掉 .zip 再安装；或在「设置 → 安全」里允许安装未知应用</td></tr>
         <tr><th>系统要求</th><td>Windows 10 / 11（64 位）；约 10 GB 可用空间</td></tr>
       </table>
       <p class="note">下载后可以核对哈希（Windows 自带命令）：<code>certutil -hashfile 文件名 SHA256</code>。对不上就别装，重新下一次。</p>
@@ -305,13 +305,13 @@
         <svg class="brand__m" viewBox="0 0 20 20" aria-hidden="true"><rect x=".5" y=".5" width="8" height="8" fill="currentColor"/><rect x="11.5" y=".5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x=".5" y="11.5" width="8" height="8" fill="currentColor" opacity=".3"/><rect x="11.5" y="11.5" width="8" height="8" fill="#0BD8B6"/></svg>
         轻器
       </a>
-      <p class="mono" style="margin:0">轻屏 v1.0.24 · Windows 10 / 11</p>
+      <p class="mono" style="margin:0">轻屏 v1.0.25 · Windows 10 / 11</p>
     </div>
     <div class="foot__grid">
       <div>
         <h2 class="foot__h">当前版本</h2>
         <ul>
-          <li class="mono">v1.0.24</li>
+          <li class="mono">v1.0.25</li>
           <li class="mono">93,690,710 B</li>
           <li class="mono">2026-11-13</li>
         </ul>
@@ -343,7 +343,7 @@
       </div>
     </div>
     <div class="foot__bot">
-      <span>© 2026 轻器 · 轻屏 v1.0.24</span>
+      <span>© 2026 轻器 · 轻屏 v1.0.25</span>
       <span>问题去 Issues 最快</span>
     </div>
   </div>

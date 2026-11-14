@@ -1,8 +1,8 @@
 {
-  "versionCode": 210,
-  "versionName": "2.1",
+  "versionCode": 219,
+  "versionName": "2.2",
   "size": 50130,
-  "sha256": "D0B9EACEF347F3E3F0DE98ECEB64271E2151B3CB74C241697961E022B2BB437A",
-  "url": "https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.1-fix2.apk",
-  "notes": "小窗：圆角黑框、画面上下抵边、下角弧形拖拽（平时淡白/拖时变亮、等比缩放）、左上×只擦窗口、右上⤢收回全屏、↻ 整窗旋转 0/90/180/270（触摸不偏移）、回到 App 自动收起"
+  "sha256": "DDBC988DE26E705D1CA4320494734A6BF6194CCECED9CEA527ABDD26C8543BC9",
+  "url": "https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.25/lightscreen-v2.2.apk",
+  "notes": "关掉 App 后不再后台传流（划掉任务即真正退出）；小窗窗口位置按屏幕方向校正，提示已开启就能看见、可拖动；断流恢复不再被切到 H.264 第二路。"
 }
