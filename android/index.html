@@ -118,20 +118,36 @@
     </div>
 
     <div class="dl">
-      <a class="dl__row dl__row--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.23/LightScreen-Android-v2.0.apk">
+      <a class="dl__row dl__row--main" href="https://wwatu.lanzouv.com/iivHd4fxdcag" target="_blank" rel="noreferrer">
         <span class="dl__tag">国内 · 推荐</span>
-        <span class="dl__name">Gitee 直链</span>
-        <span class="dl__note">国内速度稳定，不用翻墙</span>
-        <span class="dl__go">下载 ↓</span>
+        <span class="dl__name">蓝奏云（密码 bb1c）</span>
+        <span class="dl__note">国内直连、免注册；打开后输入密码 bb1c，下载得到 .apk 直接安装</span>
+        <span class="dl__go">打开 ↓</span>
       </a>
       <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.23/LightScreen-Android-v2.0.apk">
         <span class="dl__tag">备用</span>
-        <span class="dl__name">GitHub</span>
-        <span class="dl__note">海外 / 国内都能用，但国内有时连不上或很慢</span>
+        <span class="dl__name">GitHub 直链</span>
+        <span class="dl__note">下载就是 .apk（Content-Type 正确），国内有时连不上或很慢</span>
+        <span class="dl__go">下载 ↓</span>
+      </a>
+      <a class="dl__row" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.23/LightScreen-Android-v2.0.apk">
+        <span class="dl__tag">备用</span>
+        <span class="dl__name">Gitee 直链</span>
+        <span class="dl__note">国内速度快，但 Gitee 会把它当 zip 返回：下到的文件若叫 .apk.zip，把后缀改回 .apk 再安装</span>
         <span class="dl__go">下载 ↓</span>
       </a>
     </div>
     <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.23" target="_blank" rel="noreferrer">GITHUB</a></p>
+
+    <div class="manifest" style="margin-top:clamp(18px,3vw,28px)">
+      <p class="manifest__h">第二步：装 Tailscale（外网连必须，同一 Wi-Fi 不用）</p>
+      <table class="table">
+        <tr><th>官方下载</th><td><a href="https://tailscale.com/download/android" target="_blank" rel="noreferrer">tailscale.com/download/android</a>（认准 tailscale.com，别装山寨）</td></tr>
+        <tr><th>国内镜像</th><td><a href="https://wwatu.lanzouv.com/b01i5yx5ng" target="_blank" rel="noreferrer">蓝奏云</a> · 密码 <b>dcvr</b>（官方 apk 的搬运，装完用你自己的账号登录）</td></tr>
+        <tr><th>用它做什么</th><td>手机和电脑登同一个 tailnet，就能在外网直连；只在同一个 Wi-Fi 下用，可以不装</td></tr>
+      </table>
+      <p class="note">装好后把 Tailscale 打开一次、确认图标是绿的；然后回到轻屏页面刷新，画面就会从"连不上"变成正常。</p>
+    </div>
 
     <div class="manifest">
       <p class="manifest__h">文件核对 / MANIFEST</p>
