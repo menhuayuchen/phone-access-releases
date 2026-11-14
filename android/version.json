@@ -1,0 +1,8 @@
+{
+  "versionCode": 210,
+  "versionName": "2.1",
+  "size": 46034,
+  "sha256": "A3C107FE57ACFC2FDAB1F4FCF7D1E84A6BC09FDD7C169CF235F41078B9483169",
+  "url": "https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.1.apk",
+  "notes": "去掉按 Home 自动画中画；返回键先关页面弹层；小窗顶部黑条已去除；新增最近地址、检查更新"
+}
