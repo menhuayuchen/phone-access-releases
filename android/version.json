@@ -1,8 +1,8 @@
 {
-  "versionCode": 219,
-  "versionName": "2.2",
-  "size": 50130,
-  "sha256": "DDBC988DE26E705D1CA4320494734A6BF6194CCECED9CEA527ABDD26C8543BC9",
-  "url": "https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.25/lightscreen-v2.2.apk",
-  "notes": "关掉 App 后不再后台传流（划掉任务即真正退出）；小窗窗口位置按屏幕方向校正，提示已开启就能看见、可拖动；断流恢复不再被切到 H.264 第二路。"
+  "versionCode": 300,
+  "versionName": "2.3",
+  "size": 95186,
+  "sha256": "105A9FA4DEA3EB1EFFBD28A6233062D575275511EE18701C1B5F577E4CE18275",
+  "url": "https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.27/lightscreen-v2.3.apk",
+  "notes": "修好 App 内「传文件 → 选择文件」点了没反应；默认回到网页版播放器，原生播放器降为实验选项；按屏幕比例出流不再有黑边；原生界面随画面缩放。"
 }
