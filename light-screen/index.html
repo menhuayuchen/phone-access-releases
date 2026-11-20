@@ -4,11 +4,11 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>轻屏 · 手机浏览器打开就能用电脑</title>
-<meta name="description" content="轻屏（LightScreen）：Windows 远程桌面。手机浏览器打开就能看屏幕、点鼠标、打字、听声音，还能传大文件；不想开浏览器就装 41 KB 的安卓 App。不经过第三方服务器，完全免费。轻器出品。">
+<meta name="description" content="轻屏（LightScreen）：Windows 远程桌面。手机浏览器打开就能看屏幕、点鼠标、打字、听声音，还能传大文件；不想开浏览器就装 93 KB 的安卓 App。不经过第三方服务器，完全免费。轻器出品。">
 <meta name="theme-color" content="#0F0F0E">
 <meta name="color-scheme" content="light">
 <meta property="og:title" content="轻屏 · 手机浏览器打开就能用电脑">
-<meta property="og:description" content="浏览器打开就能用，也可以装 41 KB 的安卓 App；不经过第三方服务器、tailnet 直连。硬件编码 + WebRTC，完全免费。">
+<meta property="og:description" content="浏览器打开就能用，也可以装 93 KB 的安卓 App；不经过第三方服务器、tailnet 直连。硬件编码 + WebRTC，完全免费。">
 <meta property="og:type" content="website">
 <meta property="og:site_name" content="轻器">
 <meta property="og:url" content="https://menhuayuchen.github.io/phone-access-releases/light-screen/">
@@ -34,7 +34,7 @@
       <a href="#faq">问题</a>
       <a href="../android/">安卓</a>
     </nav>
-    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.26 · 89.4 MB</span>
+    <span class="nav__stat"><i class="dot" aria-hidden="true"></i>v1.0.27 · 89.8 MB</span>
   </div>
   <div class="nav__prog" data-progress></div>
 </header>
@@ -45,12 +45,12 @@
   <div class="wrap">
     <div class="fig fig--dark"><span>FIG.01</span><span class="fig__line"></span><span>轻屏 / LIGHTSCREEN · WINDOWS</span></div>
     <h1 class="phero__h">手机上打开网址，<br><span class="teal">就能用你的电脑</span></h1>
-    <p class="phero__lead">看屏幕、点鼠标、打字、听声音、传大文件 —— 手机上不用装任何 App；想要小窗和画中画，再装那个 41 KB 的<a href="../android/">安卓壳</a>。</p>
+    <p class="phero__lead">看屏幕、点鼠标、打字、听声音、传大文件 —— 手机上不用装任何 App；想要小窗和画中画，再装那个 93 KB 的<a href="../android/">安卓壳</a>。</p>
     <div class="actions">
       <a class="btn btn--main" href="#download">下载 Windows 版</a>
       <a class="btn btn--line" href="#free">为什么免费</a>
     </div>
-    <p class="phero__spec mono">v1.0.26 · 93,699,954 B · WINDOWS 10 / 11 · 完全免费</p>
+    <p class="phero__spec mono">v1.0.27 · 94,171,903 B · WINDOWS 10 / 11 · 完全免费</p>
 
     <div class="shots">
       <figure class="slot slot--phone">
@@ -131,7 +131,7 @@
     <div class="feats">
       <div class="feat">
         <span class="feat__n">01</span>
-        <div><h3>手机不用装 App</h3><p>浏览器直接开（Tailscale 是网络层，必须先装），还能「添加到主屏幕」当 App 用；换台手机打开网址就行。想要小窗、画中画、后台保活，再装那个 <b>41 KB 的安卓 App</b>（可选，不是必需）。</p></div>
+        <div><h3>手机不用装 App</h3><p>浏览器直接开（Tailscale 是网络层，必须先装），还能「添加到主屏幕」当 App 用；换台手机打开网址就行。想要小窗、画中画、后台保活，再装那个 <b>93 KB 的安卓 App</b>（可选，不是必需）。</p></div>
       </div>
       <div class="feat">
         <span class="feat__n">02</span>
@@ -154,7 +154,7 @@
         <div><h3>完全免费</h3><p>没有专业版、没有免费额度、不要账号。源码在明处，改动随意，商业用途需要先谈。</p></div>
       </div>
     </div>
-    <p class="note">v1.0.26 这版重做了<b>定时开关机</b>：唤醒后保持系统运行 30 分钟（屏幕仍黑，等人连上才亮），不再"醒了又睡"；时间填错会当场提醒；唤醒任务缺失有一键重建。（白耗电、白跑流量、风扇一直转）：现在切后台 2 分钟内回来画面不断，超过 2 分钟自动停编码、会话释放，回 App 几秒恢复；同时修好<b>「小窗提示已开启却看不见窗口」</b>（横屏坐标用到竖屏上，窗口跑到屏幕外）。改动明细都在<a href="../versions/">更新记录</a>里。</p>
+    <p class="note">v1.0.27 这版把<b>画质怎么出、码率怎么调、哪台设备用哪个档</b>整套重做了一遍：默认用上自研零拷贝硬件编码器（静止桌面 CPU 0.02 核）；自动档改成按"屏幕真实能显示多大"出流，手机横屏 2560→1728 宽、41.5→11.65 Mbps、丢帧 13.9%→2.5%；码率自适应改双向（卡了能自己升回来）；能解高清的设备不再被塞进低画质备用通道；音频改独立线程并修掉爆音。</p>
   </div>
 </section>
 
@@ -229,29 +229,29 @@
     <div class="sec-head">
       <div class="fig"><span>FIG.07</span><span class="fig__line"></span><span>下载</span></div>
       <h2>下载</h2>
-      <p class="sub">轻屏 v1.0.26 · Windows 10 / 11 · 89.4 MB</p>
+      <p class="sub">轻屏 v1.0.27 · Windows 10 / 11 · 89.8 MB</p>
     </div>
 
     <div class="dl">
-      <a class="dl__row dl__row--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.26/PhoneAccess-Setup-v1.0.26-release.exe">
+      <a class="dl__row dl__row--main" href="https://gitee.com/menhuayuchen/phone-access-download/releases/download/v1.0.27/LightScreen-Setup-v1.0.27-release.exe">
         <span class="dl__tag">国内 · 推荐</span>
         <span class="dl__name">Gitee 直链</span>
         <span class="dl__note">国内速度稳定，不用翻墙</span>
         <span class="dl__go">下载 ↓</span>
       </a>
-      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.26/PhoneAccess-Setup-v1.0.25-release.exe">
+      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.27/LightScreen-Setup-v1.0.27-release.exe">
         <span class="dl__tag">备用</span>
         <span class="dl__name">GitHub</span>
         <span class="dl__note">海外 / 国内都能用，但国内有时连不上或很慢</span>
         <span class="dl__go">下载 ↓</span>
       </a>
-      <a class="dl__row" href="https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.2.apk">
+      <a class="dl__row" href="https://menhuayuchen.github.io/phone-access-releases/android/LightScreen-Android-v2.3.apk">
         <span class="dl__tag">安卓 · 官网</span>
         <span class="dl__name">直接下载 .apk</span>
         <span class="dl__note">本站托管、不过期；下载得到的就是安装包（Gitee 那份会变 .zip，不推荐）</span>
         <span class="dl__go">下载 ↓</span>
       </a>
-      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.26/LightScreen-Android-v2.2.apk">
+      <a class="dl__row" href="https://github.com/menhuayuchen/phone-access-releases/releases/download/v1.0.27/LightScreen-Android-v2.3.apk">
         <span class="dl__tag">安卓</span>
         <span class="dl__name">安卓 App（小窗 / 画中画）</span>
         <span class="dl__note">手机端可缩成悬浮小窗。若从 Gitee 下载后文件名变成 .apk.zip，把后缀改回 .apk 再点安装</span>
@@ -260,17 +260,17 @@
     </div>
     <p class="note">APK 签名说明：本版安卓包用<b>正式签名</b>（CN=LightScreen）。如果之前装过测试版，系统会提示"签名不一致 / 应用未安装"——先卸载旧版再装本版（卸载会清掉本机保存的电脑地址，重装后填一次即可）。</p>
     <p class="note" style="margin-top:12px">安卓端<b>必须先装一次 Tailscale</b>（同一 Wi-Fi 也要）：<a href="https://tailscale.com/download/android" target="_blank" rel="noreferrer">官方下载</a> · <a href="https://wwatu.lanzouv.com/b01i5yx5ng" target="_blank" rel="noreferrer">蓝奏云镜像</a>（密码 <b>dcvr</b>）。装完登录和电脑<b>同一个账号</b>。</p>
-    <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.26" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.25" target="_blank" rel="noreferrer">GITHUB</a></p>
+    <p class="dl__alt">打不开就去发布页：<a href="https://gitee.com/menhuayuchen/phone-access-download/releases/tag/v1.0.27" target="_blank" rel="noreferrer">GITEE</a> · <a href="https://github.com/menhuayuchen/phone-access-releases/releases/tag/v1.0.25" target="_blank" rel="noreferrer">GITHUB</a></p>
 
     <div class="manifest">
       <p class="manifest__h">文件核对 / MANIFEST</p>
       <table class="table">
-        <tr><th>版本</th><td>v1.0.26（轻屏，完全免费）</td></tr>
-        <tr><th>文件名</th><td>PhoneAccess-Setup-v1.0.26-release.exe</td></tr>
-        <tr><th>大小</th><td>93,699,954 字节（约 89.4 MB）</td></tr>
-        <tr><th>SHA256</th><td class="hash">54DA2293AD883939605E1B90A2489C2D685FEEB735967410747AC68B8B2AA67B</td></tr>
-        <tr><th>安卓 APK</th><td>LightScreen-Android-v2.2.apk（50,130 字节，SHA256 <span class="hash">DDBC988DE26E705D1CA4320494734A6BF6194CCECED9CEA527ABDD26C8543BC9</span>）</td></tr>
-        <tr><th>安卓安装</th><td>下载后应为 <b>LightScreen-Android-v2.2.apk</b>（不是 .zip）。若被手机浏览器加了 .zip 后缀，改名删掉 .zip 再安装；或在「设置 → 安全」里允许安装未知应用</td></tr>
+        <tr><th>版本</th><td>v1.0.27（轻屏，完全免费）</td></tr>
+        <tr><th>文件名</th><td>LightScreen-Setup-v1.0.27-release.exe</td></tr>
+        <tr><th>大小</th><td>94,171,903 字节（约 89.8 MB）</td></tr>
+        <tr><th>SHA256</th><td class="hash">7446D5C4419841F7FB1060CA7CE75035DFFBB77965FE13180A873B9185626555</td></tr>
+        <tr><th>安卓 APK</th><td>LightScreen-Android-v2.3.apk（95,186 字节，SHA256 <span class="hash">105A9FA4DEA3EB1EFFBD28A6233062D575275511EE18701C1B5F577E4CE18275</span>）</td></tr>
+        <tr><th>安卓安装</th><td>下载后应为 <b>LightScreen-Android-v2.3.apk</b>（不是 .zip）。若被手机浏览器加了 .zip 后缀，改名删掉 .zip 再安装；或在「设置 → 安全」里允许安装未知应用</td></tr>
         <tr><th>系统要求</th><td>Windows 10 / 11（64 位）；约 10 GB 可用空间</td></tr>
       </table>
       <p class="note">下载后可以核对哈希（Windows 自带命令）：<code>certutil -hashfile 文件名 SHA256</code>。对不上就别装，重新下一次。</p>
@@ -290,7 +290,7 @@
       <details><summary>要装 App 吗？</summary><p>不用。手机浏览器打开网址就能用；想更像 App，可以在浏览器菜单里「添加到主屏幕」。</p></details>
       <details><summary>画面经过你的服务器吗？</summary><p>不经过。默认走 Tailscale 的点对点加密通道（直连或 Tailscale 自己的中继），我这边没有你的画面和文件。</p></details>
       <details><summary>为什么第一次打开提示「不安全」？</summary><p>用 IP 直接打开（自签证书）会这样，点「高级 → 继续前往」即可；用 Tailscale 的域名地址不会提示。</p></details>
-      <details><summary>支持哪些系统？</summary><p><b>电脑端只支持 Windows 10 / 11</b>（Mac / Linux 以后再说，不承诺时间）；<b>手机端两种都行</b>：浏览器直接打开，或者装 41 KB 的<a href="../android/">安卓 App</a>（多出小窗、画中画、后台保活、音量键、高刷）。</p></details>
+      <details><summary>支持哪些系统？</summary><p><b>电脑端只支持 Windows 10 / 11</b>（Mac / Linux 以后再说，不承诺时间）；<b>手机端两种都行</b>：浏览器直接打开，或者装 93 KB 的<a href="../android/">安卓 App</a>（多出小窗、画中画、后台保活、音量键、高刷）。</p></details>
       <details><summary>能拿来商用吗？</summary><p>需要先和作者谈。协议是 PolyForm Noncommercial 1.0.0：允许改、允许自己用、允许分享，但商业用途要事先获得书面同意。</p></details>
     </div>
   </div>
@@ -312,7 +312,7 @@
         <h2 class="foot__h">当前版本</h2>
         <ul>
           <li class="mono">v1.0.25</li>
-          <li class="mono">93,690,710 B</li>
+          <li class="mono">94,171,903 B</li>
           <li class="mono">2026-11-13</li>
         </ul>
       </div>
